@@ -4,14 +4,12 @@
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 
 #include <span>
-#include <string>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
 
 class Value;
 
 using SrtMemoryReader = bool (*)(void* userdata, uint64_t address, std::span<uint32_t> values);
-using SrtMemorySync   = bool (*)(void* userdata, uint64_t address, uint64_t size);
 
 struct SrtRuntime {
 	std::span<const uint32_t> user_data;
@@ -19,14 +17,12 @@ struct SrtRuntime {
 	SrtMemoryReader           read_memory                = nullptr;
 	void*                     userdata                   = nullptr;
 	SrtMemoryReader           read_specialization_memory = nullptr;
-	SrtMemorySync             sync_memory                = nullptr;
 };
 
 enum class RuntimeValueType { Any, Integer };
 
 bool ValidateRuntimeValue(const ResourcePlan& program, Value value,
-                          RuntimeValueType type = RuntimeValueType::Any,
-                          std::string* reason = nullptr);
+                          RuntimeValueType type = RuntimeValueType::Any);
 // Uses the strict reader for values that affect shader specialization.
 SrtRuntime CleanRuntime(SrtRuntime runtime);
 

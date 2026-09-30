@@ -77,7 +77,6 @@ public:
 	U1  LogicalAnd(U1 lhs, U1 rhs);
 	U1  LogicalOr(U1 lhs, U1 rhs);
 	U1  LogicalNot(U1 value);
-	U1  AnyLane(U1 value);
 
 private:
 	Block* block = nullptr;

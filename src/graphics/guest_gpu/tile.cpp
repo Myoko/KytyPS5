@@ -1307,7 +1307,7 @@ void TileGetTextureSize(Prospero::BufferFormat format, uint32_t width, uint32_t 
 	}
 }
 
-bool TileGetTextureTotalSize(Prospero::BufferFormat format, uint32_t width, uint32_t height,
+void TileGetTextureTotalSize(Prospero::BufferFormat format, uint32_t width, uint32_t height,
                              uint32_t depth, uint32_t levels, Prospero::TileMode tile,
                              bool volume_texture, TileSizeAlign& total_size) {
 	EXIT_NOT_IMPLEMENTED(depth == 0);
@@ -1320,23 +1320,18 @@ bool TileGetTextureTotalSize(Prospero::BufferFormat format, uint32_t width, uint
 			     static_cast<uint32_t>(format), static_cast<uint32_t>(tile), width, height, depth,
 			     levels);
 		}
-		if (layout.total_size > UINT32_MAX) {
-			return false;
-		}
+		EXIT_NOT_IMPLEMENTED(layout.total_size > UINT32_MAX);
 		total_size.size  = static_cast<uint32_t>(layout.total_size);
 		total_size.align = layout.texture.block.block_size;
-		return true;
+		return;
 	}
 
 	TileSizeAlign slice_size {};
 	TileGetTextureSize(format, width, height, levels, tile, &slice_size, nullptr, nullptr);
 	total_size           = slice_size;
 	const uint64_t total = static_cast<uint64_t>(slice_size.size) * depth;
-	if (total > 0xffffffffull) {
-		return false;
-	}
+	EXIT_NOT_IMPLEMENTED(total > 0xffffffffull);
 	total_size.size = static_cast<uint32_t>(total);
-	return true;
 }
 
 uint32_t TileGetTexturePitch(Prospero::BufferFormat format, uint32_t width,
