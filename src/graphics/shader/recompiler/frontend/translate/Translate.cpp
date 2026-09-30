@@ -757,10 +757,15 @@ void Translator::AddBranchCondition(const CFG::Graph& graph, const CFG::BasicBlo
 			case CFG::BranchCondition::Always: condition = IR::U1(IR::Value(true)); break;
 			case CFG::BranchCondition::SccZero: condition = ir.LogicalNot(ir.GetScc()); break;
 			case CFG::BranchCondition::SccNonZero: condition = ir.GetScc(); break;
-			case CFG::BranchCondition::VccZero: condition = ir.LogicalNot(ir.GetVcc()); break;
-			case CFG::BranchCondition::VccNonZero: condition = ir.GetVcc(); break;
-			case CFG::BranchCondition::ExecZero: condition = ir.LogicalNot(ir.GetExec()); break;
-			case CFG::BranchCondition::ExecNonZero: condition = ir.GetExec(); break;
+			// A branch tests the whole wave, not the invocation-local mask, so EXEC/VCC are
+			// reduced across the wave before they are negated. Ported from pr/2
+			// ("shader: branch on the whole wave for execz, execnz, vccz and vccnz").
+			case CFG::BranchCondition::VccZero: condition = ir.LogicalNot(ir.AnyLane(ir.GetVcc())); break;
+			case CFG::BranchCondition::VccNonZero: condition = ir.AnyLane(ir.GetVcc()); break;
+			case CFG::BranchCondition::ExecZero:
+				condition = ir.LogicalNot(ir.AnyLane(ir.GetExec()));
+				break;
+			case CFG::BranchCondition::ExecNonZero: condition = ir.AnyLane(ir.GetExec()); break;
 			case CFG::BranchCondition::ScalarInstruction:
 				EXIT_IF(instruction_branch_condition.IsEmpty());
 				condition = instruction_branch_condition;
