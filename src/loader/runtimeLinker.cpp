@@ -655,33 +655,6 @@ static bool IsReadableRange(uint64_t addr, uint64_t size) {
 	return true;
 }
 
-static RuntimeLinker* g_faulting_linker = nullptr;
-
-static std::string DescribeGuestAddress(uint64_t vaddr) {
-	if (g_faulting_linker == nullptr || vaddr == 0) {
-		return "unmapped";
-	}
-	const auto* program = g_faulting_linker->FindProgramByAddr(vaddr);
-	if (program == nullptr) {
-		return "outside any loaded module";
-	}
-	return fmt::format("{}+0x{:x}", program->file_name.filename().string(),
-	                   vaddr - program->base_vaddr);
-}
-
-static std::string DescribeGuestCode(uint64_t vaddr) {
-	if (g_faulting_linker == nullptr || g_faulting_linker->FindProgramByAddr(vaddr) == nullptr) {
-		return {};
-	}
-	std::string bytes;
-	for (uint64_t offset = 0; offset < 16u; offset++) {
-		if (g_faulting_linker->FindProgramByAddr(vaddr + offset) == nullptr) {
-			break;
-		}
-		bytes += fmt::format("{:02x}", *reinterpret_cast<const uint8_t*>(vaddr + offset));
-	}
-	return bytes;
-}
 static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exception_info) {
 	const auto* info = &exception_info;
 
@@ -740,13 +713,10 @@ static bool KytyExceptionHandler(const Common::HostException::ExceptionInfo& exc
 		}
 		std::fflush(stdout);
 	}
-	EXIT("Unhandled host exception: type=%u code=%u pc=0x%016" PRIx64 " (%s)"
-	     " access=%u address=0x%016" PRIx64 " (%s) code=%s\n",
+	EXIT("Unhandled host exception: type=%u code=%u pc=0x%016" PRIx64
+	     " access=%u address=0x%016" PRIx64 "\n",
 	     static_cast<unsigned>(info->type), info->native_code, info->exception_address,
-	     DescribeGuestAddress(info->exception_address).c_str(),
-	     static_cast<unsigned>(info->access_violation_type), info->access_violation_vaddr,
-	     DescribeGuestAddress(info->access_violation_vaddr).c_str(),
-	     DescribeGuestCode(info->exception_address).c_str());
+	     static_cast<unsigned>(info->access_violation_type), info->access_violation_vaddr);
 }
 
 static void EncodeId64(uint16_t in_id, std::string* out_id) {
@@ -1888,7 +1858,6 @@ void RuntimeLinker::LoadProgramToMemory(Program* program) {
 		LOGF("tls_handler_size       = 0x%016" PRIx64 "\n", tls_handler_size);
 	}
 
-	g_faulting_linker = program->rt;
 	if (!Common::HostException::InstallHandler(KytyExceptionHandler)) {
 		EXIT("Failed to install the required vectored exception handler\n");
 	}

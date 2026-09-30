@@ -16,7 +16,6 @@
 #include "graphics/shader/recompiler/ir/passes/ResourceTracking.h"
 #include "graphics/shader/recompiler/ir/passes/ShaderInfoCollection.h"
 #include "graphics/shader/recompiler/ir/passes/SsaRewrite.h"
-#include "graphics/shader/recompiler/ir/passes/WaterfallDescriptor.h"
 
 #include <algorithm>
 #include <array>
@@ -624,20 +623,6 @@ TranslateResult TranslateProgram(std::span<const uint32_t> code, const CompileOp
 		IR::EliminateDeadCode(ir.blocks);
 	}
 	LowerTessellationMemory(ir, options);
-	// Ported from pr/2 ("shader: de-scalarize waterfall descriptor loops"). Upstream main has
-	// no equivalent pass, so it is kept; the cleanup passes it needs already exist here.
-	// pr/2 also called IR::BuildSrtPlan(ir) at this point, but upstream removed that pass, so
-	// it is intentionally not carried over.
-	const auto waterfalls = IR::RewriteWaterfallDescriptors(ir);
-	if (waterfalls != 0) {
-		LOGF("%s waterfall descriptor de-scalarization: hash=0x%016" PRIx64 " loops=%" PRIu32
-		     "\n",
-		     GetDumpLabel(options), options.shader_hash, waterfalls);
-		IR::ConstantPropagationPass(ir.blocks);
-		IR::ResolveControlFlowIdentities(ir);
-		IR::RemoveIdentities(ir.blocks);
-		IR::EliminateDeadCode(ir.blocks);
-	}
 	std::string cfg_dump;
 	if (options.dump_ir) {
 		cfg_dump = CFG::GraphToString(cfg);
