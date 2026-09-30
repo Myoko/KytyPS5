@@ -88,6 +88,11 @@ jobs:
           glslangValidator --version
           echo Qt6_DIR=%Qt6_DIR%
 
+      # KYTY_MARCH defaults to native, so the runner's CPU picks the instruction set of the
+      # artifact rather than the player's. The windows-2022 runners are Xeons with AVX-512; a
+      # consumer Raptor Lake part has none, and the AVX-512 the runner's build emits dies with an
+      # illegal instruction as soon as a vectorized path runs. x86-64-v3 is the level
+      # package-windows.ps1 builds for other PCs, and it is the highest the consumer parts share.
       - name: Configure
         shell: cmd
         run: |
@@ -100,6 +105,7 @@ jobs:
             -DKYTY_RELEASE_TAG=${{ needs.metadata.outputs.release_tag }} ^
             -DCMAKE_C_COMPILER=clang-cl ^
             -DCMAKE_CXX_COMPILER=clang-cl ^
+            -DKYTY_MARCH=x86-64-v3 ^
             -DCMAKE_PREFIX_PATH="%Qt6_DIR%"
 
       - name: Build
