@@ -1532,9 +1532,13 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 			EXIT("Failed to apply game cheat\n");
 		}
 	}
-	DemonsSoulsIdle::Install(m_programs.empty() ? nullptr : m_programs.front());
+	// Every program, not m_programs.front(): the idle and GPU-page patches replace eboot.bin
+	// specifically and reject anything else, so which module happens to be first decided whether
+	// they ever ran at all. Install() returns immediately once it has installed, so the extra
+	// calls are free. The order of the three passes is unchanged.
+	for (auto* program : m_programs) DemonsSoulsIdle::Install(program);
 	for (auto* program : m_programs) DemonsSoulsCopy::Install(program);
-	DemonsSoulsGpuPages::Install(m_programs.empty() ? nullptr : m_programs.front());
+	for (auto* program : m_programs) DemonsSoulsGpuPages::Install(program);
 	StartAllModules();
 
 	LOGF_COLOR(Log::Color::BrightYellow, "---\n--- Execute: %s\n---\n", "Main");

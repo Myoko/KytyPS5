@@ -24,19 +24,37 @@ void KYTY_SYSV_ABI WaitForWork() {
 
 void Install(Program* program) {
 #if defined(__x86_64__) || defined(_M_X64)
-	if (cave != 0 || program == nullptr || !Libs::Graphics::DemonsSouls::IsSupportedGame() ||
-	    program->file_name.filename() != "eboot.bin" ||
-	    program->mapped_size < PollOffset + PollBytes.size() || program->mapped_size > CaveOffset ||
-	    program->base_vaddr > UINT64_MAX - CaveOffset - PageSize)
+	if (cave != 0 || program == nullptr || program->file_name.filename() != "eboot.bin")
 		return;
+	// Past this point the program is the one this patch targets, so every refusal gets a line.
+	// Without them there is no way to tell a build whose code differs from one the patch never
+	// reached: the caller only reports the signature mismatch it saw, and a silent return here
+	// is indistinguishable from the patch never being called.
+	if (!Libs::Graphics::DemonsSouls::IsSupportedGame()) {
+		LOGF("Demon's Souls idle wait: eboot.bin carries a title this patch does not target\n");
+		return;
+	}
+	if (program->mapped_size < PollOffset + PollBytes.size() || program->mapped_size > CaveOffset) {
+		LOGF("Demon's Souls idle wait: mapped size %llu is outside the patchable range\n",
+		     static_cast<unsigned long long>(program->mapped_size));
+		return;
+	}
+	if (program->base_vaddr > UINT64_MAX - CaveOffset - PageSize) {
+		LOGF("Demon's Souls idle wait: base %llx leaves no room for the cave\n",
+		     static_cast<unsigned long long>(program->base_vaddr));
+		return;
+	}
 	const auto                            call = program->base_vaddr + CallOffset;
 	const auto                            poll = program->base_vaddr + PollOffset;
 	std::array<uint8_t, CallBytes.size()> call_bytes {};
 	std::array<uint8_t, PollBytes.size()> poll_bytes {};
 	// Executable modules are private runtime allocations, not GPU backing aliases.
 	if (!Libs::Graphics::HostMemoryRangeIsReadable(call, call_bytes.size()) ||
-	    !Libs::Graphics::HostMemoryRangeIsReadable(poll, poll_bytes.size()))
+	    !Libs::Graphics::HostMemoryRangeIsReadable(poll, poll_bytes.size())) {
+		LOGF("Demon's Souls idle wait: %llx or %llx is not readable yet\n",
+		     static_cast<unsigned long long>(call), static_cast<unsigned long long>(poll));
 		return;
+	}
 	std::memcpy(call_bytes.data(), reinterpret_cast<const void*>(call), call_bytes.size());
 	std::memcpy(poll_bytes.data(), reinterpret_cast<const void*>(poll), poll_bytes.size());
 	if (!Matches(call_bytes, poll_bytes)) {
