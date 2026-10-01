@@ -628,7 +628,9 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		indirect_offset = owner.Offset(indirect_args);
 	}
 
-	const bool        chain            = DemonsSouls::IsSupportedGame();
+	// IsAnalysedBuild, not IsSupportedGame: skipping the write-hazard barrier below depends on
+	// this build's dispatch dependencies and has no byte-level guard of its own.
+	const bool        chain            = DemonsSouls::IsAnalysedBuild();
 	auto              vk_buffer        = chain ? buffer.ChainHandle() : buffer.Handle();
 	PreparedBindings* descriptor_stage = &bindings;
 	CommitBindings(buffer, vk::PipelineBindPoint::eCompute, pipeline,

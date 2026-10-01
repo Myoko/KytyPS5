@@ -113,6 +113,15 @@ jobs:
         run: |
           cmake --build _Build/windows --target launcher audio_out2_port_tests ime_dialog_tests virtual_memory_allocation_tests --parallel
 
+      # continue-on-error on purpose: what the artifact must contain is the emulator, the
+      # launcher and the tests above. This extra target is only the standalone precompiler that
+      # the local tooling drives, so a failure here must not cost the whole build.
+      - name: Build the shader precompile tool
+        shell: cmd
+        continue-on-error: true
+        run: |
+          cmake --build _Build/windows --target kyty_shader_precompile --parallel
+
       - name: Test
         shell: cmd
         run: |
@@ -122,6 +131,21 @@ jobs:
         shell: cmd
         run: |
           cmake --install _Build/windows --prefix _Build/windows/install
+
+      # run-windows.ps1 and precompile-windows.ps1 look for these next to kyty_emulator.exe.
+      # kyty_shader_precompile.exe writes the PPSA*.shaders prefetch inputs that KYTY_SHADER_PREFETCH
+      # reads; without the file the emulator logs 'no inputs for this GPU and driver' and translates
+      # every shader on the render thread while the game runs instead of in the background.
+      # kyty_emulator_clang_lld_link.map is what profreport.exe symbolizes a profile against.
+      - name: Stage the local tooling into the install tree
+        shell: pwsh
+        run: |
+          $dst = '_Build/windows/install'
+          New-Item -ItemType Directory -Force $dst | Out-Null
+          Get-ChildItem -Path _Build/windows -Recurse -Filter kyty_shader_precompile.exe -ErrorAction SilentlyContinue |
+            Select-Object -First 1 | ForEach-Object { Copy-Item $_.FullName $dst -Force; Write-Host "staged $($_.FullName)" }
+          $map = '_Build/windows/kyty_emulator_clang_lld_link.map'
+          if (Test-Path $map) { Copy-Item $map $dst -Force; Write-Host "staged $map" }
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
