@@ -38,8 +38,13 @@ jobs:
       - name: Setup Visual Studio environment
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Setup Ninja
-        uses: seanmiddleditch/gha-setup-ninja@v5
+      # No Setup Ninja step: seanmiddleditch/gha-setup-ninja@v5 now downloads a release asset it
+      # cannot read ("Invalid or unsupported zip format. No END header found") and fails the job
+      # before configure. It is not needed - the windows-2022 image already has ninja on PATH from
+      # Visual Studio, at
+      # %ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja
+      # - and upstream's main workflow dropped the step for the same reason (it appears zero times
+      # there). Whatever ninja this leaves on PATH is the one the VS environment provides.
 
       - name: Locate vcpkg
         id: vcpkg
