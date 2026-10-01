@@ -30,7 +30,16 @@
     "",
     "* KYTY_GPU_BUFFER_PAGES only takes effect for the title and version the guest patches were",
     "  verified against (src/loader/demonsSoulsGpuPages.cpp checks DemonsSouls::IsSupportedGame(),",
-    "  which is PPSA01341 01.007.000). Harmless on another version; it does nothing."
+    "  which is PPSA01341 01.007.000). Harmless on another version; it does nothing.",
+    "",
+    "* KYTY_READBACK_QUEUE is the one value changed from the contributor's file, where it is 1.",
+    "  On an RTX 4070 SUPER with a 12 GB card, mode 1 loses the device a couple of seconds into",
+    "  play: vkWaitSemaphores on the transfer queue's timeline returns VK_ERROR_DEVICE_LOST (-4)",
+    "  and readback-queue.h exits. Nothing in the 28 commits merged here touches that file or the",
+    "  switch, so it is still open upstream. Modes 2 and 3 are not alternatives: bufferCache.cpp",
+    "  documents 2 as mode 1 plus readbacks whose last writer is submitted but still running, and",
+    "  3 as mode 1 plus a duplicate graphics-queue copy for comparison, so both take the same or a",
+    "  longer path. Only 0 avoids it, at the cost of the 34.80 -> 36.05 fps the mode is worth."
   ],
   "checkpoint": "stage1-20260927",
   "command": [
@@ -98,7 +107,7 @@
     "KYTY_TEXTURE_RESOLVE_PAGES": "1",
     "KYTY_ASYNC_REPROTECT": "1",
     "KYTY_READBACK_NARROW": "1",
-    "KYTY_READBACK_QUEUE": "1",
+    "KYTY_READBACK_QUEUE": "0",
 
     "KYTY_BUFFER_RECLAIM": "1",
     "KYTY_DRAW_PACKETS": "1",
