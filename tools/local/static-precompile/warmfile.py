@@ -16,10 +16,6 @@ from pathlib import Path
 
 import numpy as np
 
-# Was Path(r'C:\Users\chenxiao\Documents\KytyPS5-pr500'), which pinned every user of this
-# module to one machine: importing it failed with FileNotFoundError on vulkan_core.h
-# anywhere else, because VK_CORE below is read at import time. precompile.py already
-# derives the same root the same way, and this file sits beside it.
 REPO = Path(__file__).resolve().parents[3]
 CACHE_ROOT = REPO / '_PipelineCache' / 'warmup-v2'
 OUT = REPO / '_Build' / 're' / 'agent-warm'

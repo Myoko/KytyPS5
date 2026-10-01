@@ -12,25 +12,12 @@
 
 namespace Libs::Graphics::DemonsSouls {
 bool IsSupportedGame() {
-	// Called by the patched paths after game metadata has been loaded. Each of them verifies the
-	// guest bytes it replaces, so the title is the whole gate here.
+	// Called by the dispatch path after game metadata has been loaded.
 	static const bool supported = [] {
 		std::string title;
-		return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) && IsSameTitle(title);
+		return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) && IsSupportedTitle(title);
 	}();
 	return supported;
-}
-
-bool IsAnalysedBuild() {
-	// The barrier-omission path, which has no byte-level guard and therefore stays on the build
-	// whose compute-dispatch dependencies were checked.
-	static const bool analysed = [] {
-		std::string title, version;
-		return Loader::SystemContentParamSfoGetString("TITLE_ID", &title) &&
-		       Loader::SystemContentParamSfoGetString("APP_VER", &version) &&
-		       IsSupportedVersion(title, version);
-	}();
-	return analysed;
 }
 
 // Verified shader semantics: dst[i] = src[i % period], i < count. Only the

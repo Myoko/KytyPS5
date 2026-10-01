@@ -798,10 +798,18 @@ void BufferCache::DeleteBuffer(BufferId id) {
 		return;
 	}
 	Unregister(id);
-	if (m_scheduler.Active()) {
-		m_scheduler.DeferOperation([this, id] { m_slot_buffers.erase(id); });
-	} else {
+	// KYTY_READBACK_QUEUE: a copy on the transfer queue may still read it after the graphics timeline
+	// passes (it waits on that timeline only for the bytes' last writer). Freed then, its memory was
+	// in use again on GPUs short of VRAM (frequent GC): VK_ERROR_DEVICE_LOST.
+	const uint64_t readback = m_readback_queue ? m_readback_queue->Submitted() : 0;
+	const auto     erase    = [this, id, readback] {
+		if (readback != 0 && m_readback_queue) m_readback_queue->Wait(readback);
 		m_slot_buffers.erase(id);
+	};
+	if (m_scheduler.Active()) {
+		m_scheduler.DeferOperation(erase);
+	} else {
+		erase();
 	}
 }
 
@@ -1521,7 +1529,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 		               "map=%.1f\n",
 		               ms, static_cast<unsigned long long>(vaddr), static_cast<unsigned long long>(size), path,
 		               at(1), at(2), at(3));
-    });
+    }, SlowLog::HitchThreshold());
 	DrainGuestReadback(vaddr, size);
 	marks[1] = Clock::now();
 	if (!GuestRange {vaddr, size}.Valid()) {
