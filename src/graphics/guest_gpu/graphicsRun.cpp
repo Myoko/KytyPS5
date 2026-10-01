@@ -1050,7 +1050,7 @@ void CommandProcessor::SetPredication(uint32_t condition, uint32_t op, uint32_t 
 	}
 }
 
-void CommandProcessor::DrawIndex(DrawIndexArgs args) {
+bool CommandProcessor::DrawIndex(DrawIndexArgs args) {
 	CheckBuffer();
 
 	args.index_type_and_size = m_index_type_and_size;
@@ -1061,7 +1061,43 @@ void CommandProcessor::DrawIndex(DrawIndexArgs args) {
 		LOGF("\t draw indexed offsets: base_vertex = %" PRId32 ", first_instance = %" PRIu32 "\n",
 		     args.base_vertex, args.first_instance);
 	}
-	m_renderer.GetRenderExecutor().DrawIndex(m_submit_id, CurrentBuffer(), args);
+	return m_renderer.GetRenderExecutor().DrawIndex(m_submit_id, CurrentBuffer(), args);
+}
+
+bool CommandProcessor::TryGpuIndirectDraw(uint64_t args, uint32_t count, uint32_t stride, bool indexed) {
+	// Reading GPU-written arguments on the CPU waits for the GPU to finish all work queued so
+	// far (0.1-0.3 ms). The draw uses them on the GPU instead, as native XPR runs do: an indexed
+	// triangle list over the whole index buffer (primitive restart with a custom index scans the
+	// indices a draw uses), or a non-indexed draw of a directly drawn type (a triangle strip here).
+	using Prospero::PrimitiveType;
+	const auto     primitive = m_ucfg.GetPrimType();
+	const uint64_t size      = indexed ? sizeof(DrawIndexedIndirectArgs) : sizeof(DrawIndirectArgs);
+	if (count == 0 || (args & 3u) != 0 || stride % 4u != 0 || stride < size ||
+	    (indexed ? primitive != PrimitiveType::kTriList || m_index_type_and_size > 1 || !m_index_base_addr ||
+	                   !m_index_buffer_size
+	             : primitive != PrimitiveType::kTriList && primitive != PrimitiveType::kTriStrip &&
+	                   primitive != PrimitiveType::kTriFan && primitive != PrimitiveType::kLineList &&
+	                   primitive != PrimitiveType::kLineStrip && primitive != PrimitiveType::kPointList))
+		return false;
+	const uint64_t bytes     = uint64_t {count - 1u} * stride + size;
+	auto&          resources = GetGpuResources();
+	if (!resources.IsMapped(args, bytes) || !resources.GetBufferCache().HasGpuDirtyBytes(args, bytes) ||
+	    resources.GetTextureCache().IsRegionGpuModified(args, bytes))
+		return false;
+	if (!indexed)
+		return DrawIndexAuto({.vertex_count    = 1,
+		                      .instance_count  = 1,
+		                      .offset_source   = DrawOffsetSource::IndirectArgs,
+		                      .gpu_args        = args,
+		                      .gpu_args_count  = count,
+		                      .gpu_args_stride = stride});
+	return DrawIndex({.index_count     = m_index_buffer_size,
+	                  .index_addr      = reinterpret_cast<const void*>(m_index_base_addr),
+	                  .instance_count  = 1,
+	                  .offset_source   = DrawOffsetSource::IndirectArgs,
+	                  .gpu_args        = args,
+	                  .gpu_args_count  = count,
+	                  .gpu_args_stride = stride});
 }
 
 void CommandProcessor::DrawIndexOffset(uint32_t index_offset, uint32_t index_count) {
@@ -1236,6 +1272,9 @@ void CommandProcessor::DrawIndirect(uint32_t data_offset, uint32_t draw_initiato
 
 	const auto* args_addr =
 	    reinterpret_cast<const void*>(m_draw_indirect_args_base_addr + data_offset);
+	if (TryGpuIndirectDraw(m_draw_indirect_args_base_addr + data_offset, 1,
+	                       indexed ? sizeof(DrawIndexedIndirectArgs) : sizeof(DrawIndirectArgs), indexed))
+		return;
 	if (!Libs::LibKernel::Memory::SyncGpuCleanBacking(
 	        m_draw_indirect_args_base_addr + data_offset,
 	        indexed ? sizeof(DrawIndexedIndirectArgs) : sizeof(DrawIndirectArgs))) {
@@ -1345,6 +1384,8 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 
 	const auto args_size = indexed ? sizeof(DrawIndexedIndirectArgs) : sizeof(DrawIndirectArgs);
 	EXIT_NOT_IMPLEMENTED(stride_in_bytes < args_size);
+	if (TryGpuIndirectDraw(m_draw_indirect_args_base_addr + data_offset, draw_count, stride_in_bytes, indexed))
+		return;
 	if (!Libs::LibKernel::Memory::SyncGpuCleanBacking(
 	        m_draw_indirect_args_base_addr + data_offset,
 	        static_cast<uint64_t>(draw_count - 1u) * stride_in_bytes + args_size)) {
@@ -1537,13 +1578,13 @@ void CommandProcessor::DispatchIndirectAddress(uint64_t args_addr, uint32_t mode
 	DispatchDirect(args.thread_group_x, args.thread_group_y, args.thread_group_z, mode, args_addr);
 }
 
-void CommandProcessor::DrawIndexAuto(DrawAutoArgs args) {
+bool CommandProcessor::DrawIndexAuto(DrawAutoArgs args) {
 	CheckBuffer();
 
 	if (args.instance_count == 0) {
 		args.instance_count = m_num_instances;
 	}
-	m_renderer.GetRenderExecutor().DrawAuto(m_submit_id, CurrentBuffer(), args);
+	return m_renderer.GetRenderExecutor().DrawAuto(m_submit_id, CurrentBuffer(), args);
 }
 
 void CommandProcessor::WaitFlipDone(uint32_t video_out_handle, uint32_t display_buffer_index) {

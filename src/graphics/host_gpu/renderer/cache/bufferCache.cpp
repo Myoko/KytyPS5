@@ -167,7 +167,12 @@ std::shared_ptr<BufferCache::GuestReadback> BufferCache::BeginGuestReadback(
 		LiveCounters::Add(LiveCounters::RbRejectBacking);
 		return {};
 	}
-	if (m_texture_cache.HasTrackedDataOverlap(begin, end - begin)) {
+	// Only an image the GPU wrote holds bytes the buffer lacks. Other images over the pages
+	// (textures the game streams in, images the buffer is newer than) take no part in the
+	// copy, as in the synchronous download, and FindImage drains the copy before any use of
+	// them. Refusing them sent 1-byte guest reads of texture pages (~5 a frame) to a
+	// render-thread download of ~70 us each.
+	if (m_texture_cache.HasGpuWrittenImageOverlap(begin, end - begin)) {
 		// KYTY_READBACK_NARROW: the widening is speculative; an image elsewhere in the window
 		// leaves the request's own pages, if no image covers them, to an asynchronous copy.
 		const bool narrow = kyty_local_readback_narrow_mode.load(std::memory_order_relaxed) != 0;
@@ -176,7 +181,7 @@ std::shared_ptr<BufferCache::GuestReadback> BufferCache::BeginGuestReadback(
 			end   = std::min((address + size + TRACKER_PAGE_SIZE - 1) & ~(TRACKER_PAGE_SIZE - 1),
 			               buffer.CpuAddress() + buffer.Size());
 		}
-		if (!narrow || m_texture_cache.HasTrackedDataOverlap(begin, end - begin)) {
+		if (!narrow || m_texture_cache.HasGpuWrittenImageOverlap(begin, end - begin)) {
 			LiveCounters::Add(LiveCounters::RbRejectImage);
 			return {};
 		}
@@ -516,8 +521,30 @@ struct BufferCache::CopyFeedback {
 	};
 	Buffer download;
 	std::array<Slot, SlotCount> slots {};
-	std::map<uint64_t, size_t> index;
+	// Slot of each snapshot by its guest address, sorted by address (at most SlotCount entries:
+	// a search of one array, where a map walked cold tree nodes on every GPU write).
+	std::vector<std::pair<uint64_t, size_t>> index;
 	size_t cursor = 0;
+	[[nodiscard]] auto UpperBound(uint64_t address) {
+		return std::upper_bound(index.begin(), index.end(), address,
+		                        [](uint64_t value, const auto& entry) { return value < entry.first; });
+	}
+	[[nodiscard]] auto LowerBound(uint64_t address) {
+		return std::lower_bound(index.begin(), index.end(), address,
+		                        [](const auto& entry, uint64_t value) { return entry.first < value; });
+	}
+	bool Erase(uint64_t address) {
+		const auto it = LowerBound(address);
+		if (it == index.end() || it->first != address) return false;
+		index.erase(it);
+		return true;
+	}
+	bool Insert(uint64_t address, size_t slot) {
+		const auto it = LowerBound(address);
+		if (it != index.end() && it->first == address) return false;
+		index.insert(it, {address, slot});
+		return true;
+	}
 	// Index entries per 16 MiB granule, hashed into 4096 counters: a range whose granules count
 	// none overlaps no entry, and the walk of the index (a cold tree) is skipped. Counters two
 	// granules share only cost that walk.
@@ -546,17 +573,18 @@ void BufferCache::InvalidateCopyFeedback(uint64_t vaddr, uint64_t size) {
 	if (!m_copy_feedback || m_copy_feedback->index.empty()) return;
 	auto& feedback = *m_copy_feedback;
 	if (!feedback.MayOverlap(vaddr, size)) return;
-	auto it = feedback.index.lower_bound(vaddr);
+	auto it = feedback.LowerBound(vaddr);
 	if (it != feedback.index.begin()) {
 		const auto prior = std::prev(it);
 		const auto& slot = feedback.slots[prior->second];
 		if (slot.address + slot.size > vaddr) it = prior;
 	}
-	while (it != feedback.index.end() && it->first < vaddr + size) {
-		feedback.Count(feedback.slots[it->second], -1);
-		feedback.slots[it->second].address = 0;
-		it = feedback.index.erase(it);
+	auto last = it;
+	for (; last != feedback.index.end() && last->first < vaddr + size; ++last) {
+		feedback.Count(feedback.slots[last->second], -1);
+		feedback.slots[last->second].address = 0;
 	}
+	feedback.index.erase(it, last);
 }
 
 void BufferCache::ScheduleCopyFeedback(uint64_t vaddr, uint64_t size) {
@@ -599,7 +627,7 @@ void BufferCache::ScheduleCopyFeedback(uint64_t vaddr, uint64_t size) {
 	}
 	if (m_resources->MappingEpoch() != mapping_epoch) return;
 	auto& slot = feedback.slots[selected];
-	if (slot.address && feedback.index.erase(slot.address) != 0) {
+	if (slot.address && feedback.Erase(slot.address)) {
 		feedback.Count(slot, -1);
 	}
 	InvalidateCopyFeedback(vaddr, size);
@@ -609,7 +637,7 @@ void BufferCache::ScheduleCopyFeedback(uint64_t vaddr, uint64_t size) {
 	    vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
 	    vk::AccessFlagBits::eHostRead);
 	slot = {vaddr, size, m_scheduler.CurrentTick(), mapping_epoch, owner->Handle()};
-	if (feedback.index.emplace(vaddr, selected).second) feedback.Count(slot, 1);
+	if (feedback.Insert(vaddr, selected)) feedback.Count(slot, 1);
 	feedback.cursor = (selected + 1) % CopyFeedback::SlotCount;
 }
 
@@ -642,7 +670,7 @@ bool BufferCache::TryReadCopyFeedback(Buffer& buffer, uint64_t vaddr, uint64_t s
 	for (const auto& copy: copies) {
 		auto cursor = copy.address;
 		while (cursor < copy.address + copy.size) {
-			auto it = feedback.index.upper_bound(cursor);
+			auto it = feedback.UpperBound(cursor);
 			if (it == feedback.index.begin()) return false;
 			--it;
 			const auto& slot = feedback.slots[it->second];
@@ -669,6 +697,34 @@ bool BufferCache::TryReadCopyFeedback(Buffer& buffer, uint64_t vaddr, uint64_t s
 	// Only complete dirty-page coverage allows dropping protection. CPU-clean bytes
 	// are never published from the snapshot. Any later upload/GPU write invalidates it.
 	m_memory_tracker.UnmarkRegionAsGpuModified(begin, end - begin);
+	return true;
+}
+
+// GPU thread: a guest access to bytes a copy-feedback snapshot holds (copied after their last GPU
+// write, the copy complete) is served from it at once, instead of a transfer and a second command
+// for the reader; the whole snapshot then, whose other pages would fault one by one. Not while a
+// pending readback covers the pages: its copy would land later.
+bool BufferCache::TryGuestReadFromFeedback(uint64_t vaddr, uint64_t size, bool is_write) {
+	if (!m_copy_feedback || m_copy_feedback->index.empty()) return false;
+	auto& feedback = *m_copy_feedback;
+	if (!feedback.MayOverlap(vaddr, size) || !IsRegionRegistered(vaddr, size)) return false;
+	auto first = vaddr, last = vaddr + size;
+	if (auto it = feedback.UpperBound(vaddr); it != feedback.index.begin()) {
+		const auto& slot = feedback.slots[std::prev(it)->second];
+		if (slot.address <= vaddr && vaddr < slot.address + slot.size) {
+			first = std::min(first, slot.address);
+			last  = std::max(last, slot.address + slot.size);
+		}
+	}
+	const auto begin = first & ~(TRACKER_PAGE_SIZE - 1);
+	const auto end   = (last + TRACKER_PAGE_SIZE - 1) & ~(TRACKER_PAGE_SIZE - 1);
+	for (const auto& pending: m_guest_readbacks)
+		if (pending && pending->begin < end && begin < pending->begin + pending->size) return false;
+	auto& buffer = m_slot_buffers[FindBuffer(vaddr, size)];
+	if (last - first == size || !buffer.IsInBounds(first, last - first) || !TryReadCopyFeedback(buffer, first, last - first)) {
+		if (!TryReadCopyFeedback(buffer, vaddr, size)) return false;
+	}
+	if (is_write) m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
 	return true;
 }
 
@@ -1067,6 +1123,7 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 		std::shared_ptr<GuestReadback> request;
 		auto& gpu = m_scheduler.Context().GetGpu();
 		gpu.SendCommandSync([&] {
+			if (TryGuestReadFromFeedback(vaddr, size, is_write)) return;
 			bool completed = false;
 			request = BeginGuestReadback(vaddr, size, &completed);
 			if (!request && (is_write || !completed)) {
@@ -1288,7 +1345,9 @@ bool BufferCache::SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t siz
 
 // The CPU-dirty pages of a mapped range copied into the buffer (the written ones then GPU-owned).
 void BufferCache::UploadDirtyRanges(Buffer& buffer, uint64_t vaddr, uint64_t size, bool is_written) {
-	std::vector<vk::BufferCopy> copies;
+	// Reused per thread: the memory tracker refuses a nested upload (CheckNotInUploadCallback).
+	thread_local std::vector<vk::BufferCopy> copies;
+	copies.clear();
 	uint64_t                    total_size = 0;
 	vk::Buffer                  source;
 	m_memory_tracker.ForEachUploadRange(
@@ -1632,8 +1691,16 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 	}
 	if (src_memory && dst_memory && !IsRegionGpuModified(dst_vaddr, size) &&
 	    !IsRegionGpuModified(src_vaddr, size) && !m_texture_cache.FindImageFromRange(src_vaddr, size)) {
-		std::memcpy(reinterpret_cast<void*>(dst_vaddr), reinterpret_cast<const void*>(src_vaddr),
-		            size);
+		// The game's linear copies mostly rewrite what the destination already holds (95% of the
+		// bytes in the fixed scene): only the destination pages whose bytes differ are written, so
+		// the others stay clean (no write fault, no upload of their bytes to the GPU again).
+		for (uint64_t at = 0; at < size;) {
+			const auto bytes = std::min(TRACKER_PAGE_SIZE - (dst_vaddr + at) % TRACKER_PAGE_SIZE, size - at);
+			auto*       to   = reinterpret_cast<void*>(dst_vaddr + at);
+			const auto* from = reinterpret_cast<const void*>(src_vaddr + at);
+			if (std::memcmp(to, from, bytes) != 0) std::memcpy(to, from, bytes);
+			at += bytes;
+		}
 		return;
 	}
 

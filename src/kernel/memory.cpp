@@ -1026,8 +1026,8 @@ bool TryReadGpuCleanBackingOnWatchedPage(uint64_t vaddr, void* data, uint64_t si
 }
 
 bool TryReadGpuShaderSpan(uint64_t vaddr, void* data, uint64_t size, bool clean) {
-	if (!data || size < 8 || size > 64 || size % 4 != 0 || !g_gpu_resources || !Graphics::GuestGpu::IsGpuThread() ||
-	    !IsGpuAddressRange(vaddr, size))
+	if (!data || size < 8 || size > (clean ? 4096u : 64u) || size % 4 != 0 || !g_gpu_resources ||
+	    !Graphics::GuestGpu::IsGpuThread() || !IsGpuAddressRange(vaddr, size))
 		return false;
 	if (!clean && !g_gpu_resources->HasReadWatchers(vaddr, size)) {
 		// 8..64 bytes of whole words: fixed-size moves inline, a variable-size memcpy is a CRT call
@@ -1071,9 +1071,15 @@ uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size) {
 
 	const auto clamped_size = g_virtual_ranges->ClampRangeSize(vaddr, size);
 	if (clamped_size == 0) {
-		EXIT("Memory: attempted to access invalid address 0x%016" PRIx64 " with size 0x%016" PRIx64
-		     "\n",
-		     vaddr, size);
+		// A descriptor over memory the guest has released (a dispatch in a newly streamed area
+		// stopped the emulator here): the caller binds nothing, as for a null descriptor.
+		static std::atomic<uint32_t> logged {0};
+		if (logged.fetch_add(1, std::memory_order_relaxed) < 32) {
+			std::printf("Memory: buffer range at an unmapped address ignored, addr=0x%016" PRIx64 " size=0x%016" PRIx64
+			            "\n",
+			            vaddr, size);
+		}
+		return 0;
 	}
 	if (clamped_size != size) {
 		LOGF("Memory: clamped buffer range addr=0x%016" PRIx64 " size=0x%016" PRIx64
@@ -1096,11 +1102,25 @@ void MappedParts(uint64_t vaddr, uint64_t size, std::vector<std::pair<uint64_t, 
 }
 
 void WriteBacking(uint64_t vaddr, const void* data, uint64_t size) noexcept {
-	if (!TryWriteBacking(vaddr, data, size)) {
-		EXIT("Memory: required direct-backing write failed, addr=0x%016" PRIx64
-		     " size=0x%016" PRIx64 "\n",
-		     vaddr, size);
+	if (TryWriteBacking(vaddr, data, size)) {
+		return;
 	}
+	// GPU results (readbacks, downloads) for memory the guest unmapped meanwhile have nowhere to
+	// go: the parts still mapped are written, and only a failure there is an error.
+	std::vector<std::pair<uint64_t, uint64_t>> parts;
+	MappedParts(vaddr, size, &parts);
+	uint64_t written = 0;
+	for (const auto& [address, bytes]: parts) {
+		if (!TryWriteBacking(address, static_cast<const uint8_t*>(data) + (address - vaddr), bytes)) {
+			EXIT("Memory: required direct-backing write failed, addr=0x%016" PRIx64 " size=0x%016" PRIx64
+			     " (mapped part 0x%016" PRIx64 " size=0x%016" PRIx64 ")\n",
+			     vaddr, size, address, bytes);
+		}
+		written += bytes;
+	}
+	std::printf("Memory: GPU data for unmapped guest memory dropped, addr=0x%016" PRIx64 " size=0x%" PRIx64
+	            " (0x%" PRIx64 " bytes still mapped) caller=%p\n",
+	            vaddr, size, written, __builtin_return_address(0));
 }
 
 void InvalidateMemory(uint64_t vaddr, uint64_t size) {

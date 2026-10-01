@@ -33,6 +33,7 @@
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window.h"
 #include "graphics/presentation/window/windowInternal.h"
+#include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "kernel/memory.h"
 #include "libs/controller.h"
 #include "loader/systemContent.h"
@@ -49,6 +50,7 @@
 #include <fmt/format.h>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <vulkan/vk_platform.h>
 
@@ -97,6 +99,19 @@ static bool HasExtension(const std::vector<vk::ExtensionProperties>& extensions,
 static bool HasExtension(const std::vector<const char*>& extensions, const char* name) {
 	return std::any_of(extensions.begin(), extensions.end(),
 	                   [name](const char* ext) { return strcmp(ext, name) == 0; });
+}
+
+// VK_KHR_pipeline_binary for the static precompile's pipelines (pipelineBinaries.h), with maintenance5
+// for the pipeline creation flags it needs. KYTY_PIPELINE_BINARIES=0: the static pipeline cache instead.
+static void AddPipelineBinaryExtensions(const std::vector<vk::ExtensionProperties>& available,
+                                        std::vector<const char*>&                   extensions) {
+	const char* setting = std::getenv("KYTY_PIPELINE_BINARIES");
+	if ((setting == nullptr || std::string_view(setting) != "0") &&
+	    HasExtension(available, VK_KHR_PIPELINE_BINARY_EXTENSION_NAME) &&
+	    HasExtension(available, VK_KHR_MAINTENANCE_5_EXTENSION_NAME)) {
+		extensions.push_back(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
+		extensions.push_back(VK_KHR_PIPELINE_BINARY_EXTENSION_NAME);
+	}
 }
 
 static bool HasLayer(const std::vector<vk::LayerProperties>& layers, const char* name) {
@@ -694,7 +709,17 @@ static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, const V
 		provoking_vertex.pNext = supported_features2.pNext;
 		supported_features2.pNext = &provoking_vertex;
 	}
+	const bool binary_extensions = HasExtension(device_extensions, VK_KHR_PIPELINE_BINARY_EXTENSION_NAME);
+	vk::PhysicalDevicePipelineBinaryFeaturesKHR supported_binaries {};
+	vk::PhysicalDeviceMaintenance5FeaturesKHR   supported_maintenance5 {};
+	if (binary_extensions) {
+		supported_maintenance5.pNext = supported_features2.pNext;
+		supported_binaries.pNext     = &supported_maintenance5;
+		supported_features2.pNext    = &supported_binaries;
+	}
 	physical_device.getFeatures2(&supported_features2);
+	graphics.pipeline_binaries_enabled =
+	    binary_extensions && supported_binaries.pipelineBinaries && supported_maintenance5.maintenance5;
 	graphics.provoking_vertex_last_enabled = provoking_extension && provoking_vertex.provokingVertexLast;
 	graphics.attachment_feedback_loop_enabled =
 	    feedback_extensions && feedback_layout.attachmentFeedbackLoopLayout &&
@@ -781,6 +806,20 @@ static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, const V
 		robustness2.robustImageAccess2  = supported_robustness2.robustImageAccess2;
 		robustness2.nullDescriptor      = supported_robustness2.nullDescriptor;
 	}
+	// Byte-exact device bounds make the shaders' own storage buffer checks redundant
+	// (ShaderRecompiler::SetDeviceStorageBufferBounds). KYTY_ROBUST_BUFFERS=0 keeps them.
+	bool device_buffer_bounds = false;
+	if (robustness2.robustBufferAccess2 == VK_TRUE) {
+		vk::PhysicalDeviceRobustness2PropertiesEXT robustness2_properties {};
+		vk::PhysicalDeviceProperties2              properties {};
+		properties.pNext = &robustness2_properties;
+		physical_device.getProperties2(&properties);
+		const char* setting  = std::getenv("KYTY_ROBUST_BUFFERS");
+		device_buffer_bounds = robustness2_properties.robustStorageBufferAccessSizeAlignment == 1 &&
+		                       !(setting != nullptr && std::string_view(setting) == "0");
+	}
+	ShaderRecompiler::SetDeviceStorageBufferBounds(device_buffer_bounds);
+	LOGF("Vulkan storage buffer bounds: %s\n", device_buffer_bounds ? "device" : "shader");
 
 	const bool subgroup_size_control_enabled =
 	    graphics.compute_subgroup_size_control_enabled &&
@@ -823,6 +862,25 @@ static vk::Device VulkanCreateDevice(vk::PhysicalDevice physical_device, const V
 		present_id.presentId = VK_TRUE;
 		present_id.pNext     = const_cast<void*>(create_info.pNext);
 		create_info.pNext    = &present_id;
+	}
+	vk::PhysicalDevicePipelineBinaryFeaturesKHR     binaries {};
+	vk::PhysicalDeviceMaintenance5FeaturesKHR       maintenance5 {};
+	vk::DevicePipelineBinaryInternalCacheControlKHR internal_cache {};
+	if (graphics.pipeline_binaries_enabled) {
+		maintenance5.maintenance5 = VK_TRUE;
+		maintenance5.pNext        = const_cast<void*>(create_info.pNext);
+		binaries.pipelineBinaries = VK_TRUE;
+		binaries.pNext            = &maintenance5;
+		create_info.pNext         = &binaries;
+		vk::PhysicalDevicePipelineBinaryPropertiesKHR binary_properties {};
+		vk::PhysicalDeviceProperties2                 properties {};
+		properties.pNext = &binary_properties;
+		physical_device.getProperties2(&properties);
+		if (!graphics.pipeline_binary_internal_cache && binary_properties.pipelineBinaryInternalCacheControl) {
+			internal_cache.disableInternalCache = VK_TRUE;
+			internal_cache.pNext                = create_info.pNext;
+			create_info.pNext                   = &internal_cache;
+		}
 	}
 	create_info.flags                   = {};
 	create_info.pQueueCreateInfos       = queue_create_infos.data();
@@ -1238,9 +1296,15 @@ void WindowContext::CreateVulkan() {
 		if (FrameGen::Requested() && HasExtension(available_extensions, VK_KHR_PRESENT_ID_EXTENSION_NAME)) {
 			device_extensions.push_back(VK_KHR_PRESENT_ID_EXTENSION_NAME);
 		}
+		AddPipelineBinaryExtensions(available_extensions, device_extensions);
 	}
 
 	VulkanInitSubgroupSizeControl(graphic_ctx.physical_device, graphic_ctx);
+	// The pipelines it makes from the static precompile's binaries would stay in the driver's own cache
+	// too; what it compiles goes to the local driver cache anyway. KYTY_PIPELINE_BINARY_INTERNAL_CACHE=1
+	// keeps it.
+	const char* internal_cache                 = std::getenv("KYTY_PIPELINE_BINARY_INTERNAL_CACHE");
+	graphic_ctx.pipeline_binary_internal_cache = internal_cache != nullptr && std::string_view(internal_cache) == "1";
 
 	graphic_ctx.device = VulkanCreateDevice(graphic_ctx.physical_device, r, queue_family,
 	                                        device_extensions, graphic_ctx);
@@ -1375,6 +1439,7 @@ bool CreateHeadlessGraphicContext(GraphicContext& graphic_ctx) {
 			device_extensions.push_back(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME);
 			device_extensions.push_back(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME);
 		}
+		AddPipelineBinaryExtensions(available_extensions, device_extensions);
 	}
 	VulkanInitSubgroupSizeControl(graphic_ctx.physical_device, graphic_ctx);
 	const VulkanExtensions no_layers {};

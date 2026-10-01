@@ -59,9 +59,9 @@ function Show-Choice([string]$message, [string[]]$choices, [string]$checkbox = '
 	$form = New-Object System.Windows.Forms.Form -Property @{
 		Text = 'KytyPS5'; FormBorderStyle = 'FixedDialog'; MaximizeBox = $false; MinimizeBox = $false; StartPosition = 'CenterScreen'
 		AutoSize = $true; AutoSizeMode = 'GrowAndShrink'; Padding = (New-Object System.Windows.Forms.Padding 16)
-		Font = (New-Object System.Drawing.Font 'Microsoft YaHei UI', 10); TopMost = $true; Tag = -1 }
+		Font = (New-Object System.Drawing.Font 'Segoe UI', 10); TopMost = $true; Tag = -1 }
 	$panel = New-Object System.Windows.Forms.FlowLayoutPanel -Property @{ FlowDirection = 'TopDown'; WrapContents = $false; AutoSize = $true }
-	# Lines of about 40 characters (the font's height follows the display's scale).
+	# Lines of about 70 characters (the font's height follows the display's scale).
 	$panel.Controls.Add((New-Object System.Windows.Forms.Label -Property @{ Text = $message; AutoSize = $true
 		MaximumSize = (New-Object System.Drawing.Size ($form.Font.Height * 30), 0) }))
 	$check = New-Object System.Windows.Forms.CheckBox -Property @{ Text = $checkbox; AutoSize = $true; Visible = [bool]$checkbox }
@@ -86,7 +86,7 @@ if (!$Game -and (Test-Path $gameFile)) { $Game = (Get-Content $gameFile -Raw).Tr
 if (!$Game) { $Game = "$env:USERPROFILE\Documents\PPSA01341-app0" }
 if ($Prompt -or (!$remember -and !(Test-Path "$Game\eboot.bin"))) { Initialize-Dialogs }
 if (!$remember -and !(Test-Path "$Game\eboot.bin")) {
-	$dialog = New-Object System.Windows.Forms.FolderBrowserDialog -Property @{ Description = '选择游戏文件夹（里面有 eboot.bin 和 sce_sys）' }
+	$dialog = New-Object System.Windows.Forms.FolderBrowserDialog -Property @{ Description = 'Choose the game folder (the one with eboot.bin and sce_sys)' }
 	if ($dialog.ShowDialog() -eq 'OK') { $Game = $dialog.SelectedPath; $remember = $true }
 }
 if (!(Test-Path "$Game\eboot.bin")) { throw "no eboot.bin in $Game" }
@@ -167,7 +167,8 @@ for ($bit = 0; $bit -lt 64; $bit++) { if ($mask -band ([int64]1 -shl $bit)) { $c
 
 # The render thread on the recording worker's CPUs (this PC's P-cores without CPU 0, which takes
 # most interrupts on Windows): +2.5% over free placement in the fixed scene. Pinning it to CPU 0
-# alone, as on Linux, halved the frame rate here. A config without them leaves both to Windows.
+# alone, as on Linux, halved the frame rate here. A config without them leaves both to Windows;
+# "auto" (the portable package's config) picks the performance cores of this PC (below).
 if (!$environment.Contains('KYTY_RENDER_CPUS') -and $environment.Contains('KYTY_RECORDING_CPUS')) {
 	$environment['KYTY_RENDER_CPUS'] = $environment['KYTY_RECORDING_CPUS']
 }
@@ -191,9 +192,12 @@ if (!$environment.Contains('KYTY_ASYNC_XPR_PIPELINES') -and !$Baseline) { $envir
 # Memory the game releases (texture pool layers, 64 KiB mappings each) is not unprotected mapping
 # by mapping before its unmap: VirtualProtect was ~15% of the render thread in the open area.
 if (!$environment.Contains('KYTY_UNMAP_PROTECT_SKIP') -and !$Baseline) { $environment['KYTY_UNMAP_PROTECT_SKIP'] = '1' }
-# The executable's SHA-256 scopes the driver pipeline cache (_PipelineCache\local\<sha>) and
-# enables the shader warmup; without it a modified source tree runs with both disabled.
-$environment['KYTY_DRIVER_CACHE_KEY'] = (Get-FileHash -Algorithm SHA256 $Exe).Hash.ToLowerInvariant()
+# The key of the driver pipeline cache (_PipelineCache\local\<key>); it also enables the shader
+# warmup, which a modified source tree runs without otherwise. One key for every build: the driver
+# finds a pipeline by its whole input (SPIR-V and state), so a new build reuses the pipelines of the
+# shaders it left alone. Keyed by the executable's SHA-256, every update compiled the ~3700 warmup
+# pipelines again (2-2.5 minutes of "Preparing pipelines").
+$environment['KYTY_DRIVER_CACHE_KEY'] = '1f3c29b70e536c8f5a5e812e793b33ac2eb6858b4810ed98ca2a51b9fa5eed97'
 if ($Precompile) {
 	# Translate every recorded shader and create every recorded pipeline on all allowed CPUs,
 	# save the driver cache, exit. Later launches warm up from that cache in seconds.
@@ -204,6 +208,10 @@ if ($Precompile) {
 } else {
 	# An earlier -Precompile in the same shell leaves this set; the game must not exit after warmup.
 	Remove-Item env:KYTY_SHADER_WARMUP_ONLY -ErrorAction SilentlyContinue
+	# At most a minute of start-up warmup: with an empty driver cache (the first launch, a driver
+	# update) its ~4400 pipelines took 4.5 minutes; the rest are built at their first use (a fast
+	# unoptimized build at once, the optimized one in the background) and cached from then on.
+	if (!$environment.Contains('KYTY_SHADER_WARMUP_SECONDS')) { $environment['KYTY_SHADER_WARMUP_SECONDS'] = '60' }
 }
 if ($Threads -gt 0) { $environment['KYTY_SHADER_WARMUP_THREADS'] = "$Threads" }
 if ($AspectFit) { $environment['KYTY_PRESENT_ASPECT'] = 'fit' }
@@ -215,12 +223,56 @@ foreach ($pair in ($Set | ForEach-Object { $_ -split ',(?=[A-Za-z_][A-Za-z0-9_]*
 	if ($value) { $environment[$key] = $value } else { $environment.Remove($key); Remove-Item "env:$key" -ErrorAction SilentlyContinue }
 }
 
+# The performance cores of a hybrid CPU (Windows' CPU set efficiency classes: an Intel Core with
+# P- and E-cores), without the core of CPU 0, within the launch's CPUs: a list such as "1,2,3,4,5",
+# or nothing when every core is alike (the threads are left to Windows there).
+function Get-PerformanceCpus([int64]$allowed) {
+	Add-Type -Namespace Kyty -Name CpuSets -MemberDefinition @'
+[DllImport("kernel32.dll")]
+static extern bool GetSystemCpuSetInformation(IntPtr information, uint length, out uint returned, IntPtr process, uint flags);
+// Group 0's logical processors as (index, core, efficiency class) triples.
+public static int[] Query() {
+	var result = new System.Collections.Generic.List<int>();
+	uint length;
+	GetSystemCpuSetInformation(IntPtr.Zero, 0, out length, IntPtr.Zero, 0);
+	if (length == 0) return result.ToArray();
+	IntPtr buffer = Marshal.AllocHGlobal((int)length);
+	try {
+		if (!GetSystemCpuSetInformation(buffer, length, out length, IntPtr.Zero, 0)) return result.ToArray();
+		for (int offset = 0; offset < length; offset += Marshal.ReadInt32(buffer, offset)) {
+			if (Marshal.ReadInt32(buffer, offset + 4) != 0 || Marshal.ReadInt16(buffer, offset + 12) != 0) continue;
+			result.Add(Marshal.ReadByte(buffer, offset + 14));
+			result.Add(Marshal.ReadByte(buffer, offset + 15));
+			result.Add(Marshal.ReadByte(buffer, offset + 18));
+		}
+	} finally {
+		Marshal.FreeHGlobal(buffer);
+	}
+	return result.ToArray();
+}
+'@
+	$values = [Kyty.CpuSets]::Query()
+	$sets = for ($i = 0; $i + 2 -lt $values.Count; $i += 3) { [pscustomobject]@{ Cpu = $values[$i]; Core = $values[$i + 1]; Class = $values[$i + 2] } }
+	if (@($sets | ForEach-Object Class | Sort-Object -Unique).Count -lt 2) { return '' }
+	$fastest = ($sets | Measure-Object Class -Maximum).Maximum
+	$interrupts = ($sets | Where-Object Cpu -eq 0).Core
+	return (($sets | Where-Object { $_.Class -eq $fastest -and $_.Core -ne $interrupts -and $_.Cpu -lt 64 -and
+		($allowed -band ([int64]1 -shl $_.Cpu)) } | ForEach-Object Cpu) -join ',')
+}
+if ('KYTY_RECORDING_CPUS', 'KYTY_RENDER_CPUS' | Where-Object { $environment[$_] -eq 'auto' }) {
+	$performance = Get-PerformanceCpus $mask
+	foreach ($key in 'KYTY_RECORDING_CPUS', 'KYTY_RENDER_CPUS') {
+		if ($environment[$key] -ne 'auto') { continue }
+		if ($performance) { $environment[$key] = $performance } else { $environment.Remove($key) }
+	}
+}
+
 $quoted = @('--game', "`"$Game`"") + ($options | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } })
 $logDir = if (Test-Path "$PSScriptRoot\_Build") { "$PSScriptRoot\_Build\run-logs" } else { "$PSScriptRoot\logs" }
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
 Write-Host "game:     $(if ($titleName) { "$titleName, " })$version$(if (!$tested) { " (untested: the emulator is tested with $testedVersion)" })"
 Write-Host "config:   $Config$(if ($Baseline) { ' (baseline: no switches)' })$(if ($Precompile) { ' (precompile)' })"
-Write-Host ("affinity: 0x{0:X} ({1} CPUs)" -f $mask, $cpus)
+Write-Host ("affinity: 0x{0:X} ({1} CPUs){2}" -f $mask, $cpus, $(if ($environment['KYTY_RENDER_CPUS']) { "; render threads on CPUs $($environment['KYTY_RENDER_CPUS'])" }))
 Write-Host "switches: $($environment.Count)"
 Write-Host "command:  $Exe $($quoted -join ' ')"
 if ($DryRun) { $environment.GetEnumerator() | ForEach-Object { "  $($_.Key)=$($_.Value)" }; return }
@@ -254,7 +306,7 @@ if ($shaders) {
 	# A precompile that stopped before its last merge keeps its shards' checkpoints (small ones stay
 	# behind after a merge).
 	$cacheReady = $status -match 'static cache current' -and
-		!(Get-ChildItem "$PSScriptRoot\_PipelineCache\static\*.bin.shard*" -ErrorAction SilentlyContinue | Where-Object Length -gt 1MB)
+		!(Get-ChildItem "$PSScriptRoot\_PipelineCache\static\*.shard*" -ErrorAction SilentlyContinue | Where-Object Length -gt 1MB)
 	Write-Host "shaders:  prefetch inputs $(if ($inputsReady) { 'ready' } else { 'to be made' }), static pipeline cache $(if ($cacheReady) { 'ready' } else { 'not made (precompile-windows.ps1)' })"
 }
 
@@ -262,15 +314,15 @@ if ($shaders) {
 $noPrompt = "$PSScriptRoot\no-precompile-prompt.txt"
 $offer = $shaders -and !$cacheReady -and !(Test-Path $noPrompt)
 if ($Prompt -and ($offer -or !$tested)) {
-	$info = "游戏：$(if ($titleName) { $titleName } else { '未知' })（$version）"
-	$info += if ($tested) { '，已测试的版本。' } else { "`n⚠ 这个版本没有测试过（测试用的是 $testedVersion），可能无法运行或出错。" }
+	$info = "Game: $(if ($titleName) { $titleName } else { 'unknown' }) ($version)"
+	$info += if ($tested) { ', a tested version.' } else { "`n⚠ This version is untested (the emulator was tested with $testedVersion): it may not run or may fail." }
 	if ($offer) {
 		$minutes = [math]::Ceiling(44 * 22 / $cpus / 10) * 10
-		$time = if ($minutes -lt 90) { "约 $minutes 分钟" } else { '约 {0:N1} 小时' -f ($minutes / 60) }
-		$message = "$info`n`n着色器还没有为这块显卡预编译：游戏里第一次出现的场景和特效会卡顿（零点几秒到几秒）。`n" +
-			"预编译会把整个游戏的着色器一次编好，这台电脑$time（CPU 满载；关掉窗口可中断，下次接着编）。" +
-			"只需做一次，更新显卡驱动后要重做。"
-		$choice, $never = Show-Choice $message @('先预编译，完成后开始游戏', '直接开始游戏', '退出') '以后不再提示预编译'
+		$time = if ($minutes -lt 90) { "about $minutes minutes" } else { 'about {0:N1} hours' -f ($minutes / 60) }
+		$message = "$info`n`nThe shaders are not precompiled for this graphics card yet: scenes and effects stutter the first time they appear in the game (a fraction of a second to a few seconds).`n" +
+			"The precompile compiles every shader of the game once: $time on this PC (with the CPU fully loaded; closing its window stops it, and the next run continues). " +
+			"It is needed only once, and again after a graphics driver update."
+		$choice, $never = Show-Choice $message @('Precompile first, then start the game', 'Start the game now', 'Quit') "Don't ask about precompiling again"
 		if ($never) { Set-Content $noPrompt 'run-windows.ps1 -Prompt: no precompile dialog (delete this file to get it back)' }
 		if ($choice -ne 0 -and $choice -ne 1) { Write-Host 'cancelled'; return }
 		if ($choice -eq 0) {
@@ -278,18 +330,46 @@ if ($Prompt -and ($offer -or !$tested)) {
 				& "$PSScriptRoot\precompile-windows.ps1" -Game $Game -Affinity $mask
 				$inputsReady = $true # the full run ends with them
 			} catch {
-				Write-Host "预编译失败（$($_.Exception.Message)），游戏照常启动"
+				Write-Host "precompile failed ($($_.Exception.Message)); starting the game anyway"
 			}
 		}
 	} else {
-		$choice, $never = Show-Choice $info @('开始游戏', '退出')
+		$choice, $never = Show-Choice $info @('Start the game', 'Quit')
 		if ($choice -ne 0) { Write-Host 'cancelled'; return }
 	}
 }
+# Memory: Windows ends a program that asks for more than RAM and the page file can hold. The emulator
+# commits about 34 GB (the game's 13.5 GiB of PS5 memory, about 11 GB Windows sets aside to back the
+# video memory in use, the emulator's own) and keeps about 20 GB in RAM.
+$os = Get-CimInstance Win32_OperatingSystem
+[double]$ram = $os.TotalVisibleMemorySize * 1KB
+[double]$commit = $os.FreeVirtualMemory * 1KB
+if ((Get-CimInstance Win32_ComputerSystem).AutomaticManagedPagefile) {
+	# A system-managed page file grows to 3 x RAM (at most an eighth of its disk) while the disk has room.
+	$disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='$env:SystemDrive'"
+	[double]$paged = (Get-CimInstance Win32_PageFileUsage | Measure-Object AllocatedBaseSize -Sum).Sum * 1MB
+	[double]$room = [math]::Min([math]::Min(3 * $ram, [double]$disk.Size / 8) - $paged, [double]$disk.FreeSpace - 5GB)
+	$commit += [math]::Max([double]0, $room)
+}
+$memory = @()
+if ($ram -lt 24GB) {
+	$memory += "This PC has {0:N0} GB of RAM and the emulator keeps about 20 GB in use (32 GB recommended): expect long stutters." -f ($ram / 1GB)
+}
+if ($commit -lt 34GB) {
+	$memory += ("Windows can give programs only {0:N0} GB more memory (RAM plus page file) and the emulator needs about 34 GB: " +
+		"it may close in the middle of the game. Close other programs, or set the page file to 'System managed size' " +
+		"(Settings > System > About > Advanced system settings > Performance > Settings > Advanced > Virtual memory).") -f ($commit / 1GB)
+}
+foreach ($line in $memory) { Write-Host "memory:   $line" }
+if ($memory -and $Prompt) {
+	$choice, $never = Show-Choice ($memory -join "`n`n") @('Start the game anyway', 'Quit')
+	if ($choice -ne 0) { Write-Host 'cancelled'; return }
+}
+
 if ($shaders -and !$inputsReady) {
-	Write-Host '着色器：为这块显卡生成后台准备用的输入（第一次运行或更新显卡驱动后，约一分钟）'
+	Write-Host 'shaders:  making the background shader preparation inputs for this graphics card (first run or after a driver update: about a minute)'
 	if ((Invoke-Tool @('--no-pipelines', '--static-inputs', '--threads', "$cpus")) -ne 0) {
-		Write-Host '着色器：生成失败，这次没有后台着色器准备'
+		Write-Host 'shaders:  making them failed; no background shader preparation this time'
 	}
 }
 

@@ -11,6 +11,7 @@
 #include "graphics/host_gpu/renderer/depthRenderTarget.h"
 #include "graphics/host_gpu/renderer/image/imageView.h"
 #include "graphics/host_gpu/renderer/pipeline/driverCachePolicy.h"
+#include "graphics/host_gpu/renderer/pipeline/pipelineBinaries.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderReadObserver.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
@@ -96,15 +97,16 @@ std::string DriverCacheSignature(const vk::PhysicalDeviceProperties& properties,
 		uuid[i * 2]     = hex[properties.pipelineCacheUUID[i] >> 4u];
 		uuid[i * 2 + 1] = hex[properties.pipelineCacheUUID[i] & 0xfu];
 	}
-	const auto revision = binary_key.empty() ? std::string(KYTY_GIT_REVISION)
-	                                        : fmt::format("{}:local:{}", KYTY_GIT_REVISION, binary_key);
+	// A keyed (local) cache spans emulator builds: the driver's own UUID and version below scope
+	// its binaries, and it finds a pipeline by the pipeline's whole input.
+	const auto revision = binary_key.empty() ? std::string(KYTY_GIT_REVISION) : fmt::format("local:{}", binary_key);
 	return fmt::format("KytyPC1:{}:{:08x}:{:08x}:{:08x}:{}\n", revision,
 	                   properties.vendorID, properties.deviceID, properties.driverVersion, uuid);
 }
 
 // Compiler inputs are portable across executable rebuilds; the schema version
-// and device capabilities still constrain them. Driver binaries remain scoped
-// to the executable SHA. Every warm program is checked against live source.
+// and device capabilities still constrain them. Driver binaries are scoped by the
+// launcher's cache key. Every warm program is checked against live source.
 std::string ShaderInputDeviceSignature(const vk::PhysicalDeviceProperties& properties) {
 	const auto signature = DriverCacheSignature(properties, {});
 	return signature.substr(signature.size() - (8 * 3 + VK_UUID_SIZE * 2 + 5));
@@ -158,7 +160,8 @@ bool ReadShaderRawGuestMemory(void*, uint64_t address, uint32_t* value) {
 }
 
 bool ReadShaderMemorySpan(void*, uint64_t address, uint32_t* values, uint32_t count, bool clean) {
-	return count >= 2 && count <= 16 &&
+	// Clean spans also read whole tables (resource materialization); raw spans are SRT groups.
+	return count >= 2 && count <= (clean ? 1024u : 16u) &&
 	       Libs::LibKernel::Memory::TryReadGpuShaderSpan(address, values, count * 4u, clean);
 }
 
@@ -176,9 +179,19 @@ void ReportMaterialization(const char* label, ShaderType stage, uint64_t hash,
 	}
 }
 
+// KYTY_DUMP_HASHES=<hash,hash,...>: the SPIR-V and guest code of these programs, without the whole
+// graphics debug dump (tools/local/spirv-stats.py reads the driver's statistics of the modules).
+bool DumpWanted(uint64_t hash) {
+	static const std::string list = [] {
+		const char* value = std::getenv("KYTY_DUMP_HASHES");
+		return value != nullptr ? std::string(value) : std::string();
+	}();
+	return !list.empty() && list.find(fmt::format("{:016x}", hash)) != std::string::npos;
+}
+
 void DumpShaderSpirv(const char* stage_name, uint64_t shader_hash,
                      const std::vector<uint32_t>& spirv) {
-	if (!Config::GraphicsDebugDumpEnabled()) {
+	if (!Config::GraphicsDebugDumpEnabled() && !DumpWanted(shader_hash)) {
 		return;
 	}
 	static std::atomic_int id = 0;
@@ -196,7 +209,7 @@ void DumpShaderSpirv(const char* stage_name, uint64_t shader_hash,
 
 void DumpShaderOriginal(const char* stage_name, uint64_t shader_hash,
                         std::span<const uint32_t> code, const std::string& decoded_dump) {
-	if (!Config::GraphicsDebugDumpEnabled()) {
+	if (!Config::GraphicsDebugDumpEnabled() && !DumpWanted(shader_hash)) {
 		return;
 	}
 	EXIT_IF(code.empty());
@@ -920,7 +933,7 @@ struct PipelineCache::ProgramCache {
 		for (size_t remaining = warmup.records.size(); remaining != 0; --remaining) {
 			const size_t index = remaining - 1;
 			if (std::chrono::steady_clock::now() >= warm_deadline) break;
-			StartupProgress::Report("正在准备着色器", warmup.records.size() - remaining, warmup.records.size());
+			StartupProgress::Report("Preparing shaders", warmup.records.size() - remaining, warmup.records.size());
 			std::unique_ptr<WarmJob> job;
 			LocalShaderWarmup::Record parsed;
 			if (workers) {
@@ -1161,7 +1174,7 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
     : m_graphics(graphics), m_program_cache(std::make_unique<ProgramCache>(graphics.device)) {
 	EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
 	InitializeDriverCache();
-	StartupProgress::Report("正在载入管线缓存", 0, 0);
+	StartupProgress::Report("Loading the pipeline cache", 0, 0);
 	InitializeStaticCache(false);
 	// Not in the static precompile: a shell that ran the game passes its KYTY_SHADER_WARMUP(_ONLY) on.
 #ifndef KYTY_STATIC_PRECOMPILE
@@ -1195,7 +1208,13 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 			}
 		}
 		m_program_cache->Warm(path, title + device, std::string_view(warmup) == "1", adopt_from);
-		if (std::string_view(warmup) == "1") WarmPipelines();
+		if (std::string_view(warmup) == "1") {
+			const auto begin = std::chrono::steady_clock::now();
+			WarmPipelines();
+			// What the driver had to compile is kept at once: the cache is otherwise written only
+			// at a normal exit, so after a crash the next launch compiled it all again (2+ minutes).
+			if (std::chrono::steady_clock::now() - begin > std::chrono::seconds(5)) (void)Save();
+		}
 		m_program_cache->warmup.StartWriter();
 		if (const char* only = std::getenv("KYTY_SHADER_WARMUP_ONLY"); only && std::string_view(only) == "1") {
 			if (!Save()) {
@@ -1296,7 +1315,7 @@ void PipelineCache::WarmPipelines() {
 			}
 			if (const auto done = compiled.fetch_add(1, std::memory_order_relaxed) + 1; done % 250 == 0)
 				PipelineCacheLog("Pipeline warmup: compiling {}/{}", done, jobs.size());
-			StartupProgress::Report("正在准备管线", n + 1, jobs.size()); // shown from the main thread only
+			StartupProgress::Report("Preparing pipelines", n + 1, jobs.size()); // shown from the main thread only
 		}
 	};
 	const uint32_t threads = std::min<uint32_t>(ProgramCache::WarmupThreads(),
@@ -1332,6 +1351,7 @@ PipelineCache::~PipelineCache() {
 	};
 	destroy(m_graphics_pipelines);
 	destroy(m_compute_pipelines);
+	m_graphics.pipeline_binaries = nullptr;
 	for (const auto pipeline: m_replaced_pipelines) {
 		m_graphics.device.destroyPipeline(pipeline, nullptr);
 	}
@@ -1352,6 +1372,16 @@ static std::string StaticCacheSignature(const vk::PhysicalDeviceProperties& prop
 
 static std::filesystem::path StaticCachePath() {
 	return std::filesystem::path("_PipelineCache") / "static" / (PipelineCacheTitleId() + ".bin");
+}
+
+// Its pipelines as the driver's binaries (VK_KHR_pipeline_binary), read when needed: the driver keeps a
+// copy of a whole pipeline cache in memory. Headed by the GPU, the driver and its global pipeline key.
+static std::filesystem::path StaticBinariesPath() {
+	return std::filesystem::path("_PipelineCache") / "static" / (PipelineCacheTitleId() + ".binaries");
+}
+
+static std::string StaticBinariesSignature(GraphicContext& graphics) {
+	return PipelineBinaries::Signature(graphics.device, ShaderInputDeviceSignature(graphics.GetPhysicalDeviceProperties()));
 }
 
 // A pipeline cache file (signature, XXH3 of the payload, payload): the payload, or nothing when the
@@ -1378,7 +1408,23 @@ void PipelineCache::InitializeStaticCache(bool create) {
 	if (const char* value = std::getenv("KYTY_STATIC_PIPELINE_CACHE"); !create && value != nullptr &&
 	    std::string_view(value) == "0")
 		return;
-	const auto begin   = std::chrono::steady_clock::now();
+	const auto begin = std::chrono::steady_clock::now();
+	if (m_static_binaries != nullptr) return;
+	if (m_graphics.pipeline_binaries_enabled) {
+		m_static_binaries = PipelineBinaries::Open(m_graphics.device, StaticBinariesPath(), StaticBinariesSignature(m_graphics));
+		if (m_static_binaries != nullptr) {
+			m_graphics.pipeline_binaries = m_static_binaries.get();
+			PipelineCacheLog("Static pipeline binaries: {} pipelines, {} binaries, {} MiB in {} ({} ms)",
+			                 m_static_binaries->Pipelines(), m_static_binaries->Binaries(),
+			                 m_static_binaries->DataBytes() >> 20u, Common::PathToString(StaticBinariesPath()),
+			                 std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin)
+			                     .count());
+			return;
+		}
+		// None yet (or another GPU's or driver's): a static pipeline cache still serves, and in the
+		// precompile it is what the binaries are taken from without compiling.
+		create = false;
+	}
 	const auto path    = StaticCachePath();
 	const auto payload = ReadPipelineCacheFile(path, StaticCacheSignature(m_graphics.GetPhysicalDeviceProperties()));
 	if (payload.empty() && !create) return;
@@ -1443,8 +1489,13 @@ void PipelineCache::InitializeDriverCache() {
 		Common::File file(m_driver_cache_path, Common::File::Mode::Read);
 		const auto   file_size = file.IsInvalid() ? 0 : file.Size();
 		const auto   signature = DriverCacheSignature(m_graphics.GetPhysicalDeviceProperties(), m_driver_cache_key);
-		if (file_size >= signature.size() + sizeof(uint64_t) &&
-		    file_size <= std::numeric_limits<uint32_t>::max()) {
+		// The launcher keeps one cache across emulator builds: pipelines of changed shaders pile
+		// up in it, so past 1 GiB (one build's warmup is ~130 MB) it starts over.
+		if (file_size > (uint64_t {1} << 30u)) {
+			file.Close();
+			PipelineCacheLog("Vulkan pipeline cache: starting {} over ({} bytes)", path, file_size);
+		} else if (file_size >= signature.size() + sizeof(uint64_t) &&
+		           file_size <= std::numeric_limits<uint32_t>::max()) {
 			std::string cached_signature(signature.size(), '\0');
 			uint64_t    payload_hash = 0;
 			initial_data.resize(file_size - signature.size() - sizeof(payload_hash));

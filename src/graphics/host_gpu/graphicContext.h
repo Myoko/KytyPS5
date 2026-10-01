@@ -15,6 +15,8 @@
 namespace Libs::Graphics {
 
 struct VulkanImage;
+class PipelineBinaries;
+class PipelineBinaryWriter;
 
 inline constexpr uint32_t VULKAN_TARGET_API_VERSION = VK_API_VERSION_1_3;
 
@@ -38,6 +40,14 @@ struct GraphicContext {
 	// The static precompile's pipelines (PipelineCache): looked up first when a pipeline is
 	// created, never compiled into outside the precompile.
 	vk::PipelineCache                  static_pipeline_cache                 = nullptr;
+	// VK_KHR_pipeline_binary (and maintenance5's create flags) is enabled: the static precompile's
+	// pipelines are its binaries instead (pipelineBinaries.h); in the precompile, its output.
+	bool                               pipeline_binaries_enabled             = false;
+	// False (the emulator): the driver keeps no copy of its own of the pipelines it makes (the
+	// precompile's captures of static cache hits come from that copy).
+	bool                               pipeline_binary_internal_cache        = true;
+	const PipelineBinaries*            pipeline_binaries                     = nullptr;
+	PipelineBinaryWriter*              pipeline_binary_writer                = nullptr;
 	bool                                      mesh_shader_enabled                   = false;
 	vk::PhysicalDeviceMeshShaderPropertiesEXT mesh_shader_properties                = {};
 	uint32_t                           subgroup_size                         = 0;
@@ -117,6 +127,9 @@ struct GraphicContext {
 	[[nodiscard]] uint64_t GetTotalMemoryBudget() const;
 	[[nodiscard]] bool     CreateImage(const vk::ImageCreateInfo& info, VulkanImage& image);
 	void                   DeleteImage(VulkanImage& image);
+	// Frees the images kept for reuse (KYTY_IMAGE_POOL): video memory ran out.
+	void                   TrimImagePool();
+	void                   ReportMemoryFallback(const char* what, uint64_t bytes) const;
 	void                   AppendHardwareRayTracingDeviceExtensions(
 	    const std::vector<vk::ExtensionProperties>& available_extensions,
 	    std::vector<const char*>&                   device_extensions);

@@ -919,6 +919,11 @@ static PreparedVertexBuffers AcquireVertexBuffers(CommandBuffer&               b
 		// PPSA20298
 		const auto size =
 		    Libs::LibKernel::Memory::ClampRangeSize(range.base_address, range.RequestedSize());
+		if (size == 0) { // unmapped: its slots bind the null buffer (below)
+			range.acquired_end = range.requested_end;
+			range.binding      = {nullptr, 0};
+			continue;
+		}
 		range.acquired_end = range.base_address + size;
 		range.binding      = cache.ObtainBuffer(range.base_address, size, false);
 		SetVulkanObjectNameF(
@@ -950,6 +955,14 @@ static PreparedVertexBuffers AcquireVertexBuffers(CommandBuffer&               b
 		if (range == merged_ranges.begin() + merged_count) {
 			EXIT("vertex buffer address is outside the acquired range: addr=0x%016" PRIx64 "\n",
 			     vertex.addr);
+		}
+		if (range->binding.first == nullptr) {
+			if (null_buffer == nullptr) {
+				null_buffer = cache.GetBuffer(NULL_BUFFER_ID).Handle();
+			}
+			prepared.buffers[i] = null_buffer;
+			prepared.offsets[i] = 0;
+			continue;
 		}
 
 		prepared.buffers[i] = range->binding.first->Handle();
@@ -1408,6 +1421,13 @@ bool RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		vertex_bindings = AcquireVertexBuffers(buffer, state.vs_input_info);
 		index_binding   = PrepareIndexBuffer(buffer, index_source);
 	}
+	std::pair<Buffer*, uint64_t> gpu_args {};
+	if (emit.gpu_args != 0) {
+		const uint64_t size = emit.indexed ? sizeof(vk::DrawIndexedIndirectCommand) : sizeof(vk::DrawIndirectCommand);
+		gpu_args = m_context.GetBufferCache().ObtainBuffer(
+		    emit.gpu_args, uint64_t {emit.gpu_args_count - 1u} * emit.gpu_args_stride + size, false);
+		EXIT_IF(gpu_args.first == nullptr);
+	}
 	if (!emit.direct_run.empty() &&
 	    (m_context.GetGpuResources().MappingEpoch() != emit.run_mapping_epoch ||
 	     m_context.GetGpuResources().PreparationAliasEpoch() != emit.run_alias_epoch)) {
@@ -1431,7 +1451,7 @@ bool RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	bool record_draw = false;
 #ifdef KYTY_LOCAL_VULKAN_RECORDING
 	const auto primitive = ucfg.GetPrimType();
-	record_draw = LocalVulkanRecording::PacketsEnabled() && !mesh_active &&
+	record_draw = LocalVulkanRecording::PacketsEnabled() && !mesh_active && emit.gpu_args == 0 &&
 	    ((!set_bind_debug && !set_auto_debug) ||
 	     kyty_local_draw_packets_mode.load(std::memory_order_relaxed) != 0) &&
 	    (primitive == Prospero::PrimitiveType::kPointList ||
@@ -1504,6 +1524,12 @@ bool RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		}
 		if (mesh_active) {
 			vk_buffer.drawMeshTasksEXT(mesh_groups, draw.instance_count, 1);
+		} else if (emit.gpu_args != 0 && emit.indexed) {
+			vk_buffer.drawIndexedIndirect(gpu_args.first->Handle(), gpu_args.second, emit.gpu_args_count,
+			                              emit.gpu_args_stride);
+		} else if (emit.gpu_args != 0) {
+			vk_buffer.drawIndirect(gpu_args.first->Handle(), gpu_args.second, emit.gpu_args_count,
+			                       emit.gpu_args_stride);
 		} else if (!emit.direct_run.empty()) {
 			for (const auto& item: emit.direct_run) {
 				vk_buffer.drawIndexed(item.indexCount, item.instanceCount, item.firstIndex,
@@ -1936,7 +1962,7 @@ void RenderExecutor::CaptureXprTargets(const DrawRenderState& state,
 	XprCapture::Written();
 }
 
-void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
+bool RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
                                const DrawIndexArgs& args) {
 	XprCapture::g_state.pending.reset(); // a capture never spans two draws
 	KYTY_PROFILER_FUNCTION();
@@ -1959,7 +1985,7 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 
 	Common::LockGuard lock(m_context.GetMutex());
 	if (args.index_count == 0 || args.instance_count == 0) {
-		return;
+		return true;
 	}
 #ifdef KYTY_LOCAL_VULKAN_RECORDING
 	if (LiveCounters::g_dispatch_keys_on.load(std::memory_order_relaxed)) {
@@ -1984,11 +2010,11 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 	if (ConsumeMetadataColorOperation(buffer) || DepthStencilCopy(buffer)) {
 		if (FrameCapture::Active()) FrameCapture::g_call.consumed = "metadata_or_depth_copy";
 		ResetBindings();
-		return;
+		return true;
 	}
 
 	if (!DrawHasValidVertexShader(sh_ctx)) {
-		return;
+		return true;
 	}
 
 	if (graphics_debug_dump_enabled()) {
@@ -2014,7 +2040,7 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 
 	vk::PrimitiveTopology topology = vk::PrimitiveTopology::ePointList;
 	if (!GetDrawTopology(ucfg, false, topology)) {
-		return;
+		return true;
 	}
 
 	DrawIndexBufferSource index_source {};
@@ -2055,7 +2081,12 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 	if (!PrepareDrawRenderState(buffer, draw, args.render_target_slice_offset, true,
 	                            state)) {
 		ResetBindings();
-		return;
+		return true;
+	}
+	if (args.gpu_args != 0 && state.vs_input_info.stage.program->stage == ShaderType::Mesh) {
+		// A mesh draw sizes its task grid from the counts.
+		ResetBindings();
+		return false;
 	}
 
 	if (XprCapture::Enabled() && XprCapture::g_state.current_xpr &&
@@ -2092,13 +2123,18 @@ void RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 	emit.first_instance =
 	    indirect ? args.first_instance : ResolveInstanceOffset(state.vs_input_info);
 
+	emit.gpu_args        = args.gpu_args;
+	emit.gpu_args_count  = args.gpu_args_count;
+	emit.gpu_args_stride = args.gpu_args_stride;
+
 	ExecutePreparedDraw(submit_id, buffer, draw, state, topology, emit, index_source,
 	                    primitive_restart, true, true, false);
 	ResetBindings();
+	return true;
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-void RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const DrawAutoArgs& args) {
+bool RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const DrawAutoArgs& args) {
 	KYTY_PROFILER_FUNCTION();
 	FrameCapture::Scope frame_capture("DrawAuto", false);
 
@@ -2116,17 +2152,17 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
 
 	Common::LockGuard lock(m_context.GetMutex());
 	if (args.vertex_count == 0 || args.instance_count == 0) {
-		return;
+		return true;
 	}
 
 	if (ConsumeMetadataColorOperation(buffer) || DepthStencilCopy(buffer)) {
 		if (FrameCapture::Active()) FrameCapture::g_call.consumed = "metadata_or_depth_copy";
 		ResetBindings();
-		return;
+		return true;
 	}
 
 	if (!DrawHasValidVertexShader(sh_ctx)) {
-		return;
+		return true;
 	}
 
 	if (graphics_debug_dump_enabled()) {
@@ -2154,15 +2190,19 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
 	if (!PrepareDrawRenderState(buffer, draw, args.render_target_slice_offset, false,
 	                            state)) {
 		ResetBindings();
-		return;
+		return true;
 	}
 
 	vk::PrimitiveTopology topology = vk::PrimitiveTopology::ePointList;
 	if (!GetDrawTopology(ucfg, true, topology)) {
 		ResetBindings();
-		return;
+		return true;
 	}
 	RefreshShaders(buffer, draw, false, state);
+	if (args.gpu_args != 0 && state.vs_input_info.stage.program->stage == ShaderType::Mesh) {
+		ResetBindings();
+		return false;
+	}
 
 	const bool rect_list = topology == vk::PrimitiveTopology::ePatchList;
 	if (rect_list && state.vs_input_info.buffers_num == 0 &&
@@ -2175,7 +2215,7 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
 			     sh_ctx.GetVs().es_regs.data_addr, sh_ctx.GetVs().gs_regs.data_addr);
 		}
 		ResetBindings();
-		return;
+		return true;
 	}
 
 	LogDrawStateIfNeeded(buffer, draw, state, false,
@@ -2192,10 +2232,15 @@ void RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
 	emit.first_instance =
 	    indirect ? args.first_instance : ResolveInstanceOffset(state.vs_input_info);
 
+	emit.gpu_args        = args.gpu_args;
+	emit.gpu_args_count  = args.gpu_args_count;
+	emit.gpu_args_stride = args.gpu_args_stride;
+
 	DrawIndexBufferSource index_source {};
 	ExecutePreparedDraw(submit_id, buffer, draw, state, topology, emit, index_source, false, false,
 	                    false, true);
 	ResetBindings();
+	return true;
 }
 
 bool RenderExecutor::ResolveColorTargets(CommandBuffer& buffer, uint32_t render_target_slice_offset) {
