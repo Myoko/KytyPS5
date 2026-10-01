@@ -137,6 +137,13 @@ jobs:
       # reads; without the file the emulator logs 'no inputs for this GPU and driver' and translates
       # every shader on the render thread while the game runs instead of in the background.
       # kyty_emulator_clang_lld_link.map is what profreport.exe symbolizes a profile against.
+      #
+      # The scripts and tools/local come along as well: 'cmake --install' writes the binaries and
+      # nothing else (CMakeLists.txt installs kyty_emulator and libwinpthread-1.dll), while the
+      # launcher, the measurement scripts and precompile.py - which precompile-windows.ps1 calls
+      # when seeds.seeds is missing - all live in the source tree. Taking them from here keeps
+      # every one of them at the revision of the binary they drive; copying them out of a checkout
+      # by hand silently mixes revisions. tools/local is about 800 KB.
       - name: Stage the local tooling into the install tree
         shell: pwsh
         run: |
@@ -146,6 +153,10 @@ jobs:
             Select-Object -First 1 | ForEach-Object { Copy-Item $_.FullName $dst -Force; Write-Host "staged $($_.FullName)" }
           $map = '_Build/windows/kyty_emulator_clang_lld_link.map'
           if (Test-Path $map) { Copy-Item $map $dst -Force; Write-Host "staged $map" }
+          Copy-Item -Recurse -Force tools/local "$dst/tools/"
+          Copy-Item -Force *.ps1, *.cmd $dst
+          if (Test-Path launch.json) { Copy-Item launch.json $dst -Force }
+          Write-Host "staged $((Get-ChildItem -Recurse -File $dst).Count) files into $dst"
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
