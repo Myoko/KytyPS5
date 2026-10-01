@@ -154,6 +154,13 @@ jobs:
           $map = '_Build/windows/kyty_emulator_clang_lld_link.map'
           if (Test-Path $map) { Copy-Item $map $dst -Force; Write-Host "staged $map" }
           Copy-Item -Recurse -Force tools/local "$dst/tools/"
+          # warmfile.py, which tools/local/static-precompile/precompile.py imports, parses Vulkan
+          # enum values out of this header while it is being imported, so it has to be there.
+          if (Test-Path '3rdparty/Vulkan-Headers/include') {
+            New-Item -ItemType Directory -Force "$dst/3rdparty/Vulkan-Headers" | Out-Null
+            Copy-Item -Recurse -Force '3rdparty/Vulkan-Headers/include' "$dst/3rdparty/Vulkan-Headers/"
+            Write-Host 'staged 3rdparty/Vulkan-Headers/include'
+          }
           Copy-Item -Force *.ps1, *.cmd $dst
           if (Test-Path launch.json) { Copy-Item launch.json $dst -Force }
           Write-Host "staged $((Get-ChildItem -Recurse -File $dst).Count) files into $dst"
