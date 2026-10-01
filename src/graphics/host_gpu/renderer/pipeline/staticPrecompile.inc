@@ -34,8 +34,28 @@ SeedSpecializations(const ShaderRecompiler::IR::Program& program) {
 		    program.descriptor_sources[image.source].indirect_image.has_value())
 			tables.push_back(index);
 	}
+	// Compute shaders that declare 3D images (outside tables) are often given 2D textures there (most
+	// specializations of recorded play the seeds missed), nearly always the last ones of them (95%:
+	// 3D 2D, 2D 2D, 3D 3D 2D...): every variant again with the last 1, 2, ... of them 2D (all subsets
+	// would be 2^k - 1 variants each instead of k).
+	const auto with_volumes_as_2d = [&](std::vector<ShaderRecompiler::IR::ResourceSpecialization> out) {
+		std::vector<uint32_t> volumes;
+		for (uint32_t index = 0; index < program.info.images.size(); index++) {
+			if (plain.images[index].dimension == ImageDimension::Dim3D && std::ranges::find(tables, index) == tables.end())
+				volumes.push_back(index);
+		}
+		if (program.stage != ShaderType::Compute || volumes.empty()) return out;
+		for (size_t variant = 0, count = out.size(); variant < count; variant++) {
+			auto flat = out[variant];
+			for (auto volume = volumes.rbegin(); volume != volumes.rend(); ++volume) {
+				flat.images[*volume].dimension = ImageDimension::Dim2D;
+				out.push_back(flat);
+			}
+		}
+		return out;
+	};
 	if (tables.empty() || tables.size() > 2 || !ShaderRecompiler::IR::PortableShaders()) {
-		return {plain};
+		return with_volumes_as_2d({plain});
 	}
 	constexpr uint32_t sizes[] = {1, 2, 4, 8, 16};
 	const auto         header  = static_cast<uint32_t>(program.srt_reads.size());
@@ -78,7 +98,7 @@ SeedSpecializations(const ShaderRecompiler::IR::Program& program) {
 			out.push_back(std::move(flat));
 		}
 	}
-	return out;
+	return with_volumes_as_2d(std::move(out));
 }
 
 // A recorded specialization's indirect image tables in their portable form (BuildResourceSpecialization):
@@ -268,7 +288,7 @@ bool PipelineCache::WarmSeeds(const PrecompileOptions& args, size_t& left_out) {
 	// Pipelines into the static cache, or a share's into a cache of its own; the objects themselves
 	// are not kept. The static cache is looked up first (CreatePipelineInternal): a rerun compiles
 	// only what it misses. With pipeline binaries every pipeline's binaries go to a shard file
-	// (.shard<i>of<n>, merged by --merge --prune), copied from the store when it holds them, else captured
+	// (.shard<i>of<n>-<seeds>, merged by --merge --prune), copied from the store when it holds them, else captured
 	// (from the static cache, else compiled through a cache of the shard's own).
 	const bool                            binaries = create_pipelines && m_graphics.pipeline_binaries_enabled;
 	std::unique_ptr<PipelineBinaryWriter> writer;
@@ -282,7 +302,9 @@ bool PipelineCache::WarmSeeds(const PrecompileOptions& args, size_t& left_out) {
 		if (m_graphics.device.createPipelineCache(&info, nullptr, &target) != vk::Result::eSuccess) target = nullptr;
 	}
 	auto target_file = binaries ? StaticBinariesPath() : StaticCachePath();
-	if (shards > 1 || binaries) target_file += fmt::format(".shard{}of{}", shard, shards);
+	// Named after the seed file too: a run shards several (precompile-windows.ps1: seeds and recorded).
+	if (shards > 1 || binaries)
+		target_file += fmt::format(".shard{}of{}-{}", shard, shards, Common::PathToString(args.seeds.stem()));
 	const auto save = [&] {
 		if (!binaries) return SaveStaticCache(target, target_file);
 		auto temporary = target_file;
@@ -291,9 +313,9 @@ bool PipelineCache::WarmSeeds(const PrecompileOptions& args, size_t& left_out) {
 		if (!writer->Save(temporary, StaticBinariesSignature(m_graphics))) return false;
 		std::filesystem::rename(temporary, target_file, error);
 		PipelineCacheLog("Static pipeline binaries: saved {} pipelines ({} created from the store, {} captured, {} left "
-		                 "out) to {}",
+		                 "out; {} held by other shards) to {}",
 		                 writer->Pipelines(), writer->Copied(), writer->Captured(), writer->LeftOut(),
-		                 Common::PathToString(target_file));
+		                 writer->ClaimedElsewhere(), Common::PathToString(target_file));
 		return !error;
 	};
 	const auto          driver_cache = target != nullptr ? target : m_driver_cache;
