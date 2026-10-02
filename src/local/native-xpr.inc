@@ -2805,6 +2805,12 @@ bool RenderExecutor::NativeXprEmit(CommandBuffer& buffer, NativeXprRecord& recor
 	                        emit.index_type == index_type;
 	std::pair<Buffer*, uint64_t> indices {};
 	if (!same_index) {
+		// A small CPU-dirty index range is copied into the upload ring at every use and never cleaned
+		// (ObtainBuffer): ~1300 copies of ~250 ranges a frame (1-1, Latria). Clean it once, as a store cleans
+		// the SRT's buffers: a later CPU write faults and the range is copied again.
+		if (index_bytes <= BufferCache::CACHING_PAGESIZE && buffer_cache.IsRegionCpuModified(index_base, index_bytes) &&
+		    !buffer_cache.IsRegionGpuModified(index_base, index_bytes))
+			buffer_cache.EnsureBufferContents(index_base, index_bytes);
 		const auto [owner, offset] = buffer_cache.ObtainBuffer(index_base, index_bytes, false);
 		if (owner == nullptr) return false;
 		indices = {owner, offset};
