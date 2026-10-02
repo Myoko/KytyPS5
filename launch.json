@@ -39,7 +39,17 @@
     "  switch, so it is still open upstream. Modes 2 and 3 are not alternatives: bufferCache.cpp",
     "  documents 2 as mode 1 plus readbacks whose last writer is submitted but still running, and",
     "  3 as mode 1 plus a duplicate graphics-queue copy for comparison, so both take the same or a",
-    "  longer path. Only 0 avoids it, at the cost of the 34.80 -> 36.05 fps the mode is worth."
+    "  longer path. Only 0 avoids it, at the cost of the 34.80 -> 36.05 fps the mode is worth.",
+    "",
+    "* --printf-direction is Console where the contributor's file has Silent, so that LOGF lines",
+    "  reach the run log. run-windows.ps1 redirects the run to _Build\\run-logs\\<stamp>.out.log, so",
+    "  this adds no console noise, and the lines it adds are the ones worth having: whether the",
+    "  guest patches installed (\"Demon's Souls idle wait: installed portable 50 us backoff\") or",
+    "  refused (\"Demon's Souls idle wait: code signature differs; retaining guest code\").",
+    "  log.cpp's IsSilent() is exactly g_direction == Direction::Silent, and the LOGF macro is",
+    "  wrapped in !IsSilent(), so under Silent neither line appears even when the installer ran.",
+    "  That is why the idle patch could not be confirmed either way. Revert to Silent if the extra",
+    "  output ever costs a run."
   ],
   "checkpoint": "stage1-20260927",
   "command": [
@@ -56,7 +66,7 @@
     "--shader-log-direction",
     "Silent",
     "--printf-direction",
-    "Silent",
+    "Console",
     "--vblank-frequency",
     "240",
     "--present-mode",
