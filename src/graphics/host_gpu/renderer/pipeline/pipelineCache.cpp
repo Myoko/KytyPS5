@@ -1644,12 +1644,14 @@ template <typename Cache>
 auto FindProgramSource(Cache& cache, const ShaderRecompiler::IR::CompiledShaderInfo& program) {
 	auto found = cache.by_program.find(&program);
 	if (found == cache.by_program.end()) {
-		// Sources are node-stable and permutations live in deques, so a found pair
-		// stays valid until the source is erased (warm-code mismatch, first use).
+		// Sources are node-stable and permutations live in deques, so a pair stays valid until the source is
+		// erased (warm-code mismatch, first use). One pass indexes every permutation: a pass per program
+		// (8900 permutations, 0.1-4 ms) ran for each program a record store met first, hundreds in one frame
+		// when an area's draws were first stored (a 1.9 s frame at Boletaria 1-1).
 		for (auto& [key, source]: cache.programs)
 			for (const auto& permutation: source.permutations)
-				if (&permutation.program == &program)
-					found = cache.by_program.emplace(&program, std::pair {&source, &permutation}).first;
+				cache.by_program.try_emplace(&permutation.program, std::pair {&source, &permutation});
+		found = cache.by_program.find(&program);
 	}
 	return found;
 }
