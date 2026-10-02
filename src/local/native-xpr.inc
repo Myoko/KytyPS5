@@ -2651,11 +2651,22 @@ bool RenderExecutor::NativeXprValidateResources(NativeXprRecord& record, uint64_
 	// TouchLiveBuffer also keeps the owners from the garbage collector, as the
 	// normal path's per-draw ObtainBuffer would.
 	const bool cpu_proven = !mapping_moved && cpu_epoch != 0 && cpu_epoch == record.cpu_epoch;
-	for (const auto& dep: record.buffers) {
-		if ((mapping_moved && !range_current(dep)) ||
-		    !buffers.TouchLiveBuffer(dep.id, dep.handle, dep.address, dep.size)) {
-			return false;
+	// A buffer or image the record binds is gone or replaced (textures streaming in and out): its slots are
+	// resolved again from the descriptors it holds, as for a descriptor change, instead of dropping the record
+	// (whose draws then took the normal path until a store, within the store budget, made it again).
+	const auto rebind = [&] {
+		std::array<ShaderRecompiler::IR::ResourceSnapshot, 2> snapshots;
+		for (uint32_t st = 0; st < record.stage_count; ++st) {
+			snapshots[st]               = record.stages[st].snapshot;
+			snapshots[st].flattened_srt = record.stages[st].flattened;
 		}
+		if (!NativeXprRebind(record, snapshots)) return false;
+		if (record.gather.traced) NativeXprRetrace(record);
+		return true;
+	};
+	for (const auto& dep: record.buffers) {
+		if (mapping_moved && !range_current(dep)) return false;
+		if (!buffers.TouchLiveBuffer(dep.id, dep.handle, dep.address, dep.size)) return rebind();
 		if (cpu_proven || !buffers.IsRegionCpuModified(dep.address, dep.size)) continue;
 		// The guest rewrote the range: bring the owner up to date as the store
 		// did (the normal path would copy the range for its draw instead).
@@ -2686,7 +2697,7 @@ bool RenderExecutor::NativeXprValidateResources(NativeXprRecord& record, uint64_
 	const bool per_image = kyty_local_native_image_proof_mode.load(std::memory_order_relaxed) != 0;
 	for (const auto& dep: record.images) {
 		auto* image = textures.m_slot_images.try_get(dep.id);
-		if (image == nullptr || image->serial != dep.serial) return false;
+		if (image == nullptr || image->serial != dep.serial) return rebind();
 		// The guest rewrote it (a texture streaming in): upload it as the normal path's FindTexture does,
 		// instead of dropping the record and storing it again.
 		if (image->IsCpuDirty()) {
@@ -2700,7 +2711,7 @@ bool RenderExecutor::NativeXprValidateResources(NativeXprRecord& record, uint64_
 			    !image->depth_id && !image->binding.needs_rebind) {
 				image->frame_accessed_last = textures.CurrentFrame();
 			} else if (!textures.IsSampledImageCurrent(dep.id, dep.desc)) {
-				return false;
+				return rebind();
 			}
 		}
 		(void)textures.GetImage(dep.id); // LRU, as FindTexture does
