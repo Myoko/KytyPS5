@@ -21,6 +21,11 @@ procedure [benchmarking](../../docs/BENCHMARKING.md).
   (same-process ABBA of a runtime switch), `windows/ab-exe.ps1` (ABBA of two builds),
   `windows/walk-run.ps1` (the walk route), `windows/prof-spot.ps1` (render-thread profile),
   `windows/pgo-train.ps1` (PGO profile refresh).
+- Hitches on screen: with `KYTY_HITCH_LOG_MS` the run log's SLOW Frame lines carry `unix_ms`;
+  `windows/record.ps1` records the emulator window with wall-clock timestamps (ffmpeg 8+:
+  `winget install Gyan.FFmpeg`), `windows/capture.ps1` takes stills without ffmpeg, and `hitch-sheet.py`
+  puts the screen before and after each slow frame side by side; `hitch-prof.py` splits a render-thread
+  profile into the slow frames' samples and the rest.
 
 ## Building and diagnostics
 

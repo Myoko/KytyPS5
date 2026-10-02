@@ -56,6 +56,9 @@ extern "C" {
 // into view at once; storing them all in one frame (about 16 us each) made it a hitch. The others ask again
 // in later frames (their draws take the normal path until then).
 [[gnu::used]] volatile std::atomic<uint32_t> kyty_local_native_xpr_store_budget {0};
+// N > 2: records stay N frames unused (2 before: a turn of the camera dropped every record behind it, and
+// turning back stored them all again within the store budget, thousands of normal draws a frame for seconds).
+[[gnu::used]] volatile std::atomic<uint32_t> kyty_local_native_xpr_keep_frames {0};
 }
 namespace {
 // word_patch value of a logged word whose change reaches nothing the evaluation produces.
@@ -456,6 +459,9 @@ void NativeXprPrefetchArrays(const Record& record) {
 struct RenderExecutor::NativeXprCache {
 	vk::Device                                                        device;
 	std::unordered_map<uint64_t, std::unique_ptr<NativeXprRecord>>    records;
+	// Past this many records the sweep keeps only recently used ones (NativeXprCollect); at
+	// RecordsHardCap a store drops them all (NativeXprStore).
+	static constexpr size_t RecordsSoftCap = 49152, RecordsHardCap = 65536;
 	// Open-addressing index over `records` (linear probing, at most half full):
 	// one cache line per lookup instead of bucket, node and owner.
 	struct IndexSlot {
@@ -612,7 +618,7 @@ struct RenderExecutor::NativeXprCache {
 	uint64_t              tried_relocate = 0;
 	std::vector<uint32_t> tried_suffix;
 	uint64_t              tried_hash     = 0;
-	// Relocated keys whose store was refused: the same refusal would come every frame.
+	// Keys whose store was refused: the same refusal would come every frame.
 	static constexpr uint64_t RefuseFrames = 64;
 	std::vector<SeenKey>      refused      = std::vector<SeenKey>(4096);
 	[[nodiscard]] bool        Refused(uint64_t hash, uint64_t frame) const {
@@ -668,14 +674,24 @@ struct RenderExecutor::NativeXprCache {
 	// Store requests in store_frame (kyty_local_native_xpr_store_budget).
 	uint64_t store_frame    = UINT64_MAX;
 	uint32_t store_requests = 0;
+	size_t   reported_records = 0;
 	~NativeXprCache() {
 		for (auto pool: pools) device.destroyDescriptorPool(pool);
 	}
 };
 
 namespace {
+// The shader addresses and the user-data counts. The same programs come with different numbers of user data
+// words (1-1: a pair's draws with 0 or 2 PS words), which moves the words in the key: relocation learns which
+// are pointers per layout (learned from the 0-word draws, the others' per-frame PS pointer stayed in their keys).
 uint64_t NativeXprPairKey(const std::vector<uint32_t>& key) {
-	return key.size() < 4 ? 0 : XXH3_64bits(key.data(), 4 * sizeof(uint32_t));
+	if (key.size() < 4) return 0;
+	std::array<uint32_t, 7> layout {key[0], key[1], key[2], key[3], 0, 0, 0};
+	for (size_t i = 0, at = 4; i < 3 && at < key.size(); ++i) {
+		layout[4 + i] = key[at];
+		at += 1 + key[at];
+	}
+	return XXH3_64bits(layout.data(), sizeof(layout));
 }
 } // namespace
 
@@ -819,19 +835,27 @@ void RenderExecutor::NativeXprRetire(std::unique_ptr<NativeXprRecord> record, bo
 }
 
 // Once per frame: the retired sets the GPU is done with are kept for reuse or freed, one call per
-// pool (each call drains the recording queue).
+// pool.
 void RenderExecutor::NativeXprCollect() {
 	if (!m_native_xpr) return;
 	auto&      cache = *m_native_xpr;
 	const auto frame = m_context.FrameNumber();
 	if (frame - cache.swept_frame >= 8) {
-		// Every eighth frame, records no draw used for two frames leave (their
+		// Every eighth frame, records no draw used for `keep` frames leave (their
 		// objects are gone or their keys changed); a pair whose records keep
-		// leaving unused stops storing.
+		// leaving unused stops storing. Past the soft cap only the last two frames' stay
+		// (at the hard cap NativeXprStore drops them all).
 		cache.swept_frame = frame;
+		const uint64_t keep = cache.records.size() > NativeXprCache::RecordsSoftCap
+		                          ? 2
+		                          : std::max(2u, kyty_local_native_xpr_keep_frames.load(std::memory_order_relaxed));
+		if (SlowLog::HitchThreshold() > 0.0 && cache.records.size() / 4096 != cache.reported_records / 4096) {
+			std::printf("[tsc %llu] XPR records %zu\n", static_cast<unsigned long long>(__rdtsc()), cache.records.size());
+			cache.reported_records = cache.records.size();
+		}
 		for (auto it = cache.records.begin(); it != cache.records.end();) {
 			auto& record = *it->second;
-			if (record.used_frame + 2 >= frame) {
+			if (record.used_frame + keep >= frame) {
 				++it;
 				continue;
 			}
@@ -1483,10 +1507,8 @@ void RenderExecutor::NativeXprStore(CommandBuffer& buffer, const DrawRenderState
 	auto&      pipelines = m_context.GetPipelineCache();
 	NativeXprKey(buffer, record->key);
 	auto& pair_stats = cache.pairs[NativeXprPairKey(record->key)];
-	// A refused relocated key is not requested again for a while (NativeXprCache::Refused).
-	const auto refuse = [&] {
-		if (cache.tried_relocate != 0) cache.Refuse(cache.tried_hash, m_context.FrameNumber());
-	};
+	// A refused key is not requested again for a while (NativeXprCache::Refused).
+	const auto refuse = [&] { cache.Refuse(cache.tried_hash, m_context.FrameNumber()); };
 	// Relocation (NativeXprTry): the key words of user data pairs the SRTs only read through
 	// (pointers to a new copy of the same tables every frame) and of user data nothing reads leave
 	// the key; the gather reads through the pointers. The VS's user data are the GS SGPRs (NGG ones
@@ -1735,7 +1757,7 @@ void RenderExecutor::NativeXprStore(CommandBuffer& buffer, const DrawRenderState
 		if (record->word_patch.size() != record->words.size())
 			record->word_patch.assign(record->words.size(), -1);
 	}
-	if (cache.records.size() >= 65536) {
+	if (cache.records.size() >= NativeXprCache::RecordsHardCap) {
 		if (SlowLog::HitchThreshold() > 0.0) {
 			std::printf("[tsc %llu] SLOW XprReset 0.0 ms records=%zu\n", static_cast<unsigned long long>(__rdtsc()),
 			            cache.records.size());
@@ -2664,7 +2686,15 @@ bool RenderExecutor::NativeXprValidateResources(NativeXprRecord& record, uint64_
 	const bool per_image = kyty_local_native_image_proof_mode.load(std::memory_order_relaxed) != 0;
 	for (const auto& dep: record.images) {
 		auto* image = textures.m_slot_images.try_get(dep.id);
-		if (image == nullptr || image->serial != dep.serial || image->IsCpuDirty()) return false;
+		if (image == nullptr || image->serial != dep.serial) return false;
+		// The guest rewrote it (a texture streaming in): upload it as the normal path's FindTexture does,
+		// instead of dropping the record and storing it again.
+		if (image->IsCpuDirty()) {
+			if (!image->registered || image->depth_id || image->binding.needs_rebind) return false;
+			(void)textures.FindTexture(dep.id, dep.desc);
+			image = textures.m_slot_images.try_get(dep.id);
+			if (image == nullptr || image->serial != dep.serial || image->IsCpuDirty()) return false;
+		}
 		if (registrations_moved) {
 			if (per_image && image->registered && image->registrations == dep.registration &&
 			    !image->depth_id && !image->binding.needs_rebind) {
@@ -2955,6 +2985,8 @@ bool RenderExecutor::NativeXprTry(CommandBuffer& buffer, bool clean, std::span<c
 	}
 	if (found != nullptr) NativeXprPrefetchFields(*found);
 	LiveCounters::Add(direct != nullptr ? LiveCounters::XprDirectTries : LiveCounters::XprTries);
+	// The key a store this try requests is refused under (a found record's too: dropped, it stores again).
+	cache.tried_hash = hash;
 	if (found == nullptr || !found->SameKey(cache.key)) {
 		LiveCounters::Add(LiveCounters::XprMissKey);
 		if (!relocating && whole_hash == 0) pair = cache.pairs.find(NativeXprPairKey(cache.key));
@@ -2962,20 +2994,21 @@ bool RenderExecutor::NativeXprTry(CommandBuffer& buffer, bool clean, std::span<c
 			LiveCounters::Add(LiveCounters::XprMissBlocked);
 			return false;
 		}
-		cache.tried_hash = hash;
 		// A run's whole key that comes again is stored as it is.
-		if (whole_hash != 0 && cache.SeenAgain(whole_hash, m_context.FrameNumber())) {
+		if (whole_hash != 0 && !cache.Refused(whole_hash, m_context.FrameNumber()) &&
+		    cache.SeenAgain(whole_hash, m_context.FrameNumber())) {
 			cache.tried_relocate = 0;
 			cache.tried_hash     = whole_hash;
 			request_store();
 			return false;
 		}
-		// The first store of a pair learns its pointer words.
-		if (relocating && (pair == cache.pairs.end() || !pair->second.relocation_known)) {
+		// The first store of a pair learns its pointer words (a run's too: a run whose tables move every frame
+		// never comes again under its whole key, so only a store learns that it can be relocated).
+		if (relocation && (relocating || whole_hash == 0) && (pair == cache.pairs.end() || !pair->second.relocation_known)) {
 			request_store();
 			return false;
 		}
-		if (cache.tried_relocate != 0 && cache.Refused(hash, m_context.FrameNumber())) {
+		if (cache.Refused(hash, m_context.FrameNumber())) {
 			LiveCounters::Add(LiveCounters::XprMissRefused);
 			return false;
 		}
