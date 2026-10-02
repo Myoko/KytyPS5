@@ -522,6 +522,16 @@ struct RenderExecutor::NativeXprCache {
 		uint64_t           tick = 0;
 	};
 	std::vector<RetiredSet> retired;
+	// Sets the GPU is done with, by layout, for that layout's next allocation (a driver allocation and
+	// free are a call each); the layout of every set allocated here.
+	struct FreeSet {
+		vk::DescriptorPool pool;
+		vk::DescriptorSet  set;
+	};
+	static constexpr size_t FreeSetsPerLayout = 32, FreeSetsMax = 2048;
+	std::unordered_map<VkDescriptorSetLayout, std::vector<FreeSet>> free_sets;
+	std::unordered_map<VkDescriptorSet, VkDescriptorSetLayout>      set_layouts;
+	size_t                                                          free_count = 0;
 	std::vector<vk::DescriptorPool>                                pools;
 	std::vector<uint32_t>                                          key;
 	// Store request: the reads of the normal draw's SRT evaluation.
@@ -592,12 +602,13 @@ struct RenderExecutor::NativeXprCache {
 	}
 	// Relocation (direct draws: an indirect run that misses is tried again per draw, so its uses
 	// would not count the same in every frame): the latest try's key before its pointer words left
-	// it, the words it left out, which use of the rest in the frame it was and its hash (for the
-	// store a miss requests); per program, the user data a record may take from each draw.
+	// it, the words it left out, the words that joined the rest (its mesh, which use of them in the
+	// frame it was) and its hash (for the store a miss requests); per program, the user data a record
+	// may take from each draw.
 	std::vector<uint32_t> full_key;
-	uint64_t              tried_relocate   = 0;
-	uint32_t              tried_occurrence = 0;
-	uint64_t              tried_hash       = 0;
+	uint64_t              tried_relocate = 0;
+	std::vector<uint32_t> tried_suffix;
+	uint64_t              tried_hash     = 0;
 	// Relocated keys whose store was refused: the same refusal would come every frame.
 	static constexpr uint64_t RefuseFrames = 64;
 	std::vector<SeenKey>      refused      = std::vector<SeenKey>(4096);
@@ -733,6 +744,14 @@ vk::DescriptorSet RenderExecutor::NativeXprAllocateSet(vk::DescriptorSetLayout l
                                                        vk::DescriptorPool& pool_out) {
 	auto&      cache  = NativeXprState();
 	const auto device = cache.device;
+	if (const auto found = cache.free_sets.find(static_cast<VkDescriptorSetLayout>(layout));
+	    found != cache.free_sets.end() && !found->second.empty()) {
+		const auto item = found->second.back();
+		found->second.pop_back();
+		--cache.free_count;
+		pool_out = item.pool;
+		return item.set;
+	}
 	vk::DescriptorSetAllocateInfo allocate {};
 	allocate.descriptorSetCount = 1;
 	allocate.pSetLayouts        = &layout;
@@ -743,6 +762,7 @@ vk::DescriptorSet RenderExecutor::NativeXprAllocateSet(vk::DescriptorSetLayout l
 		allocate.descriptorPool = pool;
 		if (device.allocateDescriptorSets(&allocate, &set) == vk::Result::eSuccess) {
 			pool_out = pool;
+			cache.set_layouts[static_cast<VkDescriptorSet>(set)] = static_cast<VkDescriptorSetLayout>(layout);
 			return set;
 		}
 	}
@@ -765,6 +785,7 @@ vk::DescriptorSet RenderExecutor::NativeXprAllocateSet(vk::DescriptorSetLayout l
 	allocate.descriptorPool = pool;
 	EXIT_IF(device.allocateDescriptorSets(&allocate, &set) != vk::Result::eSuccess);
 	pool_out = pool;
+	cache.set_layouts[static_cast<VkDescriptorSet>(set)] = static_cast<VkDescriptorSetLayout>(layout);
 	return set;
 }
 
@@ -791,8 +812,8 @@ void RenderExecutor::NativeXprRetire(std::unique_ptr<NativeXprRecord> record, bo
 	cache.stale[hash] = std::move(record);
 }
 
-// Once per frame: free the retired sets the GPU is done with, one call per pool
-// (each call drains the recording queue).
+// Once per frame: the retired sets the GPU is done with are kept for reuse or freed, one call per
+// pool (each call drains the recording queue).
 void RenderExecutor::NativeXprCollect() {
 	if (!m_native_xpr) return;
 	auto&      cache = *m_native_xpr;
@@ -823,6 +844,16 @@ void RenderExecutor::NativeXprCollect() {
 	std::vector<NativeXprCache::RetiredSet> done;
 	std::erase_if(cache.retired, [&](const NativeXprCache::RetiredSet& item) {
 		if (!scheduler.IsFree(item.tick)) return false;
+		const auto layout = cache.set_layouts.find(static_cast<VkDescriptorSet>(item.set));
+		if (layout != cache.set_layouts.end() && cache.free_count < NativeXprCache::FreeSetsMax) {
+			auto& sets = cache.free_sets[layout->second];
+			if (sets.size() < NativeXprCache::FreeSetsPerLayout) {
+				sets.push_back({item.pool, item.set});
+				++cache.free_count;
+				return true;
+			}
+		}
+		if (layout != cache.set_layouts.end()) cache.set_layouts.erase(layout);
 		done.push_back(item);
 		return true;
 	});
@@ -1530,7 +1561,8 @@ void RenderExecutor::NativeXprStore(CommandBuffer& buffer, const DrawRenderState
 	if (runtime) {
 		uint64_t total_words = 0;
 		for (const auto& [address, size]: cache.reads) {
-			if (address % 4 != 0 || size % 4 != 0 || size == 0 || size > 4096) {
+			// (Reads of the null page are zeros the record could not read again.)
+			if (address % 4 != 0 || size % 4 != 0 || size == 0 || size > 4096 || address < 0x10000) {
 				refuse();
 				return LiveCounters::Add(LiveCounters::XprRefuseReads);
 			}
@@ -1650,11 +1682,11 @@ void RenderExecutor::NativeXprStore(CommandBuffer& buffer, const DrawRenderState
 	*slot = std::move(draw_state);
 	if (cache.emit.state == slot.get()) cache.emit.state = nullptr;
 
-	// A relocated key: without the roots' and the unread words, with the use in the frame (NativeXprTry).
+	// A relocated key: without the roots' and the unread words, with the words the try added (NativeXprTry).
 	if (!record->roots.empty() || !record->unread.empty()) {
 		for (const auto& root: record->roots) record->key[root.low_word] = record->key[root.high_word] = 0;
 		for (const auto& word: record->unread) record->key[word.word] = 0;
-		record->key.push_back(cache.tried_occurrence);
+		record->key.insert(record->key.end(), cache.tried_suffix.begin(), cache.tried_suffix.end());
 		LiveCounters::Add(LiveCounters::XprRelocatedStored);
 	}
 	record->HoldKey();
@@ -2744,6 +2776,12 @@ bool RenderExecutor::NativeXprEmit(CommandBuffer& buffer, NativeXprRecord& recor
 	for (const auto& dep: record.images) {
 		auto* image = textures.m_slot_images.try_get(dep.id);
 		if (image == nullptr) return false;
+		// A DCC image with a fast clear pending: the normal path's FindTexture applies it first.
+		if (dep.desc.info.metadata.kind == ImageMetadataKind::Dcc) {
+			if (image->info.IsVolume()) return false;
+			for (uint32_t layer = dep.range.base_layer; layer < dep.range.base_layer + dep.range.layer_count; ++layer)
+				if (layer >= 32 || textures.IsMetaCleared(dep.desc.info.metadata.range.address, layer)) return false;
+		}
 		image->Transit(dep.layout, vk::AccessFlagBits2::eShaderRead, dep.range, vk_buffer);
 	}
 	scheduler.BeginRendering(keep_clears ? draw_state.first_rendering : draw_state.rendering);
@@ -2836,6 +2874,8 @@ bool RenderExecutor::NativeXprTry(CommandBuffer& buffer, bool clean, std::span<c
                                   uint64_t index_base, uint64_t index_bytes, vk::IndexType index_type,
                                   const NativeXprDirectDraw* direct) {
 	auto& cache = NativeXprState();
+	// A changed state leaves no key behind, even when this try stops before computing it.
+	if (!clean) cache.state_key_valid = false;
 	if (buffer.IsInvalid() || (direct == nullptr ? commands.empty() : !commands.empty()) || commands.size() > 64 ||
 	    index_base == 0 || index_bytes == 0)
 		return false;
@@ -2857,10 +2897,16 @@ bool RenderExecutor::NativeXprTry(CommandBuffer& buffer, bool clean, std::span<c
 	if (pair != cache.pairs.end() && pair->second.relocate != 0) {
 		cache.full_key = cache.key;
 		for (auto words = pair->second.relocate; words != 0; words &= words - 1) cache.key[std::countr_zero(words)] = 0;
-		cache.tried_relocate   = pair->second.relocate;
-		cache.tried_occurrence = cache.NextOccurrence(
-		    XXH3_64bits(cache.key.data(), cache.key.size() * sizeof(uint32_t)), m_context.FrameNumber());
-		cache.key.push_back(cache.tried_occurrence);
+		cache.tried_relocate = pair->second.relocate;
+		const auto masked    = cache.key.size();
+		// The mesh (the draw's first index) joins the key, so the n-th use counts the uses of one mesh: a
+		// record keeps its object while the frame's other objects of the pair come and go (counting the
+		// pair's uses, a walk re-evaluated most relocated records every frame).
+		cache.key.push_back(static_cast<uint32_t>(index_base));
+		cache.key.push_back(static_cast<uint32_t>(index_base >> 32u));
+		cache.key.push_back(cache.NextOccurrence(XXH3_64bits(cache.key.data(), cache.key.size() * sizeof(uint32_t)),
+		                                         m_context.FrameNumber()));
+		cache.tried_suffix.assign(cache.key.begin() + static_cast<std::ptrdiff_t>(masked), cache.key.end());
 	}
 	const auto hash  = XXH3_64bits(cache.key.data(), cache.key.size() * sizeof(uint32_t));
 	auto* const found = cache.IndexFind(hash);
@@ -2869,15 +2915,24 @@ bool RenderExecutor::NativeXprTry(CommandBuffer& buffer, bool clean, std::span<c
 	if (found == nullptr || !found->SameKey(cache.key)) {
 		LiveCounters::Add(LiveCounters::XprMissKey);
 		if (!relocating) pair = cache.pairs.find(NativeXprPairKey(cache.key));
-		if (pair != cache.pairs.end() && (pair->second.blocked || pair->second.unstorable)) return false;
+		if (pair != cache.pairs.end() && (pair->second.blocked || pair->second.unstorable)) {
+			LiveCounters::Add(LiveCounters::XprMissBlocked);
+			return false;
+		}
 		cache.tried_hash = hash;
 		// The first store of a pair learns its pointer words.
 		if (relocating && (pair == cache.pairs.end() || !pair->second.relocation_known)) {
 			m_native_xpr_store = true;
 			return false;
 		}
-		if (cache.tried_relocate != 0 && cache.Refused(hash, m_context.FrameNumber())) return false;
-		if (!cache.SeenAgain(hash, m_context.FrameNumber())) return false;
+		if (cache.tried_relocate != 0 && cache.Refused(hash, m_context.FrameNumber())) {
+			LiveCounters::Add(LiveCounters::XprMissRefused);
+			return false;
+		}
+		if (!cache.SeenAgain(hash, m_context.FrameNumber())) {
+			LiveCounters::Add(LiveCounters::XprMissUnseen);
+			return false;
+		}
 		m_native_xpr_store = true;
 		return false;
 	}
