@@ -5,7 +5,7 @@
 // KYTY_ASYNC_UPLOAD=2: the staging copies of image uploads (ObtainBufferForImage) as well.
 //
 // The worker reads the backing view, never the guest range: a guest write or protection change
-// cannot fault it, and unmapping drains the queue before the range can be reused.
+// cannot fault it, and unmapping a range waits for the jobs on it before the range can be reused.
 
 #include "local-platform.h"
 
@@ -37,27 +37,16 @@ public:
 	Worker(const Worker&)            = delete;
 	Worker& operator=(const Worker&) = delete;
 
-	// Render thread only. Returns the sequence number that covers this copy.
-	uint64_t Push(uint8_t* destination, const uint8_t* source, uint64_t size) {
-		const uint64_t head = m_head.load(std::memory_order_relaxed);
-		while (head - m_done.load(std::memory_order_acquire) >= Capacity) {
-			Kick();
-			_mm_pause();
-		}
-		m_jobs[head % Capacity] = {destination, source, size, nullptr, nullptr};
-		m_head.store(head + 1, std::memory_order_seq_cst);
-		return head + 1;
+	// Render thread only: copies the backing of guest [guest, guest + size). Returns the sequence number
+	// that covers this copy.
+	uint64_t Push(uint8_t* destination, const uint8_t* source, uint64_t size, uint64_t guest) {
+		return Add({destination, source, size, nullptr, nullptr, guest, size});
 	}
-	// Render thread only: runs call(context, a, b) on the worker in queue order.
-	uint64_t PushCall(void (*call)(void*, uint64_t, uint64_t), void* context, uint64_t a, uint64_t b) {
-		const uint64_t head = m_head.load(std::memory_order_relaxed);
-		while (head - m_done.load(std::memory_order_acquire) >= Capacity) {
-			Kick();
-			_mm_pause();
-		}
-		m_jobs[head % Capacity] = {reinterpret_cast<uint8_t*>(a), nullptr, b, call, context};
-		m_head.store(head + 1, std::memory_order_seq_cst);
-		return head + 1;
+	// Render thread only: runs call(context, a, b) on the worker in queue order; it works on guest
+	// [guest, guest + guest_size).
+	uint64_t PushCall(void (*call)(void*, uint64_t, uint64_t), void* context, uint64_t a, uint64_t b, uint64_t guest,
+	                  uint64_t guest_size) {
+		return Add({reinterpret_cast<uint8_t*>(a), nullptr, b, call, context, guest, guest_size});
 	}
 	// Render thread only: wakes the worker after a batch of pushes.
 	void Kick() {
@@ -65,6 +54,16 @@ public:
 	}
 	// Render thread only: the sequence number of the last pushed copy.
 	[[nodiscard]] uint64_t Pushed() const { return m_head.load(std::memory_order_relaxed); }
+	// Render thread only: the sequence number of the last pending job on guest [vaddr, vaddr + size), or 0.
+	[[nodiscard]] uint64_t PendingOn(uint64_t vaddr, uint64_t size) const {
+		const uint64_t head = m_head.load(std::memory_order_relaxed);
+		uint64_t       last = 0;
+		for (uint64_t sequence = m_done.load(std::memory_order_acquire); sequence < head; ++sequence) {
+			const Job& job = m_jobs[sequence % Capacity];
+			if (job.guest < vaddr + size && vaddr < job.guest + job.guest_size) last = sequence + 1;
+		}
+		return last;
+	}
 
 	// Any thread: returns once every copy up to `sequence` is in staging memory.
 	void Wait(uint64_t sequence) {
@@ -85,8 +84,20 @@ private:
 		const uint8_t* source;
 		uint64_t       size;
 		void (*call)(void*, uint64_t, uint64_t); // with destination as `a`, size as `b`
-		void* context;
+		void*    context;
+		uint64_t guest, guest_size;
 	};
+
+	uint64_t Add(const Job& job) {
+		const uint64_t head = m_head.load(std::memory_order_relaxed);
+		while (head - m_done.load(std::memory_order_acquire) >= Capacity) {
+			Kick();
+			_mm_pause();
+		}
+		m_jobs[head % Capacity] = job;
+		m_head.store(head + 1, std::memory_order_seq_cst);
+		return head + 1;
+	}
 
 	void Run() {
 		LocalPlatform::SetThreadName("Kyty.Upload");
@@ -157,6 +168,11 @@ inline void Wait(uint64_t sequence) {
 // Render thread: every recorded copy reaches staging memory before this returns.
 inline void Drain() {
 	Wait(SubmitSequence());
+}
+
+// Render thread: every recorded job on guest [vaddr, vaddr + size) is done before this returns.
+inline void DrainRange(uint64_t vaddr, uint64_t size) {
+	if (g_used.load(std::memory_order_relaxed)) Wait(Get().PendingOn(vaddr, size));
 }
 
 } // namespace AsyncUpload
