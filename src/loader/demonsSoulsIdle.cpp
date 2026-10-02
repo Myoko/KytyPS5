@@ -17,6 +17,14 @@
 namespace Loader::DemonsSoulsIdle {
 namespace {
 constexpr uint64_t     PageSize = 0x4000, CaveOffset = 0x8000000;
+// PollBytes[16..20) is the immediate of the poll's `sub rsp, imm32` (that instruction is 48 81 ec at
+// [13,16)). The immediate is as build-specific as the RIP-relative displacement after it, which the
+// prologue span already stops short of: PPSA01341 01.007.000 has 0x88 there and PPSA01340 01.005.000
+// has 0x98, its frame 16 bytes larger. Both are passed over; everything else in the prologue still
+// has to match, and since the call site's own bytes matched exactly and only one such call exists
+// (checked against PPSA01340 01.005.000's eboot.bin: one candidate, at rva 0x82d1bb calling
+// 0x82d4a0), the site stays unambiguous.
+constexpr size_t       StackImmediate = 16, StackImmediateEnd = 20;
 uint64_t               cave = 0, site = 0;
 std::array<uint8_t, 5> installed_call {}, original_call {};
 
@@ -51,13 +59,22 @@ bool FindSites(const Program& program, uint64_t* call, uint64_t* poll) {
 			int32_t displacement = 0;
 			std::memcpy(&displacement, reinterpret_cast<const void*>(from + 1), sizeof(displacement));
 			const auto to = from + 5 + static_cast<int64_t>(displacement);
-			if (to < base || to > end - PollBytes.size() || !Readable(to, PollBytes.size()) ||
-			    !std::equal(prologue.begin(), prologue.end(), reinterpret_cast<const uint8_t*>(to)))
+			if (to < base || to > end - PollBytes.size() || !Readable(to, PollBytes.size())) continue;
+			const auto* target = reinterpret_cast<const uint8_t*>(to);
+			if (!std::equal(prologue.begin(), prologue.begin() + StackImmediate, target) ||
+			    !std::equal(prologue.begin() + StackImmediateEnd, prologue.end(), target + StackImmediateEnd))
 				continue;
-			if (found++ != 0) return false;
+			if (found++ != 0) {
+				std::printf("Demon's Souls idle wait: more than one candidate call site; retaining guest code\n");
+				return false;
+			}
 			*call = from;
 			*poll = to;
 		}
+	}
+	if (found != 1) {
+		std::printf("Demon's Souls idle wait: %zu candidate call site(s) in %s, one expected\n", found,
+		            program.file_name.filename().string().c_str());
 	}
 	return found == 1;
 }
