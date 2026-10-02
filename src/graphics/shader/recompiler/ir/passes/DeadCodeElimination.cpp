@@ -1,6 +1,7 @@
 #include "graphics/shader/recompiler/ir/passes/DeadCodeElimination.h"
 
 #include <algorithm>
+#include <unordered_set>
 #include <vector>
 
 namespace Libs::Graphics::ShaderRecompiler::IR {
@@ -24,10 +25,11 @@ static bool RemoveDeadPhiWebs(const BlockList& blocks) {
 	std::vector<Inst*> dead;
 	std::vector<Inst*> web;
 	std::vector<Inst*> stack;
+	// Membership of `dead` (looked up per phi and, when erasing, per instruction).
+	std::unordered_set<const Inst*> dead_set;
 	for (auto* block: blocks) {
 		for (auto& inst: block->Instructions()) {
-			if (inst.GetOpcode() != ValueOpcode::Phi ||
-			    std::ranges::find(dead, &inst) != dead.end()) {
+			if (inst.GetOpcode() != ValueOpcode::Phi || dead_set.contains(&inst)) {
 				continue;
 			}
 			web.clear();
@@ -53,6 +55,7 @@ static bool RemoveDeadPhiWebs(const BlockList& blocks) {
 				continue;
 			}
 			dead.insert(dead.end(), web.begin(), web.end());
+			dead_set.insert(web.begin(), web.end());
 		}
 	}
 	if (dead.empty()) {
@@ -64,7 +67,7 @@ static bool RemoveDeadPhiWebs(const BlockList& blocks) {
 	for (auto* block: blocks) {
 		auto& instructions = block->Instructions();
 		for (auto inst = instructions.begin(); inst != instructions.end();) {
-			if (std::ranges::find(dead, &*inst) != dead.end()) {
+			if (dead_set.contains(&*inst)) {
 				inst = instructions.erase(inst);
 			} else {
 				inst++;
