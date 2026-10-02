@@ -484,7 +484,7 @@ private:
 			Fail(use_pc, fmt::format("cyclic typed planning value {} without a phi",
 			                         ValueOpcodeName(inst->GetOpcode())));
 		}
-		if (std::ranges::find(m_visited, inst) != m_visited.end()) {
+		if (m_visited.contains(inst)) {
 			return;
 		}
 		m_visiting.push_back(inst);
@@ -492,7 +492,7 @@ private:
 			Collect(inst->Arg(index), use_pc);
 		}
 		m_visiting.pop_back();
-		m_visited.push_back(inst);
+		m_visited.insert(inst);
 		if (!IsRawRead(m_program, *inst)) {
 			return;
 		}
@@ -504,7 +504,10 @@ private:
 			}
 			return;
 		}
-		for (uint32_t slot = 0; slot < m_program.srt_reads.size(); slot++) {
+		// Only reads of one structural hash can be equivalent; within it the earliest slot wins, as
+		// when every read was compared (big compute shaders: thousands of reads, 100+ ms a translation).
+		auto& bucket = m_buckets[StructuralHash(value)];
+		for (const auto slot: bucket) {
 			if (EquivalentValue(m_program, value, m_program.srt_reads[slot].value)) {
 				m_patches.push_back({inst, slot, false});
 				return;
@@ -512,15 +515,49 @@ private:
 		}
 		const auto slot = static_cast<uint32_t>(m_program.srt_reads.size());
 		m_program.srt_reads.push_back({value, slot});
+		bucket.push_back(slot);
 		m_patches.push_back({inst, slot, true});
 	}
 
+	// Equal for every pair EquivalentValue accepts: it hashes only what that compares (opcode, type,
+	// argument count, immediates, arguments; a phi's blocks, not its arguments, so no cycle is followed).
+	uint64_t StructuralHash(Value value) {
+		const auto mix = [](uint64_t hash, uint64_t part) {
+			return hash ^ (part + 0x9e3779b97f4a7c15ull + (hash << 6u) + (hash >> 2u));
+		};
+		value           = value.Resolve();
+		const auto type = static_cast<uint64_t>(value.GetType());
+		if (value.IsImmediate()) {
+			return mix(type, value.GetType() == Type::U32 ? value.U32() : value.GetType() == Type::U64 ? value.U64() : 0);
+		}
+		const auto* inst = value.TryInstruction();
+		if (inst == nullptr) {
+			return type;
+		}
+		if (const auto found = m_hashes.find(inst); found != m_hashes.end()) {
+			return found->second;
+		}
+		auto hash = mix(mix(type, static_cast<uint64_t>(inst->GetOpcode())), inst->NumArgs());
+		for (size_t index = 0; index < inst->NumArgs(); index++) {
+			hash = mix(hash, inst->GetOpcode() == ValueOpcode::Phi ? reinterpret_cast<uintptr_t>(inst->PhiBlock(index))
+			                                                         : StructuralHash(inst->Arg(index)));
+		}
+		m_hashes.emplace(inst, hash);
+		return hash;
+	}
+
 	void PatchReads() {
+		// Each patched read's place in its block, found in one pass (inserting keeps list positions valid).
+		std::unordered_map<const Inst*, decltype(m_program.blocks.front()->Instructions().begin())> places;
+		for (const auto& patch: m_patches) places.emplace(patch.inst, decltype(places)::mapped_type {});
+		for (auto* block: m_program.blocks) {
+			auto& list = block->Instructions();
+			for (auto it = list.begin(); it != list.end(); ++it)
+				if (const auto place = places.find(&*it); place != places.end()) place->second = it;
+		}
 		for (const auto& patch: m_patches) {
 			auto* block = patch.inst->Parent();
-			auto& list  = block->Instructions();
-			auto  where =
-			    std::ranges::find_if(list, [&](const Inst& inst) { return &inst == patch.inst; });
+			auto  where = places.at(patch.inst);
 			const auto resource =
 			    Value(&*block->PrependNewInst(where, ValueOpcode::GetSrtResource));
 			const auto flat = Value(&*block->PrependNewInst(where, ValueOpcode::ReadConst,
@@ -547,10 +584,12 @@ private:
 		}
 	}
 
-	Program&           m_program;
-	std::vector<Inst*> m_visiting;
-	std::vector<Inst*> m_visited;
-	std::vector<Patch> m_patches;
+	Program&                                                m_program;
+	std::vector<Inst*>                                      m_visiting;
+	std::unordered_set<const Inst*>                         m_visited;
+	std::vector<Patch>                                      m_patches;
+	std::unordered_map<uint64_t, std::vector<uint32_t>>     m_buckets; // srt_reads slots by StructuralHash
+	std::unordered_map<const Inst*, uint64_t>               m_hashes;
 };
 
 // Entries live only for one evaluation. Open addressing avoids allocating a
