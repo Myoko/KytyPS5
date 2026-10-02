@@ -8,3 +8,5 @@ cmake-build-debug/
 _PipelineCache/
 /game-path.txt
 /no-precompile-prompt.txt
+__pycache__/
+*.pyc
