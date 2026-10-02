@@ -8,6 +8,8 @@
 #   .\run-windows.ps1 -NoRedZone             without guest red-zone protection
 #   .\run-windows.ps1 -Patch <cheat.json>    apply an etaHEN-style game patch
 #   .\run-windows.ps1 -Fullscreen -AspectFit keep the game's 16:9 (black bars) instead of stretching
+#   .\run-windows.ps1 -Language 11           the console language (0-29 as the PS5 numbers them: 1 English (US),
+#                                            11 Chinese (Simplified); default: the config's)
 #   .\run-windows.ps1 -Set KEY=VALUE         override a switch of the config (KEY= removes it)
 #   .\run-windows.ps1 -FrameGen 1            DLSS frame generation, 1 generated frame per rendered
 #                                            frame (2x); needs _Build\deps\streamline\sdk
@@ -40,6 +42,7 @@ param(
 	[string[]]$Set = @(),
 	[string]$Patch = '',
 	[switch]$AspectFit,
+	[int]$Language = -1,
 	[int]$FrameGen = 0,
 	[string]$Affinity = '',
 	[switch]$Prompt,
@@ -120,6 +123,7 @@ if ($Width -gt 0) { Set-Option '--screen-width' "$Width" }
 if ($Height -gt 0) { Set-Option '--screen-height' "$Height" }
 if ($Fullscreen) { $options.Add('--fullscreen') }
 if ($PresentMode) { Set-Option '--present-mode' $PresentMode }
+if ($Language -ge 0) { Set-Option '--console-language' "$Language" }
 # The game's clock assumes the console's 60 Hz vblank (its frame-rate target is 60 fps and the
 # flip queue, one flip per vblank, is what paces it): with the Linux configs' 240 Hz vblank the
 # cutscenes flipped at up to 230 fps and played about four times too fast, and gameplay started

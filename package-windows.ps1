@@ -26,7 +26,8 @@ if ($process.ExitCode -ne 0) { throw 'build failed' }
 
 New-Item -ItemType Directory -Force $Out | Out-Null
 Copy-Item "$build\kyty_emulator.exe", "$build\kyty_shader_precompile.exe", "$build\libwinpthread-1.dll",
-	"$PSScriptRoot\run-windows.ps1", "$PSScriptRoot\precompile-windows.ps1" $Out
+	"$PSScriptRoot\run-windows.ps1", "$PSScriptRoot\precompile-windows.ps1", "$PSScriptRoot\launcher.ps1",
+	"$PSScriptRoot\launcher.cmd" $Out
 # The seed file: every shader of the game with the pipelines it draws them with, from the game's files
 # (tools\local\static-precompile\precompile.py seeds; its compute keys assume NVIDIA's 32-wide subgroups).
 $seeds = "$PSScriptRoot\_Build\static-precompile\seeds.seeds"
