@@ -240,14 +240,15 @@ void GpuResourceManager::RefreshBdaRanges() {
 			if (old < m_old_bda_region_requests.size() && m_old_bda_region_requests[old].address == start &&
 			    m_old_bda_region_requests[old].size == request.size) {
 				request = m_old_bda_region_requests[old];
+			} else if (start / TRACKER_REGION_SIZE < BdaDirtyRegions::Regions) {
+				// A new request starts unproven.
+				BdaDirtyRegions::Mark(start / TRACKER_REGION_SIZE);
 			}
 			start = finish;
 		}
 	}
 	m_bda_mapping_epoch = m_mapping_epoch;
 	m_bda_registration_epoch = registered;
-	// New requests start unproven.
-	BdaDirtyRegions::MarkAll();
 }
 
 bool GpuResourceManager::PrepareBdaReadRanges(std::span<const GuestRange> ranges) {

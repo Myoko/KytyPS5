@@ -142,6 +142,25 @@ uint32_t NativeXprReadGuestWord(uint64_t address) {
 		std::memcpy(&value, reinterpret_cast<const void*>(address), sizeof(value));
 	return value;
 }
+
+// The way the SRT evaluation reads a range: spans through the watched-page aware
+// span reader, single words otherwise.
+void NativeXprReadWords(uint64_t address, uint32_t count, uint32_t* out) {
+	for (uint32_t done = 0; done < count;) {
+		const uint32_t chunk = std::min<uint32_t>(count - done, 16);
+		const auto     at    = address + 4ull * done;
+		if (chunk < 2 || !Libs::LibKernel::Memory::TryReadGpuShaderSpan(at, out + done, chunk * 4ull, false))
+			for (uint32_t i = 0; i < chunk; ++i) out[done + i] = NativeXprReadGuestWord(at + 4ull * i);
+		done += chunk;
+	}
+}
+
+// Retrace's lists mostly come out of address-ordered runs already sorted: the check is one pass. Equal
+// elements are identical or merged independently of their order.
+template <typename Range, typename Less = std::less<>>
+void NativeXprSort(Range& range, Less less = {}) {
+	if (!std::ranges::is_sorted(range, less)) std::ranges::sort(range, less);
+}
 } // namespace
 
 // Draw state, identified by every graphics register except user data: the
@@ -1603,9 +1622,10 @@ void RenderExecutor::NativeXprStore(CommandBuffer& buffer, const DrawRenderState
 		record->reads.reserve(cache.reads.size());
 		record->words.reserve(total_words);
 		for (const auto& [address, size]: cache.reads) {
-			record->reads.emplace_back(address, static_cast<uint32_t>(size / 4));
-			for (uint64_t offset = 0; offset < size; offset += 4)
-				record->words.push_back(NativeXprReadGuestWord(address + offset));
+			const auto count = static_cast<uint32_t>(size / 4);
+			record->reads.emplace_back(address, count);
+			record->words.resize(record->words.size() + count);
+			NativeXprReadWords(address, count, record->words.data() + record->words.size() - count);
 		}
 		// What RefreshShaders evaluated each stage's SRT with.
 		const auto& sh  = buffer.GetShaders();
@@ -1771,18 +1791,6 @@ void RenderExecutor::NativeXprStore(CommandBuffer& buffer, const DrawRenderState
 	cache.IndexInsert(hash, record.get());
 	cache.records[hash] = std::move(record);
 	LiveCounters::Add(LiveCounters::XprStored);
-}
-
-// The way the SRT evaluation reads a range: spans through the watched-page aware
-// span reader, single words otherwise.
-void NativeXprReadWords(uint64_t address, uint32_t count, uint32_t* out) {
-	for (uint32_t done = 0; done < count;) {
-		const uint32_t chunk = std::min<uint32_t>(count - done, 16);
-		const auto     at    = address + 4ull * done;
-		if (chunk < 2 || !Libs::LibKernel::Memory::TryReadGpuShaderSpan(at, out + done, chunk * 4ull, false))
-			for (uint32_t i = 0; i < chunk; ++i) out[done + i] = NativeXprReadGuestWord(at + 4ull * i);
-		done += chunk;
-	}
 }
 
 // Clean (specialization) reads go through the clean backing only; false when
@@ -1961,12 +1969,12 @@ void RenderExecutor::NativeXprRetrace(NativeXprRecord& record) {
 		for (const auto* reads: {&structural, &clean})
 			for (const auto& read: *reads) roots.emplace_back(read.address, read.root);
 		for (const auto& read: data) roots.emplace_back(read.address, read.root);
-		std::ranges::sort(roots);
+		NativeXprSort(roots);
 		for (size_t i = 1; i < roots.size(); ++i)
 			if (roots[i].first == roots[i - 1].first && roots[i].second != roots[i - 1].second) return;
 	}
 	const auto runs_of = [&](std::vector<StructuralRead>& reads, bool is_clean) {
-		std::sort(reads.begin(), reads.end());
+		NativeXprSort(reads);
 		// One entry per address, with the union of its uses.
 		auto& unique = scratch.unique;
 		unique.clear();
@@ -2003,7 +2011,7 @@ void RenderExecutor::NativeXprRetrace(NativeXprRecord& record) {
 		if (run.clean)
 			for (uint32_t i = 0; i < run.count; ++i)
 				words.push_back({run.address + 4ull * i, static_cast<int32_t>(run.first + i), -1, run.root, level_of(run.root)});
-	std::ranges::sort(words, by_level);
+	NativeXprSort(words, by_level);
 	gather.clean_spans.clear();
 	gather.clean_value.clear();
 	for (const auto& word: words) {
@@ -2026,7 +2034,7 @@ void RenderExecutor::NativeXprRetrace(NativeXprRecord& record) {
 	for (const auto& run: gather.structural)
 		if (!run.clean)
 			for (uint32_t i = 0; i < run.count; ++i) index_of.emplace_back(run.address + 4ull * i, run.first + i);
-	std::ranges::sort(index_of);
+	NativeXprSort(index_of);
 	// The usable pointers' halves as structural values.
 	const auto value_at = [&](uint64_t address) {
 		const auto it = std::ranges::lower_bound(index_of, std::pair {address, 0u});
@@ -2041,7 +2049,7 @@ void RenderExecutor::NativeXprRetrace(NativeXprRecord& record) {
 		gather.pointers.push_back({low, high});
 		gather.pointer_value[low] = gather.pointer_value[high] = 1;
 	}
-	std::ranges::sort(feeds);
+	NativeXprSort(feeds);
 	{
 		// Grouped by value in feed order: a count per value, its prefix sums as the
 		// starts, then the feeds placed at their value's cursor.
@@ -2062,7 +2070,7 @@ void RenderExecutor::NativeXprRetrace(NativeXprRecord& record) {
 		for (size_t f = 0; f < feeds.size(); ++f)
 			if (feed_value[f] != UINT32_MAX) gather.feeds[cursor[feed_value[f]]++] = feeds[f].second;
 	}
-	std::sort(data.begin(), data.end());
+	NativeXprSort(data);
 	gather.data.clear();
 	gather.targets_at.clear();
 	gather.targets.clear();
@@ -2085,7 +2093,7 @@ void RenderExecutor::NativeXprRetrace(NativeXprRecord& record) {
 	for (const auto& run: gather.data)
 		for (uint32_t i = 0; i < run.count; ++i)
 			words.push_back({run.address + 4ull * i, -1, static_cast<int32_t>(run.first + i), run.root, level_of(run.root)});
-	std::ranges::sort(words, by_level);
+	NativeXprSort(words, by_level);
 	gather.spans.clear();
 	gather.words.clear();
 	gather.word_value.clear();

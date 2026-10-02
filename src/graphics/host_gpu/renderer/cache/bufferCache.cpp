@@ -755,14 +755,15 @@ void BufferCache::ChangeRegister(BufferId id) {
 	DrainGuestReadback(m_slot_buffers[id].CpuAddress(), m_slot_buffers[id].Size());
 	m_sync_buffers_valid = false;
 	++m_registration_epoch;
-	// Region requests prove their state against the registration epoch of their own region.
+	// Region requests prove their state against the registration epoch of their own region: only the
+	// requests of these regions need to be synchronized again.
 	if (m_region_registrations.empty()) m_region_registrations.assign(TRACKER_ADDRESS_SIZE / TRACKER_REGION_SIZE, 0);
 	for (auto region = m_slot_buffers[id].CpuAddress() / TRACKER_REGION_SIZE,
 	          last   = (m_slot_buffers[id].CpuAddress() + m_slot_buffers[id].Size() - 1) / TRACKER_REGION_SIZE;
 	     region <= last && region < m_region_registrations.size(); ++region) {
 		m_region_registrations[region] = m_registration_epoch;
+		BdaDirtyRegions::Mark(region);
 	}
-	BdaDirtyRegions::MarkAll();
 	LiveCounters::Add(LiveCounters::BufferRegistrations);
 	auto& buffer = m_slot_buffers[id];
 	if constexpr (!insert) InvalidateCopyFeedback(buffer.CpuAddress(), buffer.Size());
