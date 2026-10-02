@@ -61,8 +61,9 @@ The first launch goes like this:
 4. The game window appears. The start-up screen shows the loading progress; in the game, the top
    right corner shows "Preparing shaders xx%".
 
-Later launches go straight into the game. The console window closes by itself once the game has
-started; to quit, close the game window.
+Later launches go straight into the game. The console window stays open and shows the game's log as
+it runs; when the game crashes it shows the exit code and the end of the error log and waits for a key
+(the log files are in the `logs` folder). To quit, close the game window.
 
 Common options (add them after `run.cmd` on a command line, or put them into the "Target" of a
 shortcut):
