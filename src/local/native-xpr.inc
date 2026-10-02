@@ -604,11 +604,10 @@ struct RenderExecutor::NativeXprCache {
 		*(empty != nullptr ? empty : &seen[hash & mask]) = {hash, frame};
 		return false;
 	}
-	// Relocation (direct draws: an indirect run that misses is tried again per draw, so its uses
-	// would not count the same in every frame): the latest try's key before its pointer words left
-	// it, the words it left out, the words that joined the rest (its mesh, which use of them in the
-	// frame it was) and its hash (for the store a miss requests); per program, the user data a record
-	// may take from each draw.
+	// Relocation (direct draws, and indirect runs whose whole key missed): the latest try's key before
+	// its pointer words left it, the words it left out, the words that joined the rest (its mesh or the
+	// run's first argument address, which use of them in the frame it was) and its hash (for the store a
+	// miss requests); per program, the user data a record may take from each draw.
 	std::vector<uint32_t> full_key;
 	uint64_t              tried_relocate = 0;
 	std::vector<uint32_t> tried_suffix;
@@ -2917,36 +2916,60 @@ bool RenderExecutor::NativeXprTry(CommandBuffer& buffer, bool clean, std::span<c
 	NativeXprKey(buffer, cache.key);
 	// Relocation: the pair's pointer words leave the key, and which use of the rest in the frame this
 	// is joins it.
-	const bool relocating =
-	    direct != nullptr && kyty_local_native_xpr_relocate_mode.load(std::memory_order_relaxed) != 0;
-	auto pair            = relocating ? cache.pairs.find(NativeXprPairKey(cache.key)) : cache.pairs.end();
-	cache.tried_relocate = 0;
-	if (pair != cache.pairs.end() && pair->second.relocate != 0) {
+	const bool relocation = kyty_local_native_xpr_relocate_mode.load(std::memory_order_relaxed) != 0;
+	const bool relocating = relocation && direct != nullptr;
+	auto       pair       = relocating ? cache.pairs.find(NativeXprPairKey(cache.key)) : cache.pairs.end();
+	cache.tried_relocate  = 0;
+	const auto relocate   = [&] {
 		cache.full_key = cache.key;
 		for (auto words = pair->second.relocate; words != 0; words &= words - 1) cache.key[std::countr_zero(words)] = 0;
 		cache.tried_relocate = pair->second.relocate;
 		const auto masked    = cache.key.size();
 		// The mesh (the draw's first index) joins the key, so the n-th use counts the uses of one mesh: a
 		// record keeps its object while the frame's other objects of the pair come and go (counting the
-		// pair's uses, a walk re-evaluated most relocated records every frame).
-		cache.key.push_back(static_cast<uint32_t>(index_base));
-		cache.key.push_back(static_cast<uint32_t>(index_base >> 32u));
+		// pair's uses, a walk re-evaluated most relocated records every frame). A run's object is its first
+		// draw's arguments: their address stays while its tables move every frame (and a run tried again
+		// from a later draw after a miss is another key, so the uses count the same in every frame).
+		const uint64_t object = direct != nullptr ? index_base : commands[0];
+		cache.key.push_back(static_cast<uint32_t>(object));
+		cache.key.push_back(static_cast<uint32_t>(object >> 32u));
 		cache.key.push_back(cache.NextOccurrence(XXH3_64bits(cache.key.data(), cache.key.size() * sizeof(uint32_t)),
 		                                         m_context.FrameNumber()));
 		cache.tried_suffix.assign(cache.key.begin() + static_cast<std::ptrdiff_t>(masked), cache.key.end());
+	};
+	if (pair != cache.pairs.end() && pair->second.relocate != 0) relocate();
+	auto hash  = XXH3_64bits(cache.key.data(), cache.key.size() * sizeof(uint32_t));
+	auto found = cache.IndexFind(hash);
+	// A run whose whole key misses can be an object whose tables move every frame: its relocated key. Runs
+	// whose whole keys come again keep them (relocating those too made every use read through the pointers:
+	// Boletaria 1-1 23.6 -> 32.3 ms a frame).
+	uint64_t whole_hash = 0;
+	if (relocation && direct == nullptr && (found == nullptr || !found->SameKey(cache.key))) {
+		pair = cache.pairs.find(NativeXprPairKey(cache.key));
+		if (pair != cache.pairs.end() && pair->second.relocate != 0 && !pair->second.blocked && !pair->second.unstorable) {
+			whole_hash = hash;
+			relocate();
+			hash  = XXH3_64bits(cache.key.data(), cache.key.size() * sizeof(uint32_t));
+			found = cache.IndexFind(hash);
+		}
 	}
-	const auto hash  = XXH3_64bits(cache.key.data(), cache.key.size() * sizeof(uint32_t));
-	auto* const found = cache.IndexFind(hash);
 	if (found != nullptr) NativeXprPrefetchFields(*found);
 	LiveCounters::Add(direct != nullptr ? LiveCounters::XprDirectTries : LiveCounters::XprTries);
 	if (found == nullptr || !found->SameKey(cache.key)) {
 		LiveCounters::Add(LiveCounters::XprMissKey);
-		if (!relocating) pair = cache.pairs.find(NativeXprPairKey(cache.key));
+		if (!relocating && whole_hash == 0) pair = cache.pairs.find(NativeXprPairKey(cache.key));
 		if (pair != cache.pairs.end() && (pair->second.blocked || pair->second.unstorable)) {
 			LiveCounters::Add(LiveCounters::XprMissBlocked);
 			return false;
 		}
 		cache.tried_hash = hash;
+		// A run's whole key that comes again is stored as it is.
+		if (whole_hash != 0 && cache.SeenAgain(whole_hash, m_context.FrameNumber())) {
+			cache.tried_relocate = 0;
+			cache.tried_hash     = whole_hash;
+			request_store();
+			return false;
+		}
 		// The first store of a pair learns its pointer words.
 		if (relocating && (pair == cache.pairs.end() || !pair->second.relocation_known)) {
 			request_store();
