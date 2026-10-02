@@ -77,7 +77,8 @@ inline int64_t g_render_idle_ns = 0;
 
 // Render thread. With KYTY_HITCH_LOG_MS (or KYTY_SLOW_LOG_MS), a frame (flip to flip) that long and
 // at least 50 ms is a SLOW line too, on the same TSC timeline: the hitch the slow calls before it explain.
-// The line also has the frame's render-thread wait for guest work and what some counters did in it.
+// The line also has the frame's render-thread wait for guest work, what some counters did in it and its
+// wall-clock time.
 inline void Flip() {
 	const auto flip = g_flips.load(std::memory_order_relaxed);
 	g_flip_times[flip % FlipTimes].store(std::chrono::steady_clock::now().time_since_epoch().count(),
@@ -107,7 +108,10 @@ inline void Flip() {
 				const auto delta = LiveCounters::Value(counted[i]) - last_counts[i];
 				if (delta != 0) std::printf(" %s=%llu", LiveCounters::Names[counted[i]], static_cast<unsigned long long>(delta));
 			}
-			std::printf("\n");
+			// Wall-clock time, to find the frame in a screen capture.
+			std::printf(" unix_ms=%lld\n", static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+			                                   std::chrono::system_clock::now().time_since_epoch())
+			                                   .count()));
 			std::fflush(stdout);
 		}
 		last      = now;
