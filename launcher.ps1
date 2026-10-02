@@ -12,7 +12,7 @@ $languages = 'Japanese', 'English (United States)', 'French (France)', 'Spanish 
 $resolutions = '1280x720', '1920x1080', '2560x1440', '3840x2160'
 
 $settings = [ordered]@{ game = ''; resolution = '2560x1440'; fullscreen = $false; aspect = $true; language = 1; redzone = $true;
-	ecores = $false }
+	ecores = $false; cheats = $true }
 if (Test-Path $settingsPath) {
 	$saved = Get-Content $settingsPath -Raw | ConvertFrom-Json
 	foreach ($property in $saved.PSObject.Properties) { if ($settings.Contains($property.Name)) { $settings[$property.Name] = $property.Value } }
@@ -54,13 +54,34 @@ public static int[] Query() {
 }
 $efficiencyMask = Get-EfficiencyMask
 
+# The emulator's own launcher (src/launcher) applies _Patches\<title id>.json by itself; run-windows.ps1
+# passes one only when told to, so the title id is read here the way the title label reads it and the
+# file beside it is offered. Empty when the folder has no such patch, so -Patch is then not passed.
+function Get-CheatFile([string]$folder) {
+	if (!$folder) { return '' }
+	try {
+		$param = Join-Path $folder 'sce_sys\param.json'
+		if (!(Test-Path $param)) { return '' }
+		$id = (Get-Content $param -Raw | ConvertFrom-Json).titleId
+		if (!$id) { return '' }
+		$file = Join-Path $root "_Patches\$id.json"
+		if (Test-Path $file) { return $file }
+	} catch {}
+	return ''
+}
 function Get-PlayCommand {
 	$size = $settings.resolution -split 'x'
-	$arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$root\run-windows.ps1`"", '-Prompt', '-Follow',
+	# -Prompt is left out. Its version dialog has no don't-ask-again - only the precompile offer reads
+	# no-precompile-prompt.txt - so for a title run-windows.ps1 does not consider tested it would appear
+	# on every launch. The precompile has its own button below, so nothing is lost.
+	$arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$root\run-windows.ps1`"", '-Follow',
 		'-Width', $size[0], '-Height', $size[1], '-Language', $settings.language)
 	if ($settings.fullscreen) { $arguments += '-Fullscreen'; if ($settings.aspect) { $arguments += '-AspectFit' } }
 	if (!$settings.redzone) { $arguments += '-NoRedZone' }
 	if ($settings.game) { $arguments += @('-Game', "`"$($settings.game)`"") }
+	# run-windows.ps1 passes --game-patch only for -Patch, and the emulator rejects it twice, so the
+	# file is added here rather than left to the emulator's own _Patches lookup.
+	if ($settings.cheats) { $patch = Get-CheatFile $settings.game; if ($patch) { $arguments += @('-Patch', "`"$patch`"") } }
 	# The console stays for the live log; after a crash it waits for a key.
 	return 'powershell ' + ($arguments -join ' ') + ' & if !errorlevel! neq 0 pause'
 }
@@ -112,6 +133,11 @@ function Update-Title {
 				$json.titleId, $json.contentVersion
 		}
 	} catch {}
+	# The cheat line is about the folder as it is being typed, not about the last saved setting.
+	if ($cheatNote) {
+		$patch = Get-CheatFile $game.Text
+		$cheatNote.Text = if ($patch) { 'applies ' + [System.IO.Path]::GetFileName($patch) } else { 'no _Patches\<title id>.json in this folder' }
+	}
 }
 $browse.Add_Click({
 	$dialog = New-Object System.Windows.Forms.FolderBrowserDialog -Property @{ Description = 'The game folder (eboot.bin, sce_sys)' }
@@ -139,6 +165,12 @@ Add-Row '' @($redzone)
 $ecores = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Precompile on the efficiency cores only (slower, the PC stays responsive)'; AutoSize = $true
 	Checked = ([bool]$settings.ecores -and $efficiencyMask -ne 0); Enabled = ($efficiencyMask -ne 0) }
 Add-Row '' @($ecores)
+$cheats = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Cheats (_Patches\<title id>.json)'; AutoSize = $true
+	Checked = [bool]$settings.cheats }
+Add-Row '' @($cheats)
+$cheatNote = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray' }
+Add-Row '' @($cheatNote)
+Update-Title
 
 $buttons = New-Object System.Windows.Forms.FlowLayoutPanel -Property @{ AutoSize = $true; Margin = '0,10,0,0' }
 $play = New-Object System.Windows.Forms.Button -Property @{ Text = 'Play'; AutoSize = $true; Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold) }
@@ -162,6 +194,7 @@ function Read-Form {
 	$settings.language   = $language.SelectedIndex
 	$settings.redzone    = $redzone.Checked
 	$settings.ecores     = $ecores.Checked
+	$settings.cheats     = $cheats.Checked
 	Save-Settings
 }
 $play.Add_Click({
