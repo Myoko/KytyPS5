@@ -5,6 +5,7 @@
 #include "graphics/host_gpu/renderer/demonsSouls.h"
 #include "kernel/memory.h"
 #include "loader/runtimeLinker.h"
+#include <cstdio>
 #include <cstdlib>
 
 namespace Loader::DemonsSoulsGpuPages {
@@ -29,7 +30,7 @@ void Install(Program* program) {
         if (function.rva + function.size > program->mapped_size ||
             !Libs::Graphics::HostMemoryRangeIsReadable(program->base_vaddr + function.rva, function.size) ||
             !VerifyLoadedFunction(guest, function, program->tls.handler_vaddr - program->base_vaddr)) {
-            LOGF("GPU buffer pages: audited function differs at %llx; retaining original allocations\n",
+            std::printf("GPU buffer pages: audited function differs at %llx; retaining original allocations\n",
                  static_cast<unsigned long long>(function.rva));
             return;
         }
@@ -66,7 +67,7 @@ void Install(Program* program) {
             return;
         }
     }
-    LOGF("GPU buffer pages: %zu verified allocation calls installed, 4096-byte pages\n", site_count);
+    std::printf("GPU buffer pages: %zu verified allocation calls installed, 4096-byte pages\n", site_count);
 #endif
 }
 void Clear() {
@@ -79,7 +80,7 @@ void Clear() {
         }
     }
     const auto* stats = reinterpret_cast<const uint64_t*>(cave + StatsOffset);
-    LOGF("GPU buffer pages: cumulative requests=%llu logical=%llu physical=%llu\n",
+    std::printf("GPU buffer pages: cumulative requests=%llu logical=%llu physical=%llu\n",
          static_cast<unsigned long long>(stats[0]), static_cast<unsigned long long>(stats[1]),
          static_cast<unsigned long long>(stats[2]));
     Libs::LibKernel::Memory::FreeGuestMemory(cave, ImageSize);

@@ -7,6 +7,7 @@
 #include "kernel/memory.h"
 #include "loader/runtimeLinker.h"
 
+#include <cstdio>
 #include <xxhash.h>
 
 namespace Loader::DemonsSoulsCopy {
@@ -42,7 +43,7 @@ void Install(Program* program) {
 		return;
 	}
 	site = address;
-	LOGF("Demon's Souls copy: installed verified coherent memmove\n");
+	std::printf("Demon's Souls copy: installed verified coherent memmove\n");
 #endif
 }
 
