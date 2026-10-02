@@ -557,7 +557,9 @@ struct RenderExecutor::NativeXprCache {
 		vk::DescriptorPool pool;
 		vk::DescriptorSet  set;
 	};
-	static constexpr size_t FreeSetsPerLayout = 32, FreeSetsMax = 2048;
+	// A camera turn rebinds ~1500 sets a frame (Latria): with 32 per layout most retired sets were freed and
+	// allocated again a frame later.
+	static constexpr size_t FreeSetsPerLayout = 2048, FreeSetsMax = 16384;
 	std::unordered_map<VkDescriptorSetLayout, std::vector<FreeSet>> free_sets;
 	std::unordered_map<VkDescriptorSet, VkDescriptorSetLayout>      set_layouts;
 	size_t                                                          free_count = 0;
