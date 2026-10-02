@@ -47,8 +47,15 @@ folder (usually named `PPSA01341-app0`).
 
 ## Starting the game
 
-**Double-click `run.cmd`** (do not double-click `kyty_emulator.exe` directly: it would lack its
-launch options).
+**Double-click `launcher.cmd`** for a small settings window: the game folder, the resolution,
+fullscreen (optionally keeping 16:9 with black bars), the console language and red-zone protection,
+with buttons to play, to precompile the shaders (optionally on the efficiency cores only, so the PC
+stays responsive), and to open the logs folder. It remembers the settings (`launcher-settings.json`).
+Its settings and language list follow the KytyPS5 launcher (`src/launcher` in the source, by the
+KytyPS5 developers).
+
+Or **double-click `run.cmd`** to start with the default settings (do not double-click
+`kyty_emulator.exe` directly: it would lack its launch options).
 
 The first launch goes like this:
 
@@ -74,6 +81,7 @@ shortcut):
 | `-Fullscreen -AspectFit` | Full screen keeping 16:9, with black bars instead of stretching |
 | `-Width 1920 -Height 1080` | The window size (default 2560×1440, shrunk when the screen is smaller) |
 | `-Game <folder>` | The game folder |
+| `-Language 11` | The console language, as the PS5 numbers them (0 Japanese, 1 English (US), 11 Chinese (Simplified), ...; the launcher lists them) |
 
 ## Shader precompile (without it the game stutters)
 

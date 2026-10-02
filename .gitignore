@@ -10,3 +10,4 @@ _PipelineCache/
 /no-precompile-prompt.txt
 __pycache__/
 *.pyc
+/launcher-settings.json
