@@ -66,8 +66,8 @@ foreach ($property in $launch.environment.PSObject.Properties) {
 Set-Content "$Out\run.cmd" -Encoding ASCII -Value @(
 	'@echo off',
 	'rem Starts the game; the options are those of run-windows.ps1 (e.g. run.cmd -Fullscreen).',
-	'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0run-windows.ps1" -Prompt %*',
-	'if errorlevel 1 pause')
+	'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0run-windows.ps1" -Prompt -Follow %*',
+	'if %errorlevel% neq 0 pause')
 Copy-Item "$PSScriptRoot\docs\PORTABLE-README.md" "$Out\README.md"
 Set-Content "$Out\precompile.cmd" -Encoding ASCII -Value @(
 	'@echo off',

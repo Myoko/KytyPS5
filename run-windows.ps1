@@ -18,6 +18,8 @@
 #   .\run-windows.ps1 -Affinity FFFFCF       only these CPUs (hex mask; default: the config's list, else all)
 #   .\run-windows.ps1 -Prompt                a dialog first when the game version is untested or the
 #                                            shaders are not precompiled for this GPU (run.cmd)
+#   .\run-windows.ps1 -Follow                stay open showing the run log until the game exits, then its
+#                                            exit code (run.cmd)
 #   .\run-windows.ps1 -DryRun                print environment and command only
 # A portable package (package-windows.ps1) has its kyty_emulator.exe, launch.json and srt-aot.dll
 # next to this script: those are used instead of the build tree's.
@@ -41,6 +43,7 @@ param(
 	[int]$FrameGen = 0,
 	[string]$Affinity = '',
 	[switch]$Prompt,
+	[switch]$Follow,
 	[switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
@@ -393,6 +396,36 @@ $process = Start-Process -FilePath $Exe -ArgumentList $quoted -WorkingDirectory 
 if ($mask -ne $all) { $process.ProcessorAffinity = [IntPtr]$mask }
 $null = $process.Handle # keeps the exit code readable after the process ends
 Write-Host "pid $($process.Id); logs: $($logDir.Substring($PSScriptRoot.Length + 1))\$stamp.*.log"
+if (!$Precompile -and $Follow) {
+	# The run log in this window as it is written; the exit code (and the error log's end) when the game ends.
+	$reader = $null
+	$pending = ''
+	$show = {
+		$text = $reader.ReadToEnd()
+		if ($text) {
+			$lines = ($pending + $text) -split "`n"
+			$script:pending = $lines[-1]
+			for ($i = 0; $i -lt $lines.Count - 1; $i++) { Write-Host $lines[$i].TrimEnd("`r") }
+		}
+	}
+	while ($true) {
+		$exited = $process.HasExited
+		if (!$reader -and (Test-Path $out)) {
+			$reader = New-Object System.IO.StreamReader([System.IO.FileStream]::new($out, 'Open', 'Read', 'ReadWrite'))
+		}
+		if ($reader) { & $show }
+		if ($exited) { break }
+		Start-Sleep -Milliseconds 250
+	}
+	if ($pending) { Write-Host $pending }
+	if ($reader) { $reader.Dispose() }
+	Write-Host ''
+	Write-Host ("The game exited with code {0} (0x{0:X8}); logs: {1}\{2}.*.log" -f $process.ExitCode, $logDir, $stamp)
+	if ($process.ExitCode -ne 0) {
+		Get-Content "$logDir\$stamp.err.log" -Tail 20 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+	}
+	exit $process.ExitCode
+}
 if (!$Precompile) { return }
 
 # Precompile: follow the warmup progress until the emulator exits.
