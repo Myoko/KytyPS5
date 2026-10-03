@@ -12,8 +12,9 @@ A test save is a bench baseline: KYTY_BENCH_BASELINE=DST_DIR for tools/local/ben
 Maps (levels/, cp11demonssouls/dvdroot/map/mapstudio/<map>.msb): m01 the Nexus, m02 Boletarian Palace,
 m03 Shrine of Storms, m04 Tower of Latria, m05 Valley of Defilement, m06 Stonefang Tunnel, m08 the
 tutorial (the bench baseline); MAPUID 0xWWBBCCDD for mWW_BB_CC_DD. A map with no saved position starts
-at its default start (only some have one: m03_00 and m04_00 without a position crash or return to the
-title); the saved position is in the MSB's coordinates (the slot's spawn: m02_00's c0000_0001).
+at its default start (only some have one; m03_00 and m04_00 crashed or returned to the title, with copies
+that still had the position flag set); the saved position is in the MSB's coordinates (the slot's spawn:
+m02_00's c0000_0001). A slot without one (a character still in the tutorial) gets the position entries.
 
 USR-DATA: u32 version, u32 FNV-1a 32 of the payload, u32 payload size, u32, payload: entries of key
 (FNV-1a 32 of an upper-case name: MAPUID, PLAYTIME, PLAYER_NAME, ...), type byte, value.
@@ -41,6 +42,8 @@ def key(name):
 MAPUID = key('MAPUID') + b'\x04'
 POSITION = struct.pack('<I', 0xfb0faeb2) + b'\x0e\x10'  # name unknown: 16-byte blob x y z 1
 ROTATION = struct.pack('<I', 0x739273b8) + b'\x0e\x10'  # name unknown: 16-byte blob 0 yaw(radians) 0 0
+# name unknown: byte, 1 when POSITION and ROTATION follow it (a character still in the tutorial has 0 and neither)
+PLACED = struct.pack('<I', 0x4819bb27) + b'\x0c'
 GAME = Path.home() / 'Documents' / 'PPSA01341-app0'
 
 
@@ -123,16 +126,22 @@ def set_map(src, dst, map_name, profile, spawn, at, game):
         sys.exit(f'{path}: no single MAPUID')
     old = struct.unpack_from('<I', payload, found + 5)[0]
     struct.pack_into('<I', payload, found + 5, mapuid)
-    position, rotation = payload.find(POSITION), payload.find(ROTATION)
+    placed = payload.find(PLACED)
+    if placed < 0 or payload.find(PLACED, placed + 1) >= 0:
+        sys.exit(f'{path}: no single position flag')
+    placed += len(PLACED)
+    # The two entries right after the flag, or neither (the game writes no other layout): removed, then
+    # written again with the flag when the copy gets a position.
+    if payload[placed] == 1 and payload[placed + 1:placed + 1 + len(POSITION)] == POSITION:
+        del payload[placed + 1:placed + 1 + 2 * (len(POSITION) + 16)]
+    elif payload[placed] != 0 or payload.find(POSITION) >= 0 or payload.find(ROTATION) >= 0:
+        sys.exit(f'{path}: unexpected position entries')
+    payload[placed] = 0
     if at is not None:
-        if position < 0 or rotation < 0:
-            sys.exit(f'{path}: the slot has no saved position to set (use a slot of a character in a world)')
         x, y, z, yaw = at
-        struct.pack_into('<4f', payload, position + len(POSITION), x, y, z, 1.0)
-        struct.pack_into('<4f', payload, rotation + len(ROTATION), 0.0, math.radians(yaw), 0.0, 0.0)
-    else:
-        for field in sorted((f for f in (position, rotation) if f >= 0), reverse=True):
-            del payload[field:field + len(POSITION) + 16]
+        payload[placed] = 1
+        payload[placed + 1:placed + 1] = (POSITION + struct.pack('<4f', x, y, z, 1.0) +
+                                          ROTATION + struct.pack('<4f', 0.0, math.radians(yaw), 0.0, 0.0))
     shutil.copytree(src, dst)
     header = struct.pack('<4I', struct.unpack_from('<I', data, 0)[0], fnv1a(payload), len(payload),
                          struct.unpack_from('<I', data, 12)[0])

@@ -24,6 +24,10 @@ namespace {
 constexpr size_t   HeaderSize  = 16;
 constexpr uint32_t PositionKey = 0xfb0faeb2; // 16-byte blob x y z 1 (name unknown)
 constexpr uint32_t RotationKey = 0x739273b8; // 16-byte blob 0 yaw(radians) 0 0 (name unknown)
+// Byte, 1 when the position and rotation entries follow it (name unknown). A character still in the
+// tutorial has 0 and no such entries; every save the game wrote with 1 has them right after it.
+constexpr uint32_t PlacedKey   = 0x4819bb27;
+constexpr size_t   BlobEntry   = 6 + 16; // key, type 0x0e, length 16, value
 
 uint32_t Fnv1a(std::span<const uint8_t> data) {
 	uint32_t hash = 0x811c9dc5u;
@@ -161,8 +165,11 @@ const std::vector<Spawn>& Spawns() {
 		}
 		std::ranges::sort(files);
 		for (const auto& file: files) {
-			auto spawns = ReadMsb(file);
-			all.insert(all.end(), spawns.begin(), spawns.end());
+			// A character starts at c0000_<n>; the other player parts (m03_00's c1000, the m07 maps',
+			// m03_01_00_99's) are no start (m03_00 c1000 crashed the game while loading).
+			for (auto& spawn: ReadMsb(file)) {
+				if (spawn.name.starts_with("c0000_")) all.push_back(std::move(spawn));
+			}
 		}
 		return all;
 	}();
@@ -247,40 +254,73 @@ std::string HudText() {
 
 bool PatchSave(std::vector<uint8_t>& data, const Spawn& spawn) {
 	if (data.size() < HeaderSize) return false;
-	uint32_t checksum = 0;
+	uint32_t checksum = 0, size = 0;
 	std::memcpy(&checksum, data.data() + 4, sizeof(checksum));
-	std::span<uint8_t> payload(data.data() + HeaderSize, data.size() - HeaderSize);
-	if (Fnv1a(payload) != checksum) return false;
-	const auto map      = FindValue(payload, Prefix<5>(Fnv1a({reinterpret_cast<const uint8_t*>("MAPUID"), 6}), {0x04}));
-	const auto position = FindValue(payload, Prefix<6>(PositionKey, {0x0e, 0x10}));
-	const auto rotation = FindValue(payload, Prefix<6>(RotationKey, {0x0e, 0x10}));
-	if (map == 0 || position == 0 || rotation == 0 || map + 4 > payload.size() || position + 16 > payload.size() ||
-	    rotation + 16 > payload.size()) {
+	std::memcpy(&size, data.data() + 8, sizeof(size));
+	if (size != data.size() - HeaderSize || Fnv1a({data.data() + HeaderSize, size}) != checksum) return false;
+	// Value offsets in `data`, 0 when the entry is missing or not unique.
+	const auto find = [&](std::span<const uint8_t> prefix) {
+		const auto at = FindValue({data.data() + HeaderSize, data.size() - HeaderSize}, prefix);
+		return at == 0 ? 0 : HeaderSize + at;
+	};
+	const auto position_prefix = Prefix<6>(PositionKey, {0x0e, 0x10});
+	const auto rotation_prefix = Prefix<6>(RotationKey, {0x0e, 0x10});
+	auto       position        = find(position_prefix);
+	auto       rotation        = find(rotation_prefix);
+	if (position == 0 && rotation == 0) {
+		const auto placed = find(Prefix<5>(PlacedKey, {0x0c}));
+		if (placed == 0 || data[placed] != 0) return false;
+		std::array<uint8_t, 2 * BlobEntry> entries {};
+		std::copy(position_prefix.begin(), position_prefix.end(), entries.begin());
+		std::copy(rotation_prefix.begin(), rotation_prefix.end(), entries.begin() + BlobEntry);
+		data[placed] = 1;
+		data.insert(data.begin() + static_cast<int64_t>(placed) + 1, entries.begin(), entries.end());
+		position = placed + 1 + position_prefix.size();
+		rotation = placed + 1 + BlobEntry + rotation_prefix.size();
+		size     = static_cast<uint32_t>(data.size() - HeaderSize);
+		std::memcpy(data.data() + 8, &size, sizeof(size));
+	}
+	const auto map = find(Prefix<5>(Fnv1a({reinterpret_cast<const uint8_t*>("MAPUID"), 6}), {0x04}));
+	if (map == 0 || position == 0 || rotation == 0 || map + 4 > data.size() || position + 16 > data.size() ||
+	    rotation + 16 > data.size()) {
 		return false;
 	}
 	const float place[4] {spawn.x, spawn.y, spawn.z, 1.0f};
 	const float turn[4] {0.0f, spawn.yaw * 3.14159265358979f / 180.0f, 0.0f, 0.0f};
-	std::memcpy(payload.data() + map, &spawn.map_uid, sizeof(spawn.map_uid));
-	std::memcpy(payload.data() + position, place, sizeof(place));
-	std::memcpy(payload.data() + rotation, turn, sizeof(turn));
-	checksum = Fnv1a(payload);
+	std::memcpy(data.data() + map, &spawn.map_uid, sizeof(spawn.map_uid));
+	std::memcpy(data.data() + position, place, sizeof(place));
+	std::memcpy(data.data() + rotation, turn, sizeof(turn));
+	checksum = Fnv1a({data.data() + HeaderSize, data.size() - HeaderSize});
 	std::memcpy(data.data() + 4, &checksum, sizeof(checksum));
 	return true;
 }
 
+// A character's save while a warp is armed: SAVEDATA0PlayerProfile<n>/USR-DATA (the options are
+// SAVEDATA0OptionsProfile0's).
+static bool IsCharacterSave(const std::filesystem::path& real) {
+	return g_active.load(std::memory_order_relaxed) && real.filename() == "USR-DATA" &&
+	       real.parent_path().filename().string().find("PlayerProfile") != std::string::npos;
+}
+
+std::optional<uint64_t> RedirectedSize(const std::filesystem::path& real) {
+	if (!IsCharacterSave(real)) return std::nullopt;
+	std::lock_guard lock(g_mutex);
+	CheckDoneLocked();
+	if (!g_armed) return std::nullopt;
+	auto data = ReadFile(real);
+	if (!PatchSave(data, *g_armed)) return std::nullopt;
+	return data.size();
+}
+
 std::filesystem::path RedirectRead(const std::filesystem::path& real) {
-	// A character's save: SAVEDATA0PlayerProfile<n>/USR-DATA (the options are SAVEDATA0OptionsProfile0's).
-	if (!g_active.load(std::memory_order_relaxed) || real.filename() != "USR-DATA" ||
-	    real.parent_path().filename().string().find("PlayerProfile") == std::string::npos) {
-		return {};
-	}
+	if (!IsCharacterSave(real)) return {};
 	std::lock_guard lock(g_mutex);
 	CheckDoneLocked();
 	if (!g_armed) return {};
 	auto data = ReadFile(real);
 	if (!PatchSave(data, *g_armed)) {
-		Show("Warp: this save has no saved position (load a character in a world first)", 6);
-		std::printf("Warp: %s is not a save with a position, read as it is\n", real.string().c_str());
+		Show("Warp: the save's layout is not the expected one, it is read as it is", 6);
+		std::printf("Warp: %s has an unexpected layout, read as it is\n", real.string().c_str());
 		std::fflush(stdout);
 		return {};
 	}

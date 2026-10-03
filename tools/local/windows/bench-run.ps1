@@ -61,7 +61,7 @@ public class BenchWin {
 function Window { Get-Process kyty_emulator -ErrorAction SilentlyContinue | Where-Object MainWindowHandle -ne 0 | Select-Object -First 1 }
 # Press in the emulator window only (never type into another window); Options = Enter, Cross = J.
 function Press([string]$key, [int]$ms = 150) {
-	$w = Window; if (!$w -or ![BenchWin]::Focus($w.MainWindowHandle)) { return }
+	$w = Window; if (!$w -or ![BenchWin]::Focus($w.MainWindowHandle)) { $script:unfocused++; return }
 	$ime = [BenchWin]::ImmGetDefaultIMEWnd($w.MainWindowHandle)
 	if ($ime -ne [IntPtr]::Zero) { [BenchWin]::SendMessage($ime, 0x283, [IntPtr]6, [IntPtr]::Zero) | Out-Null }
 	$code = if ($key -eq 'enter') { 0x0D } else { [int][char]$key.ToUpper() }
@@ -154,6 +154,9 @@ $state = ''
 $shots = $env:KYTY_BENCH_SHOTS
 if ($shots) { New-Item -ItemType Directory -Force $shots | Out-Null }
 $lastShot = Get-Date '2000-01-01'
+# Captures and presses skipped because the emulator window could not be brought to the front (a
+# start-up that waits at the title for input it never got is not a hang).
+$script:unfocused = 0
 $answered = $false  # the offline prompt was answered: the game loads (fog), then a cinematic
 $fogSeen = $false; $earlySkips = 0; $lastSkip = Get-Date '2000-01-01'
 $log = New-Object System.Collections.Generic.List[string]
@@ -163,7 +166,7 @@ while (((Get-Date) - $start).TotalSeconds -lt $StartupSeconds) {
 	$w = Window
 	# The capture reads the screen where the window is: it must be in front (as screen.ps1 did).
 	$bmp = if ($w -and [BenchWin]::Focus($w.MainWindowHandle)) { [BenchWin]::Client($w.MainWindowHandle) } else { $null }
-	if (!$bmp) { Start-Sleep -Milliseconds 500; continue }
+	if (!$bmp) { $script:unfocused++; Start-Sleep -Milliseconds 500; continue }
 	try {
 		$state = State $bmp
 		if ($shots -and ((Get-Date) - $lastShot).TotalMilliseconds -ge 1000) {
@@ -193,7 +196,7 @@ while (((Get-Date) - $start).TotalSeconds -lt $StartupSeconds) {
 }
 $log | Set-Content "$S\bench-states.txt" -Encoding ascii
 if ($state -eq 'hud') { break }
-"no HUD after $StartupSeconds s (attempt $attempt, last state $state; states: $($log -join ' | '))"
+"no HUD after $StartupSeconds s (attempt $attempt, last state $state, window not in front $($script:unfocused)x; states: $($log -join ' | '))"
 }
 if ($state -ne 'hud') { "no HUD in $StartupAttempts start-ups"; exit 1 }
 "HUD after {0:N0} s ({1})" -f ((Get-Date) - $start).TotalSeconds, ($log -join ' | ')
