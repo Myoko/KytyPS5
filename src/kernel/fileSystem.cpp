@@ -14,6 +14,7 @@
 #include "libs/libs.h"
 #include "libs/network.h"
 #include "loader/demonsSoulsWarp.h"
+#include "loader/gameArgs.h"
 
 #include <algorithm>
 #include <atomic>
@@ -510,11 +511,14 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 			LOGF_COLOR(result ? Log::Color::Green : Log::Color::Red, "\tCreate: %s, %s\n",
 			           Common::PathToString(file->real_name).c_str(), result ? "[ok]" : "[fail]");
 		} else {
-			// Debug warp (loader/demonsSoulsWarp.h): a read of the save gets a copy on the chosen map.
+			// Debug warp (loader/demonsSoulsWarp.h): a read of the save gets a copy on the chosen map; the
+			// game's command-line file gets the console variables of KYTY_GAME_CONVARS (loader/gameArgs.h).
 			auto open_name = file->real_name;
 			if (rw_mode == Common::File::Mode::Read) {
 				if (auto copy = Loader::DemonsSoulsWarp::RedirectRead(file->real_name); !copy.empty()) {
 					open_name = std::move(copy);
+				} else if (auto args = Loader::GameArgs::RedirectRead(file->real_name); !args.empty()) {
+					open_name = std::move(args);
 				}
 			}
 			result = file->f.Open(open_name, rw_mode);
@@ -919,9 +923,10 @@ int KYTY_SYSV_ABI KernelStat(const char* path, FileStat* sb) {
 		stat.st_blksize = 512;
 		stat.st_blocks  = stat.st_size / 512;
 	} else {
-		// Debug warp: a read of the save gets a copy of another size (KernelOpen).
-		const auto warp_size = Loader::DemonsSoulsWarp::RedirectedSize(real_file_name);
-		stat.st_size    = static_cast<int64_t>(warp_size ? *warp_size : Common::File::Size(real_file_name));
+		// Debug warp and game console variables: a read gets a copy of another size (KernelOpen).
+		auto redirected = Loader::DemonsSoulsWarp::RedirectedSize(real_file_name);
+		if (!redirected) redirected = Loader::GameArgs::RedirectedSize(real_file_name);
+		stat.st_size = static_cast<int64_t>(redirected ? *redirected : Common::File::Size(real_file_name));
 		stat.st_blksize = 512;
 		stat.st_blocks  = (stat.st_size + 511) / 512;
 
