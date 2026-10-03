@@ -21,6 +21,16 @@ for k, a, b, c, ms in rows:
     tot[k][0] += c; tot[k][1] += ms; tot[k][2] += 1
 for k, (c, ms, n) in sorted(tot.items()):
     print(f'{KINDS.get(k, str(k)):11s} {n:5d} keys {c:9.1f} calls/frame {ms:7.2f} ms/frame {1000*ms/max(c,1e-9):7.2f} us/call')
+# The queue a call ran in (b's top bits, LiveCensus::g_queue): async compute queue runs fill the graphics
+# queue's waits, so their time may not lengthen the frame.
+QUEUES = {0: 'graphics', 1: 'no queue', 2: 'async compute'}
+by_queue = collections.defaultdict(lambda: [0.0, 0.0])
+for k, a, b, c, ms in rows:
+    if k in (0, 1, 2, 3, 12):
+        by_queue[(k, int(b, 16) >> 62)][0] += c
+        by_queue[(k, int(b, 16) >> 62)][1] += ms
+for (k, q), (c, ms) in sorted(by_queue.items()):
+    print(f'  {KINDS.get(k, str(k)):14s} {QUEUES.get(q, str(q)):13s} {c:9.1f} calls/frame {ms:7.2f} ms/frame')
 import bisect, subprocess
 _syms = None
 def sym(address):
@@ -39,7 +49,7 @@ def sym(address):
 for k in sorted(t for t in tot if t not in (3, 12)):
     print(f'-- {KINDS.get(k, str(k))} top by time')
     for kk, a, b, c, ms in sorted((r for r in rows if r[0] == k), key=lambda r: -r[4])[:top]:
-        label = f'{sym(a)} <- {sym(b)}' if k in (4, 5) else f'{a} {b[-4:] if k == 0 else b}'
+        label = f'{sym(a)} <- {sym(b)}' if k in (4, 5) else f'{a} {b[-4:] + (" async" if int(b, 16) >> 63 else "") if k == 0 else b}'
         print(f'   {label}  {c:8.2f}/frame {ms:7.3f} ms {1000*ms/max(c,1e-9):7.2f} us/call')
 
 if 3 in tot:

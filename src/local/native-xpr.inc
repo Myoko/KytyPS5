@@ -59,6 +59,10 @@ extern "C" {
 // N > 2: records stay N frames unused (2 before: a turn of the camera dropped every record behind it, and
 // turning back stored them all again within the store budget, thousands of normal draws a frame for seconds).
 [[gnu::used]] volatile std::atomic<uint32_t> kyty_local_native_xpr_keep_frames {0};
+// 1: a relocated key holds the object's descriptor bases (read through the draw's pointers) before its use in
+// the frame: the instances of one mesh keep their records when the frame draws them in another order (a culled
+// instance shifted every later use onto another instance's record, which rebound its descriptors).
+[[gnu::used]] volatile std::atomic<uint32_t> kyty_local_native_xpr_instance_mode {0};
 }
 namespace {
 // word_patch value of a logged word whose change reaches nothing the evaluation produces.
@@ -605,6 +609,17 @@ struct RenderExecutor::NativeXprCache {
 		bool     relocation_known = false;
 		bool     pointers_off     = false; // a record could not be traced through its pointers
 		uint64_t relocate         = 0;
+		// Relocation: descriptor base addresses (buffer and image dword 0) a record reads through a pointer of
+		// its roots' tables: the key words of the root, the pointer's offset from the root's base and the word's
+		// from the pointer's. They tell the pair's objects apart where their use in the frame does not (the
+		// tables are new copies every frame, the buffers they describe are the object's). From the pair's
+		// first traced record.
+		struct Identity {
+			uint8_t  low_word = 0, high_word = 0;
+			uint32_t pointer = 0, offset = 0;
+		};
+		std::vector<Identity> identity;
+		bool                  identity_known = false;
 	};
 	std::unordered_map<uint64_t, PairStats> pairs;
 	// Keys that missed, with the frame of their latest miss. A record pays off only
@@ -683,6 +698,34 @@ struct RenderExecutor::NativeXprCache {
 		}
 		return UINT32_MAX;
 	}
+	// Relocated objects (pair and mesh) whose record rebound its descriptors: their uses tell instances apart by
+	// their descriptor bases (NativeXprTry). Others keep their uses' records (no reads for the key).
+	std::vector<uint64_t> rebound = std::vector<uint64_t>(4096);
+	[[nodiscard]] bool    Rebound(uint64_t hash) const {
+		hash            = IndexHash(hash);
+		const auto mask = rebound.size() - 1;
+		for (uint64_t i = 0, at = hash & mask; i < 8; ++i, at = (at + 1) & mask) {
+			if (rebound[at] == hash) return true;
+			if (rebound[at] == 0) return false;
+		}
+		return false;
+	}
+	void MarkRebound(uint64_t hash) {
+		hash            = IndexHash(hash);
+		const auto mask = rebound.size() - 1;
+		for (uint64_t i = 0, at = hash & mask; i < 8; ++i, at = (at + 1) & mask) {
+			if (rebound[at] == hash) return;
+			if (rebound[at] == 0) {
+				rebound[at] = hash;
+				return;
+			}
+		}
+		rebound[hash & mask] = hash;
+	}
+	// The latest relocated try: its object (key without the use) and, keyed by descriptor bases, its key by use.
+	uint64_t              object_hash = 0;
+	std::vector<uint32_t> use_key;
+	size_t                suffix_at = 0; // where the words the try added start (tried_suffix)
 	uint64_t                                swept_frame = UINT64_MAX;
 	// Draw-state key of the latest draw (native or normal), for clean draws.
 	uint64_t state_key       = 0;
@@ -1696,6 +1739,39 @@ void RenderExecutor::NativeXprStore(CommandBuffer& buffer, const DrawRenderState
 		for (const auto& root: record->roots) pair_stats.relocate &= ~(3ull << root.low_word);
 		return refuse();
 	}
+	if (!record->roots.empty() && !pair_stats.identity_known) {
+		using Kind                = ShaderRecompiler::IR::SrtReadTrace::Kind;
+		pair_stats.identity_known = true;
+		const auto& gather        = record->gather;
+		// The span of a record root that holds the word at `index` (in `words`), or none.
+		const auto table_of = [&](uint32_t index) -> const NativeXprRecord::Gather::Span* {
+			for (const auto& span: gather.spans)
+				if (span.level == 0 && span.root < record->roots.size() && index >= span.first && index < span.first + span.count)
+					return &span;
+			return nullptr;
+		};
+		for (const auto& span: gather.spans) {
+			if (span.level != 1 || span.root < record->roots.size()) continue;
+			const auto& pointer = gather.pointers[span.root - record->roots.size()];
+			const auto  low = gather.value_word[pointer.low], high = gather.value_word[pointer.high];
+			const auto* table = table_of(low);
+			if (table == nullptr || high != low + 1 || table != table_of(high)) continue;
+			const auto& root = record->roots[table->root];
+			for (uint32_t i = 0; i < span.count && pair_stats.identity.size() < 8; ++i) {
+				const auto v = gather.word_value[span.first + i];
+				if (v < 0 || gather.pointer_value[v] != 0) continue;
+				for (auto f = gather.feeds_at[v]; f < gather.feeds_at[v + 1]; ++f) {
+					const auto kind = static_cast<Kind>((gather.feeds[f] >> 24u) & 0xfu);
+					if ((kind == Kind::Buffer || kind == Kind::Image) && (gather.feeds[f] & 0xffu) == 0) {
+						pair_stats.identity.push_back({root.low_word, root.high_word,
+						                               static_cast<uint32_t>(table->address + 4u * (low - table->first)),
+						                               static_cast<uint32_t>(span.address + 4u * i)});
+						break;
+					}
+				}
+			}
+		}
+	}
 
 	// Render targets as this draw left them; a reopened rendering loads.
 	NativeXprDrawState draw_state;
@@ -2230,6 +2306,9 @@ RenderExecutor::NativeXprPatch RenderExecutor::NativeXprPatchDescriptors(NativeX
 				return NativeXprPatch::Evaluate;
 			}
 		}
+	// Another instance's buffers or images through this use's pointers: the object is keyed by its descriptor
+	// bases from now on (NativeXprTry).
+	if (rebind && m_native_xpr->tried_relocate != 0) m_native_xpr->MarkRebound(m_native_xpr->object_hash);
 	for (const auto& [index, value]: m_native_xpr->changed) {
 		for (auto f = gather.feeds_at[index]; f < gather.feeds_at[index + 1]; ++f) {
 			const auto feed = gather.feeds[f];
@@ -2987,6 +3066,7 @@ bool RenderExecutor::NativeXprTry(CommandBuffer& buffer, bool clean, std::span<c
 	const bool relocating = relocation && direct != nullptr;
 	auto       pair       = relocating ? cache.pairs.find(NativeXprPairKey(cache.key)) : cache.pairs.end();
 	cache.tried_relocate  = 0;
+	cache.use_key.clear();
 	const auto relocate   = [&] {
 		cache.full_key = cache.key;
 		for (auto words = pair->second.relocate; words != 0; words &= words - 1) cache.key[std::countr_zero(words)] = 0;
@@ -3000,8 +3080,42 @@ bool RenderExecutor::NativeXprTry(CommandBuffer& buffer, bool clean, std::span<c
 		const uint64_t object = direct != nullptr ? index_base : commands[0];
 		cache.key.push_back(static_cast<uint32_t>(object));
 		cache.key.push_back(static_cast<uint32_t>(object >> 32u));
-		cache.key.push_back(cache.NextOccurrence(XXH3_64bits(cache.key.data(), cache.key.size() * sizeof(uint32_t)),
-		                                         m_context.FrameNumber()));
+		const auto frame  = m_context.FrameNumber();
+		cache.object_hash = XXH3_64bits(cache.key.data(), cache.key.size() * sizeof(uint32_t));
+		auto use          = cache.NextOccurrence(cache.object_hash, frame);
+		cache.use_key.clear();
+		// An object whose record rebound its descriptors (the instances of a mesh drawn in another order): its
+		// descriptor bases through this draw's pointers join the key and the uses count among draws of the
+		// same ones, so each instance keeps its record whatever order the frame draws them in (instances that
+		// share all of them differ in data words only, which a use patches). The key by use stays a second
+		// choice: an object whose descriptors move every frame keeps that record.
+		if (const auto& identity = pair->second.identity;
+		    !identity.empty() && kyty_local_native_xpr_instance_mode.load(std::memory_order_relaxed) != 0) {
+			if (cache.Rebound(cache.object_hash)) {
+				cache.use_key = cache.key;
+				cache.use_key.push_back(use);
+				std::array<uint32_t, 8> words {};
+				uint64_t                table  = 0;
+				bool                    mapped = false;
+				for (size_t i = 0; i < identity.size(); ++i) {
+					const auto& id = identity[i];
+					if (i == 0 || id.low_word != identity[i - 1].low_word || id.high_word != identity[i - 1].high_word ||
+					    id.pointer != identity[i - 1].pointer) {
+						const auto root = NativeXprBase(cache.full_key[id.low_word], cache.full_key[id.high_word]);
+						table           = root == 0 ? 0
+						                            : NativeXprBase(NativeXprReadGuestWord(root + id.pointer),
+						                                            NativeXprReadGuestWord(root + id.pointer + 4));
+						// A pointer read from memory may hold anything: what is read through it must be mapped.
+						mapped = table != 0 && Libs::LibKernel::Memory::IsFullyMapped(table + id.offset, 4);
+					}
+					if (mapped) words[i] = NativeXprReadGuestWord(table + id.offset);
+				}
+				cache.key.push_back(static_cast<uint32_t>(XXH3_64bits(words.data(), identity.size() * sizeof(uint32_t))));
+				use = cache.NextOccurrence(XXH3_64bits(cache.key.data(), cache.key.size() * sizeof(uint32_t)), frame);
+			}
+		}
+		cache.key.push_back(use);
+		cache.suffix_at = masked;
 		cache.tried_suffix.assign(cache.key.begin() + static_cast<std::ptrdiff_t>(masked), cache.key.end());
 	};
 	if (pair != cache.pairs.end() && pair->second.relocate != 0) relocate();
@@ -3016,6 +3130,20 @@ bool RenderExecutor::NativeXprTry(CommandBuffer& buffer, bool clean, std::span<c
 		if (pair != cache.pairs.end() && pair->second.relocate != 0 && !pair->second.blocked && !pair->second.unstorable) {
 			whole_hash = hash;
 			relocate();
+			hash  = XXH3_64bits(cache.key.data(), cache.key.size() * sizeof(uint32_t));
+			found = cache.IndexFind(hash);
+		}
+	}
+	// A key by descriptor bases that misses: one the last frames had is stored (the normal path draws once);
+	// a new one (a new instance, or an object whose descriptors move every frame) takes the object's use
+	// instead, its record or a store by use.
+	std::optional<bool> seen_again;
+	if ((found == nullptr || !found->SameKey(cache.key)) && !cache.use_key.empty()) {
+		seen_again = cache.SeenAgain(hash, m_context.FrameNumber());
+		if (!*seen_again) {
+			seen_again.reset();
+			cache.key.swap(cache.use_key);
+			cache.tried_suffix.assign(cache.key.begin() + static_cast<std::ptrdiff_t>(cache.suffix_at), cache.key.end());
 			hash  = XXH3_64bits(cache.key.data(), cache.key.size() * sizeof(uint32_t));
 			found = cache.IndexFind(hash);
 		}
@@ -3049,7 +3177,7 @@ bool RenderExecutor::NativeXprTry(CommandBuffer& buffer, bool clean, std::span<c
 			LiveCounters::Add(LiveCounters::XprMissRefused);
 			return false;
 		}
-		if (!cache.SeenAgain(hash, m_context.FrameNumber())) {
+		if (!(seen_again ? *seen_again : cache.SeenAgain(hash, m_context.FrameNumber()))) {
 			LiveCounters::Add(LiveCounters::XprMissUnseen);
 			return false;
 		}

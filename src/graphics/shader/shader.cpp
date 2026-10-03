@@ -159,28 +159,52 @@ static uint64_t HashShaderCode(std::span<const uint32_t> code) {
 	return XXH3_64bits(code.data(), code.size_bytes());
 }
 
+// The hash of a registered shader (its declared hash, else HashShaderCode), computed once per registration
+// (any registration moves the generation) and again at every 64th use, which also catches code rewritten in
+// place: hashing ~2 KiB of code at every draw and dispatch was ~1.4% of the render thread.
+static uint64_t ShaderCodeHash(uint64_t shader_addr, std::span<const uint32_t> code) {
+	struct Entry {
+		uint64_t addr = 0, generation = UINT64_MAX, hash = 0;
+		uint32_t uses = 0;
+	};
+	thread_local std::array<Entry, 1024> entries {};
+	const auto generation = g_shader_map_generation.load(std::memory_order_acquire);
+	auto&      entry      = entries[((shader_addr >> 8u) * 0x9e3779b97f4a7c15ull) >> 54u];
+	const bool known      = entry.addr == shader_addr && entry.generation == generation;
+	if (known && (++entry.uses & 63u) != 0) return entry.hash;
+	const auto declared = GetDeclaredShaderHash(shader_addr);
+	const auto hash     = declared != 0 ? declared : HashShaderCode(code);
+	if (known && hash != entry.hash) {
+		static std::atomic<uint32_t> logged {0};
+		if (logged.fetch_add(1, std::memory_order_relaxed) < 16)
+			std::printf("Shader code changed in place: shader=0x%016" PRIx64 " hash 0x%016" PRIx64 " -> 0x%016" PRIx64
+			            "\n",
+			            shader_addr, entry.hash, hash);
+	}
+	entry = {shader_addr, generation, hash, known ? entry.uses : 0u};
+	return hash;
+}
+
 // Fills `params` in place: its user-data vector keeps its capacity across calls.
-static void FillShaderParams(uint64_t shader_addr, const char* label, uint64_t declared_hash,
-                             std::span<const uint32_t> user_data, const ShaderMappedData& data,
-                             ShaderParams& params) {
+static void FillShaderParams(uint64_t shader_addr, const char* label, std::span<const uint32_t> user_data,
+                             const ShaderMappedData& data, ShaderParams& params) {
 	if (data.code_size_bytes == 0 || data.code_size_bytes % sizeof(uint32_t) != 0) {
 		EXIT("%s hash=0x%016" PRIx64 " shader=0x%016" PRIx64
 		     " has invalid AGC shader_size=0x%08" PRIx32 "\n",
-		     label, declared_hash, shader_addr, data.code_size_bytes);
+		     label, GetDeclaredShaderHash(shader_addr), shader_addr, data.code_size_bytes);
 	}
 	const auto code_words = data.code_size_bytes / sizeof(uint32_t);
 	const auto code = std::span {reinterpret_cast<const uint32_t*>(shader_addr), code_words};
 	params.code = code;
 	params.user_data.assign(user_data.begin(), user_data.end());
-	params.hash      = declared_hash != 0 ? declared_hash : HashShaderCode(code);
+	params.hash      = ShaderCodeHash(shader_addr, code);
 	params.back_code = {};
 }
 
-static ShaderParams GetShaderParams(uint64_t shader_addr, const char* label, uint64_t declared_hash,
-                                    std::span<const uint32_t> user_data,
+static ShaderParams GetShaderParams(uint64_t shader_addr, const char* label, std::span<const uint32_t> user_data,
                                     const ShaderMappedData& data) {
 	ShaderParams params;
-	FillShaderParams(shader_addr, label, declared_hash, user_data, data, params);
+	FillShaderParams(shader_addr, label, user_data, data, params);
 	return params;
 }
 
@@ -815,7 +839,6 @@ void PrepareProgramInto(const HW::VertexShaderInfo& regs, const HW::Context& con
 	const auto& sh   = context.GetShaderRegisters();
 	const auto  data = ShaderGetMappedData(regs.es_regs.data_addr, "ShaderGetInputInfoVS():");
 	FillShaderParams(regs.es_regs.data_addr, "ShaderRecompiler VS",
-	                 GetDeclaredShaderHash(regs.es_regs.data_addr),
 	                 std::span<const uint32_t>(regs.gs_user_sgpr.value, regs.gs_regs.rsrc2.user_sgpr), data,
 	                 params);
 	if ((context.GetShaderStages() & 0x20u) == 0) {
@@ -840,8 +863,7 @@ void PrepareProgramInto(const HW::VertexShaderInfo& regs, const HW::Context& con
 		EXIT_IF(regs.gs_regs.data_addr == 0);
 		const auto back = ShaderGetMappedData(regs.gs_regs.data_addr, "ShaderGetInputInfoGS():");
 		const auto back_params =
-		    GetShaderParams(regs.gs_regs.data_addr, "ShaderRecompiler GS",
-		                    GetDeclaredShaderHash(regs.gs_regs.data_addr), {}, back);
+		    GetShaderParams(regs.gs_regs.data_addr, "ShaderRecompiler GS", {}, back);
 		params.back_code = back_params.code;
 		params.user_data[0] = static_cast<uint32_t>(regs.gs_regs.user_data_addr);
 		params.user_data[1] = static_cast<uint32_t>(regs.gs_regs.user_data_addr >> 32u);
@@ -889,7 +911,6 @@ void PrepareProgramInto(const HW::PixelShaderInfo& regs, const HW::ShaderRegiste
 	const auto data = ShaderGetMappedData(regs.ps_regs.data_addr, "ShaderGetInputInfoPS():");
 	ShaderGetStaticInputInfoPS(regs, sh, target_export_mapping, data, ps_info);
 	FillShaderParams(regs.ps_regs.data_addr, "ShaderRecompiler PS",
-	                 GetDeclaredShaderHash(regs.ps_regs.data_addr),
 	                 std::span<const uint32_t>(regs.ps_user_sgpr.value, regs.ps_regs.rsrc2.user_sgpr), data,
 	                 params);
 }
@@ -906,7 +927,6 @@ void PrepareProgramInto(const HW::ComputeShaderInfo& regs, const HW::ShaderRegis
 	const auto data = ShaderGetMappedData(regs.cs_regs.data_addr, "ShaderGetInputInfoCS():");
 	ShaderGetStaticInputInfoCS(regs, sh, data, info);
 	FillShaderParams(regs.cs_regs.data_addr, "ShaderRecompiler CS",
-	                 GetDeclaredShaderHash(regs.cs_regs.data_addr),
 	                 std::span<const uint32_t>(regs.cs_user_sgpr.value, regs.cs_regs.user_sgpr), data,
 	                 params);
 }

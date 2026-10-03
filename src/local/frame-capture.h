@@ -57,7 +57,10 @@ struct Call {
 	bool        prepared = false;   // reached binding preparation
 	uint64_t    vs = 0, ps = 0, cs = 0, vs_address = 0, ps_address = 0, cs_address = 0;
 	uint32_t    count = 0, instances = 0, groups[3] {}, local[3] {};
-	uint64_t    indirect = 0;
+	uint64_t    indirect = 0;     // a dispatch's arguments, or the arguments a draw's GPU reads
+	uint64_t    index    = 0;     // a draw's index buffer
+	uint32_t    index_size = 0;   // INDEX_TYPE (0: 16-bit, 1: 32-bit)
+	int32_t     base_vertex = 0;
 	float       viewport[6] {}; // xscale xoffset yscale yoffset zscale zoffset
 	int32_t     scissor[4] {};  // screen scissor left top right bottom
 	uint32_t    target_mask = 0, blend_mask = 0, blend0 = 0; // blend0: src | dst<<8 | op<<16
@@ -210,6 +213,9 @@ inline void Write(const Call& call, double microseconds) {
 		Append(line, ",\"vs\":\"%016" PRIx64 "\",\"ps\":\"%016" PRIx64 "\",\"vs_va\":\"%" PRIx64 "\",\"ps_va\":\"%" PRIx64
 		       "\",\"n\":%u,\"inst\":%u",
 		       call.vs, call.ps, call.vs_address, call.ps_address, call.count, call.instances);
+		if (call.index != 0)
+			Append(line, ",\"ib\":\"%" PRIx64 "\",\"it\":%u,\"bv\":%d", call.index, call.index_size, call.base_vertex);
+		if (call.indirect != 0) Append(line, ",\"indirect\":\"%" PRIx64 "\"", call.indirect);
 		Append(line, ",\"vp\":[%g,%g,%g,%g,%g,%g],\"sc\":[%d,%d,%d,%d]", call.viewport[0], call.viewport[1],
 		       call.viewport[2], call.viewport[3], call.viewport[4], call.viewport[5], call.scissor[0],
 		       call.scissor[1], call.scissor[2], call.scissor[3]);
@@ -261,6 +267,7 @@ public:
 		g_call.vs_address = g_call.ps_address = g_call.cs_address = 0;
 		g_call.count = g_call.instances = 0;
 		g_call.indirect                 = 0;
+		g_call.index = 0, g_call.index_size = 0, g_call.base_vertex = 0;
 		for (auto& value: g_call.groups) value = 0;
 		for (auto& value: g_call.local) value = 0;
 		g_call.images.clear();

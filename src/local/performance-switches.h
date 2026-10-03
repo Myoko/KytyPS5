@@ -38,6 +38,7 @@ extern volatile std::atomic_uint32_t kyty_local_async_xpr_pipelines_mode;
 extern volatile std::atomic_uint32_t kyty_local_native_xpr_relocate_mode;
 extern volatile std::atomic_uint32_t kyty_local_native_xpr_store_budget;
 extern volatile std::atomic_uint32_t kyty_local_native_xpr_keep_frames;
+extern volatile std::atomic_uint32_t kyty_local_native_xpr_instance_mode;
 #endif
 }
 
@@ -105,6 +106,7 @@ inline void InitializePerformanceSwitches() {
 	    Switch {"KYTY_NATIVE_XPR_STORE_BUDGET", &kyty_local_native_xpr_store_budget, 0, 65536},
 	    // Frames an unused native XPR record stays (at least 2).
 	    Switch {"KYTY_NATIVE_XPR_KEEP_FRAMES", &kyty_local_native_xpr_keep_frames, 0, 1000000},
+	    Switch {"KYTY_NATIVE_XPR_INSTANCES", &kyty_local_native_xpr_instance_mode},
 #endif
 	};
 	std::string enabled;
