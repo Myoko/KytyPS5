@@ -57,12 +57,21 @@ const char* StageName(ShaderType stage) {
 	}
 }
 
+// KYTY_SHADER_DUMP_ONLY=<hash,hash,...>: KYTY_SHADER_DUMP writes only these programs.
+bool DumpSelected(uint64_t hash) {
+	static const std::string only = [] {
+		const char* value = std::getenv("KYTY_SHADER_DUMP_ONLY");
+		return value != nullptr ? std::string(value) : std::string();
+	}();
+	return only.empty() || only.find(fmt::format("{:016x}", hash)) != std::string::npos;
+}
+
 // KYTY_SHADER_DUMP=<dir>: the guest ISA and its disassembly for every translated shader, once
 // per stage and hash (<dir>/<stage>_<hash>.bin and .rdna2), without the debug logging.
 void DumpDecodedShader(const CompileOptions& options, std::span<const uint32_t> code,
                        const Decoder::Program& decoded) {
 	static const char* const dir = std::getenv("KYTY_SHADER_DUMP");
-	if (dir == nullptr || *dir == '\0') {
+	if (dir == nullptr || *dir == '\0' || !DumpSelected(options.shader_hash)) {
 		return;
 	}
 	const auto      base = std::filesystem::path(dir) /
@@ -87,7 +96,7 @@ void DumpDecodedShader(const CompileOptions& options, std::span<const uint32_t> 
 // reports) and the final IR, as <stage>_<hash>.ir, once per stage and hash.
 void DumpShaderIr(const CompileOptions& options, const IR::Program& ir) {
 	static const char* const dir = std::getenv("KYTY_SHADER_DUMP");
-	if (dir == nullptr || *dir == '\0') {
+	if (dir == nullptr || *dir == '\0' || !DumpSelected(options.shader_hash)) {
 		return;
 	}
 	const auto path = std::filesystem::path(dir) /
