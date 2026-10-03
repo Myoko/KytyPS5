@@ -246,36 +246,35 @@ bool IsSupportedDepthTextureEncoding(const ShaderTextureResource& descriptor, bo
 	       descriptor.TileMode() == Prospero::TileMode::kDepth;
 }
 
-static void ValidateSampledDepthBinding(const ShaderRecompiler::IR::ImageResource& resource,
-                                        const ShaderTextureResource& descriptor, const Image& image,
-                                        vk::Format view_format, uint64_t size) {
+// The report of a depth image sampled in a way these paths do not support; empty when supported.
+static std::string UnsupportedSampledDepthBinding(const ShaderRecompiler::IR::ImageResource& resource,
+                                                  const ShaderTextureResource& descriptor, const Image& image,
+                                                  vk::Format view_format, uint64_t size) {
 	const bool resource_ok = IsSupportedSampledDepthResource(resource);
 	const bool encoding_ok = IsSupportedDepthTextureEncoding(descriptor, resource.r128);
 	const bool view_ok =
 	    IsSupportedSampledDepthView(image.info.pixel_format, view_format, descriptor.DstSelXYZW());
 	if (resource_ok && encoding_ok && view_ok) {
-		return;
+		return {};
 	}
 	const auto descriptor_pitch =
 	    TileGetTexturePitch(descriptor.Format(), static_cast<uint32_t>(descriptor.Width5()) + 1u,
 	                        descriptor.TileMode());
-	EXIT("unsupported sampled depth image: resource=%d encoding=%d view=%d "
-	     "class=%u numeric=%u dimension=%u mip_mode=%u read=%d written=%d atomic=%d compare=%d "
-	     "guest_format=%u swizzle=0x%03x image_format=%d view_format=%d image_layers=%u "
-	     "descriptor_type=%u base_array=%u depth=%u descriptor_pitch=%u target_pitch=%u "
-	     "addr=0x%016" PRIx64 " size=0x%016" PRIx64
-	     " dwords=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
-	     resource_ok, encoding_ok, view_ok,
-	     static_cast<uint32_t>(resource.resource_class),
-	     static_cast<uint32_t>(resource.numeric_class), static_cast<uint32_t>(resource.dimension),
-	     static_cast<uint32_t>(resource.mip_mode), resource.read, resource.written, resource.atomic,
-	     resource.depth_compare, static_cast<uint32_t>(descriptor.Format()),
-	     descriptor.DstSelXYZW(), static_cast<int>(image.info.pixel_format),
-	     static_cast<int>(view_format), image.info.resources.layers,
-	     static_cast<uint32_t>(descriptor.Type()), descriptor.BaseArray5(), descriptor.Depth(),
-	     descriptor_pitch, image.info.pitch, descriptor.Base40(), size, descriptor.fields[0],
-	     descriptor.fields[1], descriptor.fields[2], descriptor.fields[3], descriptor.fields[4],
-	     descriptor.fields[5], descriptor.fields[6], descriptor.fields[7]);
+	return fmt::format(
+	    "unsupported sampled depth image: resource={:d} encoding={:d} view={:d} class={} numeric={} "
+	    "dimension={} mip_mode={} read={:d} written={:d} atomic={:d} compare={:d} guest_format={} "
+	    "swizzle=0x{:03x} image_format={} view_format={} image_layers={} descriptor_type={} base_array={} "
+	    "depth={} descriptor_pitch={} target_pitch={} addr=0x{:016x} size=0x{:016x} "
+	    "dwords={:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x}",
+	    resource_ok, encoding_ok, view_ok, static_cast<uint32_t>(resource.resource_class),
+	    static_cast<uint32_t>(resource.numeric_class), static_cast<uint32_t>(resource.dimension),
+	    static_cast<uint32_t>(resource.mip_mode), resource.read, resource.written, resource.atomic,
+	    resource.depth_compare, static_cast<uint32_t>(descriptor.Format()), descriptor.DstSelXYZW(),
+	    static_cast<int>(image.info.pixel_format), static_cast<int>(view_format), image.info.resources.layers,
+	    static_cast<uint32_t>(descriptor.Type()), descriptor.BaseArray5(), descriptor.Depth(), descriptor_pitch,
+	    image.info.pitch, descriptor.Base40(), size, descriptor.fields[0], descriptor.fields[1],
+	    descriptor.fields[2], descriptor.fields[3], descriptor.fields[4], descriptor.fields[5],
+	    descriptor.fields[6], descriptor.fields[7]);
 }
 
 static bool IsSupportedStorageTextureDescriptor(const ShaderRecompiler::IR::ImageResource& resource,
@@ -838,7 +837,10 @@ TextureBinding RenderExecutor::ResolveTextureUncached(
 		if (storage) {
 			EXIT("depth target cannot be bound as a storage image\n");
 		}
-		ValidateSampledDepthBinding(resource, descriptor, *image, pixel_format, size.size);
+		if (auto report = UnsupportedSampledDepthBinding(resource, descriptor, *image, pixel_format, size.size);
+		    !report.empty()) {
+			return bind_null(report);
+		}
 	} else if (storage) {
 		ValidateStorageColorView(image->info.pixel_format, view_format, descriptor.DstSelXYZW());
 	} else {
