@@ -1,7 +1,7 @@
 param([string]$Label = 'run', [int]$Rounds = 3, [string]$Exe = '', [switch]$NoAot, [string[]]$Extra = @(),
       [switch]$KeepRunning, [string]$PresentMode = '', [int]$Vblank = 0, [string[]]$Set = @(),
       [string]$Patch = '', [switch]$Fullscreen, [switch]$ShotOnly, [switch]$NoWalk,
-      [int]$StartupSeconds = 100, [int]$StartupAttempts = 3, [switch]$NoPrecompile)
+      [int]$StartupSeconds = 100, [int]$StartupAttempts = 3, [switch]$NoPrecompile, [string]$Config = '')
 # End to end: fresh baseline save, launch, skip to the game, walk the fixed path once the HUD
 # is really up, measure. Screen states are told apart by pixel statistics.
 $S = $PSScriptRoot
@@ -128,6 +128,7 @@ if ($Vblank -gt 0) { $params['Vblank'] = $Vblank }
 if ($Set.Count) { $params['Set'] = $Set }
 if ($Patch) { $params['Patch'] = $Patch }
 if ($Fullscreen) { $params['Fullscreen'] = $true }
+if ($Config) { $params['Config'] = $Config } # another launch config (run-windows.ps1 -Config)
 # -NoPrecompile: the driver cache as it is (first-encounter measurements with KYTY_SHADER_WARMUP=0).
 if (!$NoPrecompile) { & "$root\run-windows.ps1" -Precompile -Width 1280 -Height 720 @params *> $null }
 $env:KYTY_LIVE_FILE = "$root\_Build\windows-bench\live-commands.txt"
