@@ -205,6 +205,10 @@ if (!$environment.Contains('KYTY_NATIVE_XPR_STORE_BUDGET') -and !$Baseline) { $e
 # Native XPR records stay 600 frames unused (2 before): a turn of the camera no longer drops every record
 # behind it (camera turning in place: Latria 35.2 -> 39.1 fps, Boletaria 1-1 42.0 -> 47.0).
 if (!$environment.Contains('KYTY_NATIVE_XPR_KEEP_FRAMES') -and !$Baseline) { $environment['KYTY_NATIVE_XPR_KEEP_FRAMES'] = '600' }
+# The instances of a mesh keep their native XPR records whatever order a frame draws them in: once an object's
+# record rebinds its descriptors, its relocated key holds its descriptor bases (Latria camera turning in place
+# 42.95 -> 45.33 fps, 1% low 27.95 -> 30.02; standing 39.13 -> 38.73).
+if (!$environment.Contains('KYTY_NATIVE_XPR_INSTANCES') -and !$Baseline) { $environment['KYTY_NATIVE_XPR_INSTANCES'] = '1' }
 # Memory the game releases (texture pool layers, 64 KiB mappings each) is not unprotected mapping
 # by mapping before its unmap: VirtualProtect was ~15% of the render thread in the open area.
 if (!$environment.Contains('KYTY_UNMAP_PROTECT_SKIP') -and !$Baseline) { $environment['KYTY_UNMAP_PROTECT_SKIP'] = '1' }
