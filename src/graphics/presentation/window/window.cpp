@@ -29,6 +29,7 @@
 #include "common/timer.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/render.h"
+#include "loader/demonsSoulsWarp.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "graphics/presentation/renderDoc.h"
@@ -255,6 +256,14 @@ static void GameEventKeyboard(WindowLoopState& game, const EventKeyboard& key) {
 					ToggleDesktopFullscreen();
 				}
 				break;
+			// Debug warp (loader/demonsSoulsWarp.h): F9/F10 pick a spawn point, F8 arms or cancels.
+			case SDLK_F8:
+				if (!key.repeat) {
+					Loader::DemonsSoulsWarp::ToggleSelected();
+				}
+				break;
+			case SDLK_F9: Loader::DemonsSoulsWarp::Select(-1); break;
+			case SDLK_F10: Loader::DemonsSoulsWarp::Select(1); break;
 			case SDLK_RETURN:
 			case SDLK_KP_ENTER:
 				if (!key.repeat && (key.mod & KMOD_ALT) != 0) {

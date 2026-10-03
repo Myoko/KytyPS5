@@ -22,6 +22,7 @@
 #include "live-census.h"
 #include "live-counters.h"
 #include "live-trace.h"
+#include "loader/demonsSoulsWarp.h"
 #include "local-platform.h"
 #include "slow-log.h"
 #include "time-census.h"
@@ -499,6 +500,13 @@ inline void Run(uint64_t id, const std::string& line) {
 		// vma <path>: the GPU allocator's detailed statistics (JSON: every allocation's type and size).
 		if (LiveCounters::g_vma_report != nullptr) LiveCounters::g_vma_report(arg1);
 		std::printf("LIVE_VMA id=%" PRIu64 " path=%s written=%d\n", id, arg1, LiveCounters::g_vma_report != nullptr ? 1 : 0);
+	} else if (cmd == "warp" && n >= 2) {
+		// warp <map> <spawn> | warp off: the debug warp (loader/demonsSoulsWarp.h).
+		const bool off = std::string_view(arg1) == "off";
+		const bool ok  = off ? (Loader::DemonsSoulsWarp::Disarm(), true)
+		                     : n == 3 && Loader::DemonsSoulsWarp::Arm(arg1, arg2);
+		std::printf("LIVE_WARP id=%" PRIu64 " map=%s spawn=%s ok=%d spawns=%zu\n", id, arg1, n == 3 ? arg2 : "-",
+		            ok ? 1 : 0, Loader::DemonsSoulsWarp::Spawns().size());
 	} else if (cmd == "fatal") {
 		// fatal: a fatal error on this thread, the path a crash takes (log, then the process ends).
 		EXIT("live fatal: a test of the fatal-error exit\n");

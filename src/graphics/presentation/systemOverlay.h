@@ -19,12 +19,13 @@ struct SystemOverlayVisualState {
 };
 
 // Small panels over the game image, drawn with every frame (dialog or not): the frame rate
-// (KYTY_FPS_HUD) and the progress of background work (the shader prefetch).
+// (KYTY_FPS_HUD), the progress of background work (the shader prefetch) and the debug warp.
 struct SystemOverlayHud {
 	std::string title;  // large first line (empty: no frame rate panel)
 	std::string detail; // small second line
 	std::string status; // the progress line (empty: none), over a bar
 	float       status_fraction = 0.0f;
+	std::string notice; // a text panel (empty: none)
 	vk::Rect2D  region; // the game image in the swapchain image
 	vk::Rect2D  drawn;  // out: the panels, in swapchain pixels
 };

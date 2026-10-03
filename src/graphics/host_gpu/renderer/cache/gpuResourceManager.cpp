@@ -166,8 +166,9 @@ void GpuResourceManager::UnmapMemory(uint64_t vaddr, uint64_t size, bool releasi
 		// Readbacks write guest memory when they finish: the ones into the range finish first
 		// (the others do not touch it).
 		m_buffer_cache.DrainGuestReadback(vaddr, size);
-		// Pending upload copies read the backing of ranges that are about to change owner.
-		AsyncUpload::Drain();
+		// Pending upload jobs on the range read its backing (or change its protection): they finish before
+		// it changes owner. Jobs elsewhere keep running.
+		AsyncUpload::DrainRange(vaddr, size);
 		// The GPU only works on the caches' own buffers and images, which are freed after the
 		// work in flight completes (deferred operations), so the unmap need not wait for the GPU
 		// (it used to finish all of it: up to a frame of GPU work, for every guest unmap). What
@@ -225,19 +226,29 @@ void GpuResourceManager::RefreshBdaRanges() {
 	LiveCounters::Add(LiveCounters::BdaRebuilds);
 	std::vector<RangeSet::Range> ranges;
 	m_buffer_cache.CollectMappedRegisteredRanges(m_mapped_ranges, ranges);
+	// An unchanged request keeps its proof: SynchronizeRegionRequest checks it against its region's CPU and
+	// registration epochs (an unmap marks the range CPU-dirty, which moves the CPU epoch).
+	std::swap(m_bda_region_requests, m_old_bda_region_requests);
 	m_bda_region_requests.clear();
+	size_t old = 0;
 	for (const auto& range : ranges) {
 		const auto end = range.address + range.size;
 		for (auto start = range.address; start < end;) {
 			const auto finish = std::min(end, (start / TRACKER_REGION_SIZE + 1) * TRACKER_REGION_SIZE);
-			m_bda_region_requests.push_back({start, finish - start});
+			auto& request = m_bda_region_requests.emplace_back(BufferCache::SyncRegionRequest {start, finish - start});
+			while (old < m_old_bda_region_requests.size() && m_old_bda_region_requests[old].address < start) ++old;
+			if (old < m_old_bda_region_requests.size() && m_old_bda_region_requests[old].address == start &&
+			    m_old_bda_region_requests[old].size == request.size) {
+				request = m_old_bda_region_requests[old];
+			} else if (start / TRACKER_REGION_SIZE < BdaDirtyRegions::Regions) {
+				// A new request starts unproven.
+				BdaDirtyRegions::Mark(start / TRACKER_REGION_SIZE);
+			}
 			start = finish;
 		}
 	}
 	m_bda_mapping_epoch = m_mapping_epoch;
 	m_bda_registration_epoch = registered;
-	// Every request starts unproven.
-	BdaDirtyRegions::MarkAll();
 }
 
 bool GpuResourceManager::PrepareBdaReadRanges(std::span<const GuestRange> ranges) {

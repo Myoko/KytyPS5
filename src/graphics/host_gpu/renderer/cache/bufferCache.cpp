@@ -755,8 +755,15 @@ void BufferCache::ChangeRegister(BufferId id) {
 	DrainGuestReadback(m_slot_buffers[id].CpuAddress(), m_slot_buffers[id].Size());
 	m_sync_buffers_valid = false;
 	++m_registration_epoch;
-	// Region requests prove their state against the global registration epoch.
-	BdaDirtyRegions::MarkAll();
+	// Region requests prove their state against the registration epoch of their own region: only the
+	// requests of these regions need to be synchronized again.
+	if (m_region_registrations.empty()) m_region_registrations.assign(TRACKER_ADDRESS_SIZE / TRACKER_REGION_SIZE, 0);
+	for (auto region = m_slot_buffers[id].CpuAddress() / TRACKER_REGION_SIZE,
+	          last   = (m_slot_buffers[id].CpuAddress() + m_slot_buffers[id].Size() - 1) / TRACKER_REGION_SIZE;
+	     region <= last && region < m_region_registrations.size(); ++region) {
+		m_region_registrations[region] = m_registration_epoch;
+		BdaDirtyRegions::Mark(region);
+	}
 	LiveCounters::Add(LiveCounters::BufferRegistrations);
 	auto& buffer = m_slot_buffers[id];
 	if constexpr (!insert) InvalidateCopyFeedback(buffer.CpuAddress(), buffer.Size());
@@ -1440,7 +1447,7 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 				    [](void* manager, uint64_t address, uint64_t size) {
 					    static_cast<RegionManager*>(manager)->ApplyDeferredProtection(address, size);
 				    },
-				    item.manager, item.address, item.size);
+				    item.manager, item.address, item.size, item.address, item.size);
 			} else {
 				item.manager->ApplyDeferredProtection(item.address, item.size);
 			}
@@ -1454,7 +1461,7 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 			const auto address = buffer.CpuAddress() + copy.dstOffset;
 			const auto* source = async ? LibKernel::Memory::TryGetBackingPointer(address, copy.size) : nullptr;
 			if (source != nullptr) {
-				AsyncUpload::Get().Push(mapped + copy.srcOffset, source, copy.size);
+				AsyncUpload::Get().Push(mapped + copy.srcOffset, source, copy.size, address);
 			} else {
 				std::memcpy(mapped + copy.srcOffset, reinterpret_cast<const void*>(address), copy.size);
 			}
@@ -1574,13 +1581,13 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 	    m_staging_buffer.IsCoherent()) {
 		bool queued = false;
 		if (const auto* source = Libs::LibKernel::Memory::TryGetBackingPointer(vaddr, size)) {
-			AsyncUpload::Get().Push(staging, source, size);
+			AsyncUpload::Get().Push(staging, source, size, vaddr);
 			queued = true;
 		} else if (Libs::LibKernel::Memory::TryGetBackingPieces(vaddr, size, m_backing_pieces)) {
 			// Large images usually span several guest mappings.
 			uint64_t offset = 0;
 			for (const auto& [piece, bytes]: m_backing_pieces) {
-				AsyncUpload::Get().Push(staging + offset, piece, bytes);
+				AsyncUpload::Get().Push(staging + offset, piece, bytes, vaddr + offset);
 				offset += bytes;
 			}
 			queued = true;
@@ -1589,7 +1596,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 			// parts; the render thread copied hundreds of MiB here synchronously before.
 			path = "sparse";
 			AsyncUpload::Get().PushCall(ReadMappedOrZeroCall, reinterpret_cast<void*>(vaddr),
-			                            reinterpret_cast<uint64_t>(staging), size);
+			                            reinterpret_cast<uint64_t>(staging), size, vaddr, size);
 			queued = true;
 		}
 		if (queued) {
@@ -1636,14 +1643,14 @@ std::pair<Buffer*, uint64_t> BufferCache::StageImagePieces(const std::vector<Sta
 		auto* target = staging + piece.offset;
 		if (async) {
 			if (const auto* source = Libs::LibKernel::Memory::TryGetBackingPointer(piece.vaddr, piece.size)) {
-				AsyncUpload::Get().Push(target, source, piece.size);
+				AsyncUpload::Get().Push(target, source, piece.size, piece.vaddr);
 				queued = true;
 				continue;
 			}
 			if (Libs::LibKernel::Memory::TryGetBackingPieces(piece.vaddr, piece.size, m_backing_pieces)) {
 				uint64_t offset = 0;
 				for (const auto& [source, bytes]: m_backing_pieces) {
-					AsyncUpload::Get().Push(target + offset, source, bytes);
+					AsyncUpload::Get().Push(target + offset, source, bytes, piece.vaddr + offset);
 					offset += bytes;
 				}
 				queued = true;
@@ -1655,7 +1662,7 @@ std::pair<Buffer*, uint64_t> BufferCache::StageImagePieces(const std::vector<Sta
 		// when memory is mapped there (TextureCache::MapMemory).
 		if (async) {
 			AsyncUpload::Get().PushCall(ReadMappedOrZeroCall, reinterpret_cast<void*>(piece.vaddr),
-			                            reinterpret_cast<uint64_t>(target), piece.size);
+			                            reinterpret_cast<uint64_t>(target), piece.size, piece.vaddr, piece.size);
 			queued = true;
 			continue;
 		}
@@ -1867,7 +1874,8 @@ void BufferCache::SynchronizeRegionRequest(SyncRegionRequest& request) {
 	});
 	DrainGuestReadback(request.address, request.size, true);
 	const auto epoch = m_memory_tracker.CpuModificationEpoch(request.address, request.size);
-	const auto registered = m_registration_epoch;
+	// A request lies in one tracker region: registrations elsewhere do not touch its buffers.
+	const auto registered = RegionRegistrationEpoch(request.address);
 	if (epoch != 0 && request.cpu_epoch == epoch && request.registration_epoch == registered) {
 		LiveCounters::Add(LiveCounters::RegionSkips);
 		return;
@@ -1875,7 +1883,7 @@ void BufferCache::SynchronizeRegionRequest(SyncRegionRequest& request) {
 	LiveCounters::Add(LiveCounters::RegionSyncs);
 	SynchronizeBuffersInRange(request.address, request.size);
 	request.cpu_epoch = 0;
-	if (epoch != 0 && m_registration_epoch == registered &&
+	if (epoch != 0 && RegionRegistrationEpoch(request.address) == registered &&
 	    m_memory_tracker.CpuModificationEpoch(request.address, request.size) == epoch) {
 		request.cpu_epoch = epoch;
 		request.registration_epoch = registered;
@@ -1885,18 +1893,27 @@ void BufferCache::SynchronizeRegionRequest(SyncRegionRequest& request) {
 void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size) {
 	DrainGuestReadback(vaddr, size, true);
 	if (!m_sync_buffers_valid) {
+		// The pieces of buffers that stayed registered keep their stamps: a stamp is about its own buffer's
+		// contents against the CPU epoch of its region, which another buffer's registration does not move.
+		std::swap(m_sync_buffers, m_old_sync_buffers);
+		std::swap(m_sync_stamps, m_old_sync_stamps);
 		m_sync_buffers.clear();
+		m_sync_stamps.clear();
 		m_sync_buffers.reserve(m_buffers.size());
+		size_t old = 0;
 		for (const auto& [address, id]: m_buffers) {
 			auto& buffer = m_slot_buffers[id];
 			const auto end = address + buffer.Size();
 			for (auto start = address; start < end;) {
 				const auto finish = std::min(end, (start / TRACKER_REGION_SIZE + 1) * TRACKER_REGION_SIZE);
-				m_sync_buffers.push_back({start, finish, &buffer});
+				while (old < m_old_sync_buffers.size() && m_old_sync_buffers[old].start < start) ++old;
+				const bool kept = old < m_old_sync_buffers.size() && m_old_sync_buffers[old].start == start &&
+				                  m_old_sync_buffers[old].end == finish && m_old_sync_buffers[old].id == id;
+				m_sync_buffers.push_back({start, finish, &buffer, id});
+				m_sync_stamps.push_back(kept ? m_old_sync_stamps[old] : SyncStamp {});
 				start = finish;
 			}
 		}
-		m_sync_stamps.assign(m_sync_buffers.size(), {});
 		m_sync_buffers_valid = true;
 	}
 	const auto end = vaddr + size;

@@ -654,22 +654,35 @@ TextureBinding RenderExecutor::ResolveTextureUncached(
 	const bool depth_tile = tile == Prospero::TileMode::kDepth;
 	const bool msaa_tile  = depth_tile || tile == Prospero::TileMode::kRenderTarget;
 	const bool msaa_array = type == Prospero::ImageType::kColor2DMsaaArray;
+	// A stale descriptor in a slot the shader does not sample (seen while a level loads) can be
+	// invalid; a sampled view of it is bound as null like an unrepresentable one, a storage view
+	// (written back) still has to be exact.
+	const auto bind_null = [&](const std::string& report) -> TextureBinding {
+		if (storage) {
+			EXIT("%s\n", report.c_str());
+		}
+		if (m_unrepresentable_textures.insert(address).second) {
+			LOGF("TextureCache: %s, bound as null\n", report.c_str());
+		}
+		auto       desc = NullTextureDesc(resource, TextureCache::BindingType::Texture);
+		const auto id   = texture_cache.FindImage(desc);
+		return {id, nullptr, std::move(desc)};
+	};
 	if ((!multisampled && (base_level > view_last_level || view_last_level >= levels)) ||
 	    (multisampled &&
 	     (base_level != 0 || last_level == 0 || last_level > 3 || max_mip != last_level ||
 	      !msaa_tile || (descriptor.MsaaDepth() && !depth_tile) ||
 	      (!msaa_array && (descriptor.Depth() != 0 || descriptor.BaseArray5() != 0))))) {
-		EXIT("unsupported texture mip view: base=%u last=%u levels=%u max=%u type=%u tile=%u "
-		     "class=%u numeric=%u dimension=%u mip_mode=%u read=%d written=%d "
-		     "dwords=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
-		     base_level, last_level, levels, descriptor.MaxMip(),
-		     static_cast<uint32_t>(descriptor.Type()), static_cast<uint32_t>(tile),
-		     static_cast<uint32_t>(resource.resource_class),
-		     static_cast<uint32_t>(resource.numeric_class),
-		     static_cast<uint32_t>(resource.dimension), static_cast<uint32_t>(resource.mip_mode),
-		     resource.read, resource.written, descriptor.fields[0], descriptor.fields[1],
-		     descriptor.fields[2], descriptor.fields[3], descriptor.fields[4], descriptor.fields[5],
-		     descriptor.fields[6], descriptor.fields[7]);
+		return bind_null(fmt::format(
+		    "unsupported texture mip view: base={} last={} levels={} max={} type={} tile={} class={} "
+		    "numeric={} dimension={} mip_mode={} read={} written={} addr=0x{:016x} "
+		    "dwords={:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x}",
+		    base_level, last_level, levels, descriptor.MaxMip(), static_cast<uint32_t>(descriptor.Type()),
+		    static_cast<uint32_t>(tile), static_cast<uint32_t>(resource.resource_class),
+		    static_cast<uint32_t>(resource.numeric_class), static_cast<uint32_t>(resource.dimension),
+		    static_cast<uint32_t>(resource.mip_mode), resource.read, resource.written, address,
+		    descriptor.fields[0], descriptor.fields[1], descriptor.fields[2], descriptor.fields[3],
+		    descriptor.fields[4], descriptor.fields[5], descriptor.fields[6], descriptor.fields[7]));
 	}
 	const auto samples = multisampled ? 1u << last_level : 1u;
 	const auto view_levels =
@@ -727,15 +740,7 @@ TextureBinding RenderExecutor::ResolveTextureUncached(
 		    resource.indirect_root, address, descriptor.fields[0], descriptor.fields[1],
 		    descriptor.fields[2], descriptor.fields[3], descriptor.fields[4], descriptor.fields[5],
 		    descriptor.fields[6], descriptor.fields[7]);
-		if (storage) {
-			EXIT("%s\n", report.c_str());
-		}
-		if (m_unrepresentable_textures.insert(address).second) {
-			LOGF("TextureCache: %s, bound as null\n", report.c_str());
-		}
-		auto       desc = NullTextureDesc(resource, TextureCache::BindingType::Texture);
-		const auto id   = texture_cache.FindImage(desc);
-		return {id, nullptr, std::move(desc)};
+		return bind_null(report);
 	}
 	if (tile == Prospero::TileMode::kDepth && m_depth_tiled_reports.insert(address).second) {
 		LOGF("TextureCache: depth-tiled sampled view: addr=0x%016" PRIx64 " size=0x%016" PRIx64
@@ -806,6 +811,13 @@ TextureBinding RenderExecutor::ResolveTextureUncached(
 		desc.info.metadata.kind          = ImageMetadataKind::Dcc;
 		desc.info.metadata.range         = {descriptor.MetaAddr() << 8u, metadata_size.size};
 		desc.info.metadata.dcc_alpha_msb = descriptor.DccAlphaPos();
+		const auto& meta                 = desc.info.metadata.range;
+		if (meta.address == 0 || meta.address >= TRACKER_ADDRESS_SIZE ||
+		    meta.size > TRACKER_ADDRESS_SIZE - meta.address) {
+			return bind_null(fmt::format("DCC metadata outside guest memory: meta=0x{:x} size=0x{:x} "
+			                             "addr=0x{:016x}",
+			                             meta.address, meta.size, address));
+		}
 	}
 	if (samples > 1) {
 		desc.info.mip_layout[0] = {0, size.size, pitch, height};

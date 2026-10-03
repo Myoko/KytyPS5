@@ -947,7 +947,8 @@ private:
 		m_alias_ranges_valid = false;
 		if (++m_mapping_epoch == 0) {
 			m_mapping_epoch = 1;
-			m_host_read_translations = {};
+			// In place: assigning {} builds a 40 KiB array on the stack (every caller's frame, called or not).
+			m_host_read_translations.fill({});
 		}
 	}
 
@@ -1100,7 +1101,9 @@ private:
 	// The pages the one active host read copies (all until it knows), 0 when none.
 	alignas(64) std::atomic<uint64_t> m_host_read_pages {0};
 	struct HostReadTranslation { MapEntry entry; uint64_t epoch = 0; };
-	std::array<HostReadTranslation, 64> m_host_read_translations {};
+	// By 4 MiB granule: 1024 slots cover 4 GiB without two granules sharing one (with 64, granules 256 MiB apart
+	// evicted each other and their reads searched m_maps).
+	std::array<HostReadTranslation, 1024> m_host_read_translations {};
 	uint64_t m_mapping_epoch = 1;
 };
 

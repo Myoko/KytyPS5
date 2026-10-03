@@ -473,26 +473,23 @@ private:
 		if (inst == nullptr) {
 			Fail(use_pc, "invalid typed planning value");
 		}
-		const auto cycle = std::ranges::find(m_visiting, inst);
-		if (cycle != m_visiting.end()) {
-			const auto contains_phi = std::any_of(cycle, m_visiting.end(), [](const Inst* value) {
-				return value->GetOpcode() == ValueOpcode::Phi;
-			});
-			if (contains_phi) {
+		// A value is collected once; one reached again on its own path closes a cycle, which is fine through a
+		// phi (m_phis[d] counts the phis above depth d) and an error otherwise.
+		const auto [state, fresh] = m_states.try_emplace(inst, static_cast<uint32_t>(m_phis.size() - 1));
+		if (!fresh) {
+			if (state->second == Collected || m_phis.back() > m_phis[state->second]) {
 				return;
 			}
 			Fail(use_pc, fmt::format("cyclic typed planning value {} without a phi",
 			                         ValueOpcodeName(inst->GetOpcode())));
 		}
-		if (m_visited.contains(inst)) {
-			return;
-		}
-		m_visiting.push_back(inst);
+		auto& depth = state->second;
+		m_phis.push_back(m_phis.back() + (inst->GetOpcode() == ValueOpcode::Phi ? 1 : 0));
 		for (size_t index = 0; index < inst->NumArgs(); index++) {
 			Collect(inst->Arg(index), use_pc);
 		}
-		m_visiting.pop_back();
-		m_visited.insert(inst);
+		m_phis.pop_back();
+		depth = Collected;
 		if (!IsRawRead(m_program, *inst)) {
 			return;
 		}
@@ -584,9 +581,11 @@ private:
 		}
 	}
 
+	static constexpr uint32_t Collected = UINT32_MAX;
+
 	Program&                                                m_program;
-	std::vector<Inst*>                                      m_visiting;
-	std::unordered_set<const Inst*>                         m_visited;
+	std::unordered_map<const Inst*, uint32_t>               m_states; // depth on the path, or Collected
+	std::vector<uint32_t>                                   m_phis {0};
 	std::vector<Patch>                                      m_patches;
 	std::unordered_map<uint64_t, std::vector<uint32_t>>     m_buckets; // srt_reads slots by StructuralHash
 	std::unordered_map<const Inst*, uint64_t>               m_hashes;

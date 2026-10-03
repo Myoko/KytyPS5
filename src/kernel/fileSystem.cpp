@@ -13,6 +13,7 @@
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "libs/network.h"
+#include "loader/demonsSoulsWarp.h"
 
 #include <algorithm>
 #include <atomic>
@@ -498,6 +499,9 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 			g_files->DeleteDescriptor(descriptor);
 			return KERNEL_ERROR_EEXIST;
 		}
+		if (rw_mode != Common::File::Mode::Read) {
+			Loader::DemonsSoulsWarp::NoteWrite(file->real_name);
+		}
 
 		if (creat && (!file_exist || trunc)) {
 			Common::File::CreateDirectories(file->real_name.parent_path());
@@ -506,7 +510,14 @@ int KYTY_SYSV_ABI KernelOpen(const char* path, int flags, uint16_t mode) {
 			LOGF_COLOR(result ? Log::Color::Green : Log::Color::Red, "\tCreate: %s, %s\n",
 			           Common::PathToString(file->real_name).c_str(), result ? "[ok]" : "[fail]");
 		} else {
-			result = file->f.Open(file->real_name, rw_mode);
+			// Debug warp (loader/demonsSoulsWarp.h): a read of the save gets a copy on the chosen map.
+			auto open_name = file->real_name;
+			if (rw_mode == Common::File::Mode::Read) {
+				if (auto copy = Loader::DemonsSoulsWarp::RedirectRead(file->real_name); !copy.empty()) {
+					open_name = std::move(copy);
+				}
+			}
+			result = file->f.Open(open_name, rw_mode);
 
 			LOGF_COLOR(result ? Log::Color::Green : Log::Color::Red, "\tOpen: %s, %s\n",
 			           Common::PathToString(file->real_name).c_str(), result ? "[ok]" : "[fail]");

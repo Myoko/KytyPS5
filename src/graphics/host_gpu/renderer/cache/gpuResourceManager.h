@@ -77,7 +77,7 @@ private:
 	static constexpr uint64_t UnmapGranuleBits = 14, UnmapLeafBits = 16;
 	std::unordered_map<uint64_t, std::unique_ptr<uint64_t[]>> m_unmap_epochs;
 	uint64_t m_bda_mapping_epoch = 0, m_bda_registration_epoch = 0;
-	std::vector<BufferCache::SyncRegionRequest> m_bda_region_requests;
+	std::vector<BufferCache::SyncRegionRequest> m_bda_region_requests, m_old_bda_region_requests;
 	GuestGpu*                 m_gpu = nullptr;
 	std::atomic<uint64_t> m_preparation_alias_epoch {uint64_t{1} << 32};
 	bool                      m_fault_process_pending = false;

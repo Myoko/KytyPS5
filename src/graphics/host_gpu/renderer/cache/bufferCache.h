@@ -107,6 +107,12 @@ public:
 	};
 	void SynchronizeRegionRequest(SyncRegionRequest& request);
 	[[nodiscard]] uint64_t RegistrationEpoch() const { return m_registration_epoch; }
+	// The registration epoch of the last change of a buffer covering the tracker region of `vaddr`: a region
+	// request's proof only depends on the buffers of its own region.
+	[[nodiscard]] uint64_t RegionRegistrationEpoch(uint64_t vaddr) const {
+		const auto region = vaddr / TRACKER_REGION_SIZE;
+		return region < m_region_registrations.size() ? m_region_registrations[region] : 0;
+	}
 	// Proofs that an earlier resolution still holds. Pure queries; TouchLiveBuffer
 	// only refreshes the LRU slot exactly as ObtainBuffer's TouchBuffer would.
 	// Zero means "cannot prove anything" (see MemoryTracker::CpuModificationEpoch).
@@ -213,10 +219,12 @@ private:
 	Common::LeastRecentlyUsedCache<BufferId, uint64_t> m_lru_cache;
 	BufferMap                                         m_buffers;
 	uint64_t m_registration_epoch = 1;
+	std::vector<uint64_t> m_region_registrations; // per tracker region, see RegionRegistrationEpoch
 	struct SyncBuffer {
 		uint64_t start;
 		uint64_t end;
 		Buffer* buffer;
+		BufferId id; // with its generation: a later buffer in the same slot is another buffer
 	};
 	// GPU-thread-only derived index. SlotVector preserves addresses until erase;
 	// every registration change invalidates this view before it can be reused.
@@ -224,6 +232,8 @@ private:
 	bool                                              m_sync_buffers_valid = false;
 	struct SyncStamp { uint64_t begin = 0, end = 0, epoch = 0; };
 	std::vector<SyncStamp> m_sync_stamps;
+	std::vector<SyncBuffer> m_old_sync_buffers; // rebuild scratch
+	std::vector<SyncStamp>  m_old_sync_stamps;
 	PageTable                                         m_page_table;
 	RangeSet                                          m_gpu_modified_ranges;
 	MemoryTracker                                     m_memory_tracker;
