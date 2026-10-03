@@ -134,6 +134,7 @@ def live(command_lines, timeout=900):
     identifier = int(time.time() * 1000)
     LIVE_FILE.write_text(f'id {identifier}\n' + '\n'.join(command_lines) + '\n')
     deadline = time.monotonic() + timeout
+    next_check = time.monotonic() + 5
     while time.monotonic() < deadline:
         text = log.read_text(errors='replace')
         if f'LIVE_DONE id={identifier}' in text:
@@ -141,6 +142,13 @@ def live(command_lines, timeout=900):
                 if f'id={identifier}' in line and not line.startswith('LIVE_DONE'):
                     print(line)
             return
+        # An emulator that died (a crash) never answers: give up at once instead of at the timeout.
+        if time.monotonic() >= next_check:
+            next_check = time.monotonic() + 5
+            tasks = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq kyty_emulator.exe', '/NH'],
+                                   capture_output=True, text=True).stdout
+            if 'kyty_emulator.exe' not in tasks:
+                sys.exit(f'no LIVE_DONE for id {identifier}: the emulator is not running ({log})')
         time.sleep(0.5)
     sys.exit(f'no LIVE_DONE for id {identifier} in {log}')
 
