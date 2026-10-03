@@ -1187,11 +1187,14 @@ const char* RenderExecutor::NativeXprBindResources(NativeXprRecord& record,
 	record.push_stages = push_stages;
 	record.has_push    = has_push;
 	record.upload      = upload;
-	// A new image object can get a destroyed view's handle: an identical payload
-	// keeps the set only over the same image objects.
-	const bool same_images = !runtime || std::ranges::equal(record.images, image_deps, [](const auto& a, const auto& b) {
-		return a.id == b.id && a.serial == b.serial;
-	});
+	// A new image object can get a destroyed view's handle, and a new buffer a destroyed buffer's (the
+	// driver's handles are its objects' addresses): an identical payload keeps the set only over the same
+	// image and buffer objects. A set kept over a buffer the cache destroyed and made again at the same
+	// range holds the old one's device address: the GPU reads freed memory and the device is lost.
+	const bool same_objects =
+	    !runtime || (std::ranges::equal(record.images, image_deps,
+	                                    [](const auto& a, const auto& b) { return a.id == b.id && a.serial == b.serial; }) &&
+	                 std::ranges::equal(record.buffers, buffer_deps, [](const auto& a, const auto& b) { return a.id == b.id; }));
 	if (runtime) {
 		record.buffers            = std::move(buffer_deps);
 		record.images             = std::move(image_deps);
@@ -1220,7 +1223,7 @@ const char* RenderExecutor::NativeXprBindResources(NativeXprRecord& record,
 		for (uint32_t st = 0; st < record.stage_count; ++st) snapshots[st] = &record.stages[st].snapshot;
 		record.image_signature = NativeXprImageSignature({snapshots.data(), record.stage_count});
 	}
-	if (record.set && same_images && same_payload(record.set_buffers, buffer_infos) &&
+	if (record.set && same_objects && same_payload(record.set_buffers, buffer_infos) &&
 	    same_payload(record.set_images, image_infos))
 		return nullptr;
 	NativeXprDropVariants(record);
@@ -1288,6 +1291,13 @@ bool RenderExecutor::NativeXprRebindSlots(NativeXprRecord& record,
 	if (record.pipelines.empty() || record.set_writes.empty()) return false;
 	auto& textures = m_context.GetTextureCache();
 	auto& buffers  = m_context.GetBufferCache();
+	// The set's other buffers are written again as they are (and an earlier set holds them too): each must
+	// still be the object resolved, else the write names a destroyed buffer. Otherwise resolve everything.
+	for (const auto& dep: record.buffers) {
+		if (std::ranges::find(buffer_slots, std::pair {dep.stage, dep.slot}) != buffer_slots.end()) continue;
+		const auto* owner = buffers.GetBufferIfLive(dep.id);
+		if (owner == nullptr || owner->Handle() != dep.handle) return false;
+	}
 	std::array<const ShaderRecompiler::IR::ResourceSnapshot*, 2> snapshots {};
 	for (uint32_t st = 0; st < record.stage_count; ++st) snapshots[st] = &record.stages[st].snapshot;
 	const auto signature = NativeXprImageSignature({snapshots.data(), record.stage_count});
