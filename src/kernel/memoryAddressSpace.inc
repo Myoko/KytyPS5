@@ -947,7 +947,8 @@ private:
 		m_alias_ranges_valid = false;
 		if (++m_mapping_epoch == 0) {
 			m_mapping_epoch = 1;
-			m_host_read_translations = {};
+			// In place: assigning {} builds a 40 KiB array on the stack (every caller's frame, called or not).
+			m_host_read_translations.fill({});
 		}
 	}
 
