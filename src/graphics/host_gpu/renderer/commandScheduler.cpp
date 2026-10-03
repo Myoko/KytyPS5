@@ -529,6 +529,9 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 #ifdef KYTY_LOCAL_VULKAN_RECORDING
 	if (LocalVulkanRecording::DeferredSubmitEnabled()) {
 		m_command.EndRendering();
+		// A compute chain's pending barrier closes this buffer, as End() records it on the direct path
+		// (left pending, the next Begin recorded it into a buffer that had not begun).
+		(void)m_command.Handle();
 		EXIT_IF(m_graphics.queue == nullptr);
 		DeferredSubmit deferred {};
 		// This thread alone allocates ticks and the worker submits them in stream order: no queue
