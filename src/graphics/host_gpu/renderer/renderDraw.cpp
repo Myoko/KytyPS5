@@ -1968,6 +1968,12 @@ bool RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 	XprCapture::g_state.pending.reset(); // a capture never spans two draws
 	KYTY_PROFILER_FUNCTION();
 	FrameCapture::Scope frame_capture("DrawIndex", false);
+	if (FrameCapture::Active()) {
+		FrameCapture::g_call.index       = reinterpret_cast<uint64_t>(args.index_addr);
+		FrameCapture::g_call.index_size  = args.index_type_and_size;
+		FrameCapture::g_call.base_vertex = args.base_vertex;
+		FrameCapture::g_call.indirect    = args.gpu_args;
+	}
 
 	EXIT_IF(buffer.IsInvalid());
 	EXIT_IF(args.offset_source == DrawOffsetSource::DrawState && args.first_instance != 0);
