@@ -76,7 +76,8 @@ static void ReplayBegin(std::span<const LocalVulkanRecording::Segment> segments,
 void CommandBuffer::Begin() {
 	EXIT_IF(m_rendering || IsInvalid());
 	InvalidateGraphicsState();
-	auto buffer = Handle();
+	// Not Handle(): nothing may be recorded before the buffer begins.
+	const vk::CommandBuffer buffer = m_buffer;
 #ifdef KYTY_LOCAL_VULKAN_RECORDING
 	// The recording worker owns this pool's buffers while it replays them; begin there too.
 	{
