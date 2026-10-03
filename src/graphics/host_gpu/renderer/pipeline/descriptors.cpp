@@ -719,6 +719,9 @@ TextureBinding RenderExecutor::ResolveTextureUncached(
 			EXIT("unsupported multisample texture layout\n");
 		}
 		size.size *= image_layers;
+	} else if (TileTextureElementLayout element {}; !TileGetTextureElementLayout(format, element)) {
+		// A stale descriptor (a compute pass while Latria loaded, format 129) has no layout to size.
+		rejection = "format without a texel layout";
 	} else {
 		pitch = TileGetTexturePitch(format, width, tile);
 		if (!TileGetTextureTotalSize(format, width, height, volume ? depth : image_layers, levels,
