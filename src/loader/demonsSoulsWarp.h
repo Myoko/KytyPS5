@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -31,13 +32,15 @@ void        Select(int step);    // F9/F10: the spawn point an F8 arms
 void        ToggleSelected();    // F8
 std::string HudText();           // the panel text (empty: none)
 
-// USR-DATA with the spawn's map and position (the FNV-1a checksum recomputed); false (data
-// unchanged) when it is not a save of a character in a world.
+// USR-DATA with the spawn's map and position (the size and FNV-1a checksum recomputed; a save without
+// a position, a character still in the tutorial, gets the entries); false when its layout is unexpected.
 bool PatchSave(std::vector<uint8_t>& data, const Spawn& spawn);
 
 // File system hooks: the host file a read-only open of `real` should open instead (a patched copy
 // of the save while a warp is armed; empty: `real` itself), and a write-open.
 std::filesystem::path RedirectRead(const std::filesystem::path& real);
 void                  NoteWrite(const std::filesystem::path& real);
+// A stat of `real`: the size of the copy a read would get (nothing: its own), without making one.
+std::optional<uint64_t> RedirectedSize(const std::filesystem::path& real);
 
 } // namespace Loader::DemonsSoulsWarp

@@ -140,8 +140,8 @@ from the game's map files) and move in it, F8 arms the shown one. Then leave to 
 Settings, the gear tab > Exit Game > Save and Exit Game) and Continue: the game loads on that map.
 The save on disk is only changed by the game itself when it saves on the new map (the panel then says
 "Warp done"), so a character can be warped back the same way; it keeps everything else (level,
-items, world progress). Some spawn points are at a boss's fog gate. Warp only a character that is
-already in a world, not one in the tutorial or the character creation.
+items, world progress). Some spawn points are at a boss's fog gate. A character still in the tutorial
+can be warped too; one in the character creation cannot (it has no save yet).
 
 ## Files and folders
 

@@ -919,7 +919,9 @@ int KYTY_SYSV_ABI KernelStat(const char* path, FileStat* sb) {
 		stat.st_blksize = 512;
 		stat.st_blocks  = stat.st_size / 512;
 	} else {
-		stat.st_size    = static_cast<int64_t>(Common::File::Size(real_file_name));
+		// Debug warp: a read of the save gets a copy of another size (KernelOpen).
+		const auto warp_size = Loader::DemonsSoulsWarp::RedirectedSize(real_file_name);
+		stat.st_size    = static_cast<int64_t>(warp_size ? *warp_size : Common::File::Size(real_file_name));
 		stat.st_blksize = 512;
 		stat.st_blocks  = (stat.st_size + 511) / 512;
 

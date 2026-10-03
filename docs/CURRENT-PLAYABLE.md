@@ -86,10 +86,13 @@ python3 tools/local/play-demons-souls.py --2k  # 带运行日志的同一正式�
   卡死也像同一原因。现在每个 fiber 在模拟器分配的 guest 栈上运行（游戏要求的大小加 256 KiB，下有保护页，同 guest 线程栈
   额外加 1 MiB 的做法），游戏给的内存只保留栈 magic；那个临时数组改为原地清零。在独立栈上刷图案测得：标为 16 KiB 的
   fiber 最深用到 45 KiB，64 KiB 的用到 55 KiB；去掉 40 KiB 栈帧后分别为 12 KiB 和 50 KiB（余量很小，独立栈仍有必要）。
-- 调试传送（10-03，`loader/demonsSoulsWarp.cpp`）：F9/F10 列出并选择各地图 MSB 里的玩家出生点（25 张图 55 个），F8 挂起；
+- 调试传送（10-03，`loader/demonsSoulsWarp.cpp`）：F9/F10 列出并选择各地图 MSB 里的主角出生点（c0000_*，20 张图 50 个；m03_00 c1000、m07 各图、m03_01_00_99 的
+  其他玩家点不列，m03_00 c1000 读档即崩），F8 挂起；
   之后游戏内 OPTIONS > 设置（齿轮）> Exit Game > Save and Exit Game，标题画面 Continue，游戏读 `PlayerProfile<n>/USR-DATA`
   时拿到的是改了 MAPUID、坐标、朝向（FNV-1a 重算）的临时副本，磁盘上的存档不动；游戏在目标地图上存档后自动解除。live 命令
   `warp <地图> <出生点>` / `warp off`。实测：1-1 挂起 m04_01_00_00 c0000_0001 → 退出、继续 → 3-2 Maneater 雾门前。
+  还在教程里的角色存档没有位置（字节 0x4819bb27 = 0，其后无位置/朝向两项；游戏写的 760 个存档全部如此）：跳图时
+  置 1 并插入两项（大小、校验和重算，stat 也报副本大小）。10-03 实测新建角色（教程中）→ 1-1 成功。
 - 偶发的设备丢失（10-03：凌晨 4-2 启动、早上 Latria 第 13 分钟各一次，NVIDIA 事件 153）。开 Vulkan 验证层（`--vulkan-validation
   true`，错误改为只记录）在 Latria 10 分钟内找到两个真实错误：(1) 描述符写入了已销毁的 VkBuffer：原生 XPR 记录在重绑定时把旧的
   缓冲句柄原样写回（`RebindSlots` 只检查其余贴图是否存活，不查缓冲），并且"载荷相同就沿用集合"只按句柄值比较缓冲，而驱动
