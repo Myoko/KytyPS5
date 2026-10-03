@@ -76,7 +76,23 @@ python3 tools/local/play-demons-souls.py --2k  # 带运行日志的同一正式�
 
 - 游戏的 SysV red zone：Windows 在出错线程的栈上分发异常（写保护跟踪每帧数百次），会踩掉 rsp 下方 128 字节。
   `--redzone`（默认开）改写游戏里用 red zone 的指令；补丁器只覆盖 `.eh_frame` 里有记录的函数，仍观察到约 1/20 次运行
-  有偶发崩溃（`eboot.bin+0x1c5e2ce` 读 `[rsp-0x68]` 得到 0；另有一次 `unknown sh reg`），尚未解决。
+  有偶发崩溃（`eboot.bin+0x1c5e2ce` 读 `[rsp-0x68]` 得到 0；另有一次 `unknown sh reg`）。之后的偶发崩溃查明是 fiber 栈溢出（见下条）。
+- 任务线程的偶发崩溃（10-03 查明）：游戏的任务系统用 sceFiber，128 个 16 KiB 和 32 个 64 KiB 的 fiber 栈首尾相连
+  （"BPE Job Fiber"）。Windows 上 fiber 栈里不只有游戏代码：游戏每次写被跟踪的页，异常就在出错的栈上分发（约 5 KiB），
+  HLE 函数也在这块栈上运行；其中 sceKernelBatchMap2 走到的 guest 映射函数栈帧有 40 KiB（给 1024 项的 std::array 赋 `{}`
+  在栈上构造临时数组，10-03 凌晨把它从 64 项扩大后才这么大，崩溃因此变多）。栈用穿底部就写进相邻 fiber 的栈顶：此前
+  全部游戏线程崩溃（`BPE JobWorkerThread` 里 `int 0x41` 断言、垃圾 this 指针或返回地址、执行到主机堆地址、映射锁的
+  SRW 等待块被改坏、sceFiberSwitch 往 0x17 写返回值）的 rsp 都在某个 fiber 栈顶 3 KiB 以内；标题画面两个任务线程空转的
+  卡死也像同一原因。现在每个 fiber 在模拟器分配的 guest 栈上运行（游戏要求的大小加 256 KiB，下有保护页，同 guest 线程栈
+  额外加 1 MiB 的做法），游戏给的内存只保留栈 magic；那个临时数组改为原地清零。在独立栈上刷图案测得：标为 16 KiB 的
+  fiber 最深用到 45 KiB，64 KiB 的用到 55 KiB；去掉 40 KiB 栈帧后分别为 12 KiB 和 50 KiB（余量很小，独立栈仍有必要）。
+- 调试传送（10-03，`loader/demonsSoulsWarp.cpp`）：F9/F10 列出并选择各地图 MSB 里的玩家出生点（25 张图 55 个），F8 挂起；
+  之后游戏内 OPTIONS > 设置（齿轮）> Exit Game > Save and Exit Game，标题画面 Continue，游戏读 `PlayerProfile<n>/USR-DATA`
+  时拿到的是改了 MAPUID、坐标、朝向（FNV-1a 重算）的临时副本，磁盘上的存档不动；游戏在目标地图上存档后自动解除。live 命令
+  `warp <地图> <出生点>` / `warp off`。实测：1-1 挂起 m04_01_00_00 c0000_0001 → 退出、继续 → 3-2 Maneater 雾门前。
+- 读图时偶发的致命错误 `invalid DCC metadata`（10-02、10-03 各一次）和 `unsupported texture mip view`（10-01）：绑定
+  着色器静态引用的贴图时，读图期间有的槽位里是没被真正采样的旧描述符（DCC 元数据地址为 0、mip 范围非法），真机不读它们。
+  现在采样视图遇到这种描述符像"无法表示的贴图"一样绑定空贴图（只记一次日志），存储视图仍按错误退出。
 - 开场/菜单卡死（窗口未响应）：NVIDIA Windows 驱动在 `vkQueuePresentKHR` 里阻塞于内核时持有设备级锁；
   若 GPU 上有"先等待后 signal"（等一个还在录制线程队列里的 tick），就与录制线程互相等待。已修：
   回读拷贝引擎（`KYTY_READBACK_QUEUE`）的提交改由录制线程按顺序发出；present 前等推迟提交交给驱动、
