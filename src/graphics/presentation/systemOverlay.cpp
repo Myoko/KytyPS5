@@ -1008,6 +1008,13 @@ struct SystemOverlay::Impl {
 				ImGui::PopStyleColor();
 			});
 		}
+		if (!hud.notice.empty()) {
+			panel("##NoticeHud", [&] {
+				ImGui::PushFont(hud_font, 21.0f * unit);
+				ImGui::TextUnformatted(hud.notice.c_str());
+				ImGui::PopFont();
+			});
+		}
 		ImGui::PopStyleVar(4);
 		hud.drawn = {{static_cast<int32_t>(low.x), static_cast<int32_t>(low.y)},
 		             {static_cast<uint32_t>(std::max(high.x - low.x, 0.0f)),

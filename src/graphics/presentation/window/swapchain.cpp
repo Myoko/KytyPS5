@@ -12,6 +12,7 @@
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window/windowInternal.h"
+#include "loader/demonsSoulsWarp.h"
 #ifdef KYTY_LOCAL_VULKAN_RECORDING
 #include "vulkan-recording.h"
 #endif
@@ -407,8 +408,9 @@ struct Presenter::Impl {
 		}();
 		const auto now = std::chrono::steady_clock::now();
 		UpdateStatus(now);
+		hud.notice = Loader::DemonsSoulsWarp::HudText();
 		if (!enabled) {
-			return hud.status.empty() ? nullptr : PlaceHud();
+			return hud.status.empty() && hud.notice.empty() ? nullptr : PlaceHud();
 		}
 		if (hud_window == std::chrono::steady_clock::time_point {}) {
 			hud_window = now;
@@ -432,7 +434,7 @@ struct Presenter::Impl {
 			hud_window = now;
 			hud_frames = 0;
 		}
-		if (hud.title.empty() && hud.status.empty()) {
+		if (hud.title.empty() && hud.status.empty() && hud.notice.empty()) {
 			return nullptr;
 		}
 		return PlaceHud();

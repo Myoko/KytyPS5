@@ -131,8 +131,17 @@ Default keyboard layout:
 | F7 | Camera with the mouse (press again to release the mouse) |
 | Space | **Pause / resume the emulation** (careful not to hit it by accident) |
 | F11, Alt+Enter | Toggle full screen |
+| F9 / F10, F8 | Debug warp: pick a map's spawn point, arm (or cancel) the warp |
 
 The keyboard has no L2 / R2 by default: use a gamepad when you need them.
+
+**Debug warp** (for testing other areas): F9 / F10 show the list of spawn points of every map (read
+from the game's map files) and move in it, F8 arms the shown one. Then leave to the title (OPTIONS >
+Settings, the gear tab > Exit Game > Save and Exit Game) and Continue: the game loads on that map.
+The save on disk is only changed by the game itself when it saves on the new map (the panel then says
+"Warp done"), so a character can be warped back the same way; it keeps everything else (level,
+items, world progress). Some spawn points are at a boss's fog gate. Warp only a character that is
+already in a world, not one in the tutorial or the character creation.
 
 ## Files and folders
 
