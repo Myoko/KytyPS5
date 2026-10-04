@@ -143,12 +143,17 @@ jobs:
       # every shader on the render thread while the game runs instead of in the background.
       # kyty_emulator_clang_lld_link.map is what profreport.exe symbolizes a profile against.
       #
-      # The scripts and tools/local come along as well: 'cmake --install' writes the binaries and
-      # nothing else (CMakeLists.txt installs kyty_emulator and libwinpthread-1.dll), while the
-      # launcher, the measurement scripts and precompile.py - which precompile-windows.ps1 calls
-      # when seeds.seeds is missing - all live in the source tree. Taking them from here keeps
-      # every one of them at the revision of the binary they drive; copying them out of a checkout
-      # by hand silently mixes revisions. tools/local is about 800 KB.
+      # The launcher and the measurement scripts come along as well: 'cmake --install' writes the
+      # binaries and nothing else (CMakeLists.txt installs kyty_emulator and libwinpthread-1.dll),
+      # while they live in the source tree. Taking them from here keeps every one of them at the
+      # revision of the binary they drive; copying them out of a checkout by hand silently mixes
+      # revisions.
+      #
+      # tools/local and 3rdparty are deliberately not staged, asked for: they are source for the
+      # shader precompile - precompile.py and its modules, and the Vulkan-Headers include that
+      # warmfile.py parses while it is being imported - and a compiled package does not ship source.
+      # precompile-windows.ps1 is still staged, so running it from this tree needs those two copied
+      # beside it first, which a checkout already has.
       - name: Stage the local tooling into the install tree
         shell: pwsh
         run: |
@@ -158,14 +163,6 @@ jobs:
             Select-Object -First 1 | ForEach-Object { Copy-Item $_.FullName $dst -Force; Write-Host "staged $($_.FullName)" }
           $map = '_Build/windows/kyty_emulator_clang_lld_link.map'
           if (Test-Path $map) { Copy-Item $map $dst -Force; Write-Host "staged $map" }
-          Copy-Item -Recurse -Force tools/local "$dst/tools/"
-          # warmfile.py, which tools/local/static-precompile/precompile.py imports, parses Vulkan
-          # enum values out of this header while it is being imported, so it has to be there.
-          if (Test-Path '3rdparty/Vulkan-Headers/include') {
-            New-Item -ItemType Directory -Force "$dst/3rdparty/Vulkan-Headers" | Out-Null
-            Copy-Item -Recurse -Force '3rdparty/Vulkan-Headers/include' "$dst/3rdparty/Vulkan-Headers/"
-            Write-Host 'staged 3rdparty/Vulkan-Headers/include'
-          }
           Copy-Item -Force *.ps1, *.cmd $dst
           if (Test-Path launch.json) { Copy-Item launch.json $dst -Force }
           Write-Host "staged $((Get-ChildItem -Recurse -File $dst).Count) files into $dst"
