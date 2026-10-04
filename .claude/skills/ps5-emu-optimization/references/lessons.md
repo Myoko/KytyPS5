@@ -26,6 +26,12 @@ environment variables; the ideas carry over to any HLE PS5 emulator.
   behind the previous frame's ~5 ms post-processing tail (one in-order VkQueue) -> guest readbacks -> main batch.
   60 fps needs async translation off the render thread, async compute overlapping the GPU tail, and ~4 ms less
   translation on the chain, together: each alone is capped by the others.
+- At ~45 fps (1-1 standing): causal slopes of translation time are ~0.8-1.1 for native draw records, 0.6-0.8 for
+  async-queue dispatches and 0.17 for graphics-ring dispatches (its ~14 MB/frame of linear copies is off the
+  chain). Frame label -> main submit (7.1 ms) is graphics 2.2, async 4.7, idle 0.2 ms: one async ring's ~4 ms
+  slice gates the readbacks, so a second thread or VkQueue for async work alone gains ~0. What is left is cold
+  data: a record use reads ~6.5 KB of record data (~30 MB/frame) plus ~9 guest spans (78% already read that
+  frame, ~2.4 words changed per draw); ~520 compute programs run once a frame at ~8 us vs ~2 us when hot.
 
 ## Wins
 
@@ -47,6 +53,7 @@ environment variables; the ideas carry over to any HLE PS5 emulator.
 | No barriers between guest storage writes repeated in one layout/access; keep a sampled depth target's shader reads while no sampled aspect is attachment-written | 33.9 -> 40.6 fps same-process (barriers 7470 -> 3087/frame) | the deferred decal pass recorded ~3 barriers (each a render pass break) per decal: a ~5 ms GPU tail that delayed the next frame's culling readbacks; guest partial flushes already order those writes, as on the console |
 | A compute fill of exactly one image clears it for 64/128-bit texel formats too (each 32-bit part holds the fill word) | 17 image re-initializations (41.8 MB of detiles) per frame gone; +0.5-1.5% | an 18 MiB fill of a froxel volume ran as a buffer write and marked every render target aliased in that arena for re-upload from memory |
 | BDA region syncs only where a guest write becomes visible (guest-thread marks published at submission start and satisfied WAIT_REG_MEM); no re-mark of a region left unproven only by its own queued write protection | region syncs 2.5-10K -> ~850/frame; +0.5%, render -0.3 ms | a guest write after a submission without a label races the GPU on the console too; the deferred protection's copies already capture writes before it lands |
+| A native draw record keeps a null texture (empty T#, never written) in its set instead of refusing the draw | 43.9 -> 45.4 fps same-process; refused keys 409 -> 2/frame | ~400 draws/frame took the ~5.5 us normal path only for a texture not streamed in yet |
 | Record ordinary draws as packets | -1.3 ms render | they were silently excluded |
 | Image recycle pool | -1 ms | |
 | -O3 -march=native + ThinLTO | ~+4% | |
@@ -87,6 +94,14 @@ separate from the generic emulator and verify the patched bytes before writing.
 | Deeper software prefetch over the learned draw-record order (index 3 ahead, fields 2, arrays 1) | flat to -0.3% | record/guest memory latency is spread over many structures; the extra lookups cost what they hide |
 | Skip both barriers around CPU->GPU upload copies (unsafe ceiling) | 0 fps (1300 barriers/frame) | not on the critical path |
 | Memo of recent read-only buffer lookups (epoch-proven) | flat | each lookup is cheap; the miss path dominates |
+| Records for compute programs that run once a frame (program phase only; 0 mismatches) | program phase 2.74 -> 3.43 ms | a record used once a frame adds its store and proof to the cold evaluation |
+| Per-key dispatch records or a materialization memo (diagnosed, not built) | of ~2040 dispatches/frame at 1-1 (standing or walking), 96.7% have a (shader, user data, groups) key and a materialized result (flattened tables + descriptors) seen neither last frame nor earlier that frame; same key 1.4%, same result under another key 1.9% | user data and the tables it points to live in per-frame rings |
+| Helper thread prefetching the next draws' record data on another core (unpaced / paced) | -9% / flat | the data is already in L3 and another core cannot fill this core's L2; unpaced it competes for bandwidth |
+| Prefetch the next compute program's tables from the learned dispatch order (79% predicted) | 45.06 vs 45.00 fps | |
+| Prefetch the AOT-compiled table code (median 12 KB per function) before calling it | call 1.25 -> 0.7 us, net 0 | the prefetches cost what they hide |
+| Record fields reordered so a use touches fewer lines; two-draws-ahead index prefetch | +0.2 fps (noise); flat | the misses are spread over ~10 arrays per record |
+| Engine convars cullZeroIndexIndirectCalls / useSunShadowIndices / groupCulling | flat | the once-a-frame compute programs stay |
+| Native records for deferred decal draws | not built | decals sample depth as R32F, write storage images and use dynamic buffers, which the record proofs refuse |
 | Unprotect on the guest thread | 9 s freeze | |
 | Strict pinning of render/record/upload threads | 28 fps (worse) | |
 | VK_EXT_shader_object | slower warm (3582 vs 1358 ms), broken | |
@@ -107,6 +122,13 @@ Diagnostic ceilings (not optimizations, useful for "how far can we go"): volumet
   NVIDIA compiles big compute shaders nearly serially inside one process). Cache ~2.3 GB.
 - Runtime coverage of statically derived keys: CS 82%, PS 91%, VS 100%; misses are specialization
   guesses (uint textures, storage swizzles, cube/2D bound to a declared 2D array, written buffer formats).
+- What stalls is a specialization key the prefetch lacks (re-translation 0.1-0.5 s on the render
+  thread), not a SPIR-V the static cache lacks: measure coverage at the canonical input level. Key
+  fields the module ignores (the swizzle of a native-format image it only reads; one whose store
+  routes every channel its own component), the instruction's DIM CUBE kept by the decoder, an
+  EXEC merge on the access's own predicate not counted as mixing types, and two observed 3D->2D
+  patterns took recorded play from CS 92.3% / PS 93.9% to 97.5% / 98.6% for +3% seeds; a full
+  playthrough's recording covers the rest (effects met once).
 - Compile-cost multipliers: wave64 on a 32-wide GPU emitting every instruction twice (x2.3 compile),
   runtime format decode as nested switches per component (up to 9.5 MB SPIR-V, 107 s), EXEC
   predication (~4K selects, ~11K bitcasts per big shader). 77% of formatted buffer loads were plain
