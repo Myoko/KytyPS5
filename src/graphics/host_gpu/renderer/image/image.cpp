@@ -136,6 +136,12 @@ const Image::Barriers& Image::GetBarriers(vk::ImageLayout                      d
 	// per transition was one of the render thread's most frequent allocations.
 	thread_local Barriers barriers;
 	barriers.clear();
+	// Guest draws and dispatches repeating a shader write in the same layout and access are ordered by the
+	// guest's own barriers (partial flushes and cache events record full barriers, EmitGlobalBarrier), as on
+	// the console, where nothing else orders the storage writes of consecutive draws: no barrier between them
+	// (each was also a render pass break: ~800 per frame in the deferred decal pass). A repeated write after
+	// any other access (an upload, a copy, the emulator's own compute) keeps its barrier.
+	const bool guest = g_transit_group != 0;
 	if (partial || has_subresource_states) {
 		if (!has_subresource_states) {
 			subresource_states.resize(info.resources.levels * info.resources.layers, state);
@@ -155,7 +161,8 @@ const Image::Barriers& Image::GetBarriers(vk::ImageLayout                      d
 				                              vk::AccessFlagBits2::eShaderWrite |
 				                              vk::AccessFlagBits2::eMemoryWrite;
 				const bool     repeated_write =
-				    static_cast<bool>(subresource_state.access_mask & write_access);
+				    static_cast<bool>(subresource_state.access_mask & write_access) &&
+				    !(guest && subresource_state.guest);
 				if (subresource_state.layout != destination_layout ||
 				    subresource_state.access_mask != destination_access || repeated_write) {
 					vk::ImageMemoryBarrier2 barrier {};
@@ -174,7 +181,7 @@ const Image::Barriers& Image::GetBarriers(vk::ImageLayout                      d
 					barrier.subresourceRange.baseArrayLayer = layer;
 					barrier.subresourceRange.layerCount     = 1;
 					barriers.push_back(barrier);
-					subresource_state = {destination_stage, destination_access, destination_layout};
+					subresource_state = {destination_stage, destination_access, destination_layout, guest};
 				}
 			}
 		}
@@ -188,8 +195,8 @@ const Image::Barriers& Image::GetBarriers(vk::ImageLayout                      d
 		                                vk::AccessFlagBits2::eMemoryWrite;
 		const bool     repeated_write = static_cast<bool>(state.access_mask & write_access);
 		if (state.layout == destination_layout && state.access_mask == destination_access &&
-		    (!repeated_write || (DedupeTransitGroups() && g_transit_group != 0 &&
-		                         transit_group == g_transit_group))) {
+		    (!repeated_write || (guest && state.guest) ||
+		     (DedupeTransitGroups() && g_transit_group != 0 && transit_group == g_transit_group))) {
 			return barriers;
 		}
 
@@ -211,7 +218,7 @@ const Image::Barriers& Image::GetBarriers(vk::ImageLayout                      d
 		barriers.push_back(barrier);
 	}
 
-	state         = {destination_stage, destination_access, destination_layout};
+	state         = {destination_stage, destination_access, destination_layout, guest};
 	transit_group = g_transit_group;
 	return barriers;
 }
