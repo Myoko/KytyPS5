@@ -472,8 +472,7 @@ void BufferCache::CopyGuestReadback(const std::shared_ptr<GuestReadback>& reques
 				               request->producer_tick);
 		}
 		const auto* source = (request->verify != nullptr ? request->verify : request->download)->Mapped().data();
-		for (const auto& part: request->parts)
-			LibKernel::Memory::WriteBacking(part.address, source + part.offset, part.size);
+		for (const auto& part: request->parts) WriteBackGpuOwned(part.address, source + part.offset, part.size, "readback");
 	}
 	request->copied.store(true, std::memory_order_release);
 	request->copied.notify_all();
@@ -705,7 +704,7 @@ bool BufferCache::TryReadCopyFeedback(Buffer& buffer, uint64_t vaddr, uint64_t s
 	if (m_resources->MappingEpoch() != mapping_epoch) return false;
 	for (const auto& part: parts) feedback.download.Invalidate(part.offset, part.size);
 	for (const auto& part: parts) {
-		LibKernel::Memory::WriteBacking(part.address, feedback.download.Mapped().data() + part.offset, part.size);
+		WriteBackGpuOwned(part.address, feedback.download.Mapped().data() + part.offset, part.size, "feedback");
 	}
 	for (const auto& copy: copies) m_gpu_modified_ranges.Subtract(copy.address, copy.size);
 	// Only complete dirty-page coverage allows dropping protection. CPU-clean bytes
@@ -851,6 +850,35 @@ std::pair<uint64_t, uint64_t> BufferCache::DownloadEnvelope(const DownloadCopy& 
 	return {begin, end - begin};
 }
 
+// GPU data into guest memory, only on pages the GPU still owns. Every write-back path gives pages back to
+// the CPU only after writing them, so a CPU-owned page here holds what the CPU wrote since the copy was
+// taken (or nothing the GPU ever wrote): the stale GPU bytes would overwrite newer game data, which shows
+// up much later as a broken game structure (a null pointer in a job worker while streaming). Logged.
+void BufferCache::WriteBackGpuOwned(uint64_t address, const uint8_t* data, uint64_t size, const char* source) {
+	if (m_memory_tracker.IsRegionFullyGpuModified(address, size)) {
+		LibKernel::Memory::WriteBacking(address, data, size, source);
+		return;
+	}
+	uint64_t skipped = 0;
+	for (uint64_t at = address, end = address + size; at < end;) {
+		const auto next = std::min((at & ~(TRACKER_PAGE_SIZE - 1)) + TRACKER_PAGE_SIZE, end);
+		if (m_memory_tracker.IsRegionFullyGpuModified(at, next - at)) {
+			LibKernel::Memory::WriteBacking(at, data + (at - address), next - at, source);
+		} else {
+			skipped += next - at;
+		}
+		at = next;
+	}
+	LiveCounters::Add(LiveCounters::WriteBackSkips, skipped);
+	static std::atomic<uint32_t> logged {0};
+	if (logged.fetch_add(1, std::memory_order_relaxed) < 64) {
+		std::printf("BufferCache: %s write-back skipped 0x%" PRIx64 " of 0x%" PRIx64 " bytes at 0x%016" PRIx64
+		            ": CPU-owned pages\n",
+		            source, skipped, size, address);
+		std::fflush(stdout);
+	}
+}
+
 void BufferCache::DownloadBufferMemory(std::span<const DownloadCopy> copies) {
 	NativeBufferDownloadScope native_download_scope;
 	std::vector<DownloadCopy> batch;
@@ -928,7 +956,7 @@ void BufferCache::DownloadBufferMemory(std::span<const DownloadCopy> copies) {
 			const auto [source_begin, envelope_size] = DownloadEnvelope(copy);
 			const auto offset = cursor + copy.source_offset - source_begin;
 			download.Invalidate(base_offset + offset, copy.size);
-			Libs::LibKernel::Memory::WriteBacking(copy.address, mapped + offset, copy.size);
+			WriteBackGpuOwned(copy.address, mapped + offset, copy.size, "download");
 			cursor += AlignDownload(envelope_size);
 		}
 		batch.clear();
@@ -1071,6 +1099,8 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
       m_staging_buffer(graphics, scheduler, MemoryUsage::Upload, 512 * MiB),
       m_stream_buffer(graphics, scheduler, MemoryUsage::Stream, 64 * MiB),
       m_host_shader_upload(graphics, scheduler, MemoryUsage::Upload, 64 * MiB),
+      m_table_upload(graphics, scheduler, MemoryUsage::Upload, 32 * MiB,
+                     AllFlags | vk::BufferUsageFlagBits::eShaderDeviceAddress),
       m_download_buffer(graphics, scheduler, MemoryUsage::Download, 32 * MiB),
       m_device_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 128 * MiB),
       m_texture_cache(texture_cache), m_resources(resources) {
@@ -1569,6 +1599,13 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 	}
 	if (IsRegionGpuModified(vaddr, size)) {
 		path = "gpu";
+		return ObtainBuffer(vaddr, size, false, false);
+	}
+	// More than the whole staging ring holds (a texture over a streamed pool expanded to 1.35 GB while
+	// playing in Boletaria, and the upload exited): a buffer over the range, which SynchronizeBuffer
+	// fills a staging-sized piece at a time (a temporary buffer past that) and only where memory is mapped.
+	if (size > m_staging_buffer.Size()) {
+		path = "large";
 		return ObtainBuffer(vaddr, size, false, false);
 	}
 	marks[2] = Clock::now();

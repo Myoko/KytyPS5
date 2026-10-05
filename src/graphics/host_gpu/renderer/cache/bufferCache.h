@@ -68,6 +68,8 @@ public:
 	// CPU-written snapshots consumed as shader storage buffers. Each selected
 	// ring keeps its own GPU retirement watches across runtime mode changes.
 	[[nodiscard]] StreamBuffer& GetShaderUploadBuffer() noexcept;
+	// The per-draw blocks of table draws (src/local/table-xpr.inc), read by their device addresses.
+	[[nodiscard]] StreamBuffer& GetTableUploadBuffer() noexcept { return m_table_upload; }
 	[[nodiscard]] const Buffer* GetLodStatsBuffer() const noexcept { return &m_lod_stats_buffer; }
 	void ReportLodStats(void* dst, uint32_t size, bool reset);
 	[[nodiscard]] const Buffer* GetGdsBuffer() const noexcept { return &m_gds_buffer; }
@@ -191,6 +193,7 @@ private:
 	                                      uint64_t total_size);
 	[[nodiscard]] bool SynchronizeBufferFromImage(Buffer& buffer, uint64_t vaddr, uint64_t size);
 	void DownloadBufferMemory(std::span<const DownloadCopy> copies);
+	void WriteBackGpuOwned(uint64_t address, const uint8_t* data, uint64_t size, const char* source);
 	void ReadMemoryOnGpu(uint64_t vaddr, uint64_t size, bool is_write);
 	void FinishWriteReadback(uint64_t vaddr, uint64_t size);
 	struct GuestReadback;
@@ -245,6 +248,7 @@ private:
 	std::vector<std::pair<const uint8_t*, uint64_t>>  m_backing_pieces;
 	StreamBuffer                                      m_stream_buffer;
 	StreamBuffer                                      m_host_shader_upload;
+	StreamBuffer                                      m_table_upload;
 	StreamBuffer                                      m_download_buffer;
 	StreamBuffer                                      m_device_buffer;
 	TextureCache&                                     m_texture_cache;
