@@ -1116,7 +1116,8 @@ bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCal
 	return true;
 }
 
-static void RefreshShaders(CommandBuffer& buffer, const DrawCallInfo& draw, bool log_phases,
+// False when a program's resource tables did not evaluate: the draw is skipped.
+static bool RefreshShaders(CommandBuffer& buffer, const DrawCallInfo& draw, bool log_phases,
                            DrawRenderState& state) {
 	auto& ctx    = buffer.GetRegisters();
 	auto& sh_ctx = buffer.GetShaders();
@@ -1136,9 +1137,11 @@ static void RefreshShaders(CommandBuffer& buffer, const DrawCallInfo& draw, bool
 	if (log_phases) {
 		LogDrawPhase(draw.name, "GetGraphicsPrograms");
 	}
+	(void)PipelineCache::TakeMaterializationFailure();
 	state.programs = pipeline_cache.GetGraphicsPrograms(
 	    vertex_shader_info, pixel_shader_info, shader_regs, ctx, buffer.GetUserConfig(),
 	    target_export_mapping, state.ps_active, state.vs_input_info, state.ps_input_info);
+	return !PipelineCache::TakeMaterializationFailure();
 }
 
 static PreparedIndexBuffer PrepareIndexBuffer(CommandBuffer&               buffer,
@@ -1769,7 +1772,7 @@ bool RenderExecutor::TryDrawIndexRun(uint64_t submit_id, CommandBuffer& buffer,
 			    (*static_cast<decltype(observe_read)*>(userdata))(address, size);
 		    },
 		    &observe_read);
-		RefreshShaders(buffer, draw, false, state);
+		reads_safe = RefreshShaders(buffer, draw, false, state) && reads_safe;
 	}
 	if (!reads_safe) {
 		ResetBindings();
@@ -2110,6 +2113,7 @@ bool RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 		return false;
 	}
 
+	bool programs_ok = false;
 	if (XprCapture::Enabled() && XprCapture::g_state.current_xpr &&
 	    XprCapture::g_state.capture_this) {
 		auto& reads = XprCapture::g_state.reads;
@@ -2121,11 +2125,15 @@ bool RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 				    (*static_cast<decltype(observe)*>(userdata))(address, size);
 			    },
 			    &observe);
-			RefreshShaders(buffer, draw, true, state);
+			programs_ok = RefreshShaders(buffer, draw, true, state);
 		}
-		CaptureXprDraw(buffer, state, args);
+		if (programs_ok) CaptureXprDraw(buffer, state, args);
 	} else {
-		RefreshShaders(buffer, draw, true, state);
+		programs_ok = RefreshShaders(buffer, draw, true, state);
+	}
+	if (!programs_ok) {
+		ResetBindings();
+		return true;
 	}
 
 	LogDrawStateIfNeeded(buffer, draw, state, true, false, args.index_type_and_size,
@@ -2219,7 +2227,10 @@ bool RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
 		ResetBindings();
 		return true;
 	}
-	RefreshShaders(buffer, draw, false, state);
+	if (!RefreshShaders(buffer, draw, false, state)) {
+		ResetBindings();
+		return true;
+	}
 	if (args.gpu_args != 0 && state.vs_input_info.stage.program->stage == ShaderType::Mesh) {
 		ResetBindings();
 		return false;

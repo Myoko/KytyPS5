@@ -374,8 +374,9 @@ static bool IsSupportedStorageTextureEncoding(const ShaderRecompiler::IR::ImageR
 	       (descriptor.fields[5] & ~field5_max_mip_mask) == field5_expected;
 }
 
-void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
-                            const ShaderTextureResource& descriptor, uint64_t size) {
+// The report of a storage texture these paths do not support; empty when supported.
+std::string StorageTextureReport(const ShaderRecompiler::IR::ImageResource& resource,
+                                 const ShaderTextureResource& descriptor, uint64_t size) {
 	const auto format        = descriptor.Format();
 	const bool resource_ok   = IsSupportedStorageImageResource(resource);
 	const bool descriptor_ok = IsSupportedStorageTextureDescriptor(resource, descriptor);
@@ -391,15 +392,15 @@ void ValidateStorageTexture(const ShaderRecompiler::IR::ImageResource& resource,
 	     uint_resource == (numeric_class == Prospero::TextureNumericClass::Uint) &&
 	     (!resource.atomic || format == Prospero::BufferFormat::k32UInt));
 	if (resource_ok && descriptor_ok && encoding_ok && format_ok && size != 0) {
-		return;
+		return {};
 	}
-	EXIT("unsupported storage texture: resource=%d descriptor=%d encoding=%d format=%d "
-	     "class=%u numeric=%u dimension=%u mip_mode=%u atomic=%d compare=%d "
-	     "base_level=%u last_level=%u max_mip=%u min_lod=%u base_array=%u bc=%u msaa=%d "
-	     "depth_tile_bpe=%u swizzle_ok=%d "
-	     "addr=0x%016" PRIx64 " size=0x%016" PRIx64
-	     " extent=%ux%ux%u type=%u format=%u tile=%u swizzle=0x%03x read=%d written=%d "
-	     "dwords=%08x,%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
+	return fmt::format("unsupported storage texture: resource={:d} descriptor={:d} encoding={:d} format={:d} "
+	     "class={} numeric={} dimension={} mip_mode={} atomic={:d} compare={:d} "
+	     "base_level={} last_level={} max_mip={} min_lod={} base_array={} bc={} msaa={:d} "
+	     "depth_tile_bpe={} swizzle_ok={:d} "
+	     "addr=0x{:016x}" " size=0x{:016x}"
+	     " extent={}x{}x{} type={} format={} tile={} swizzle=0x{:03x} read={:d} written={:d} "
+	     "dwords={:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x},{:08x}",
 	     resource_ok, descriptor_ok, encoding_ok, format_ok,
 	     static_cast<uint32_t>(resource.resource_class),
 	     static_cast<uint32_t>(resource.numeric_class), static_cast<uint32_t>(resource.dimension),
@@ -654,16 +655,18 @@ TextureBinding RenderExecutor::ResolveTextureUncached(
 	const bool msaa_tile  = depth_tile || tile == Prospero::TileMode::kRenderTarget;
 	const bool msaa_array = type == Prospero::ImageType::kColor2DMsaaArray;
 	// A stale descriptor in a slot the shader does not sample (seen while a level loads) can be
-	// invalid; a sampled view of it is bound as null like an unrepresentable one, a storage view
-	// (written back) still has to be exact.
+	// invalid; it is bound as a null image like an unrepresentable one. A storage view loses its writes
+	// that way, which beats the game ending over one binding (they exited before).
 	const auto bind_null = [&](const std::string& report) -> TextureBinding {
-		if (storage) {
-			EXIT("%s\n", report.c_str());
-		}
 		if (m_unrepresentable_textures.insert(address).second) {
+			if (storage) {
+				std::printf("TextureCache: %s, storage view bound as null\n", report.c_str());
+				std::fflush(stdout);
+			}
 			LOGF("TextureCache: %s, bound as null\n", report.c_str());
 		}
-		auto       desc = NullTextureDesc(resource, TextureCache::BindingType::Texture);
+		auto       desc = NullTextureDesc(resource, storage ? TextureCache::BindingType::Storage
+		                                                    : TextureCache::BindingType::Texture);
 		const auto id   = texture_cache.FindImage(desc);
 		return {id, nullptr, std::move(desc)};
 	};
@@ -762,8 +765,8 @@ TextureBinding RenderExecutor::ResolveTextureUncached(
 		// degrade the same way an unrepresentable one already does, which keeps
 		// the emulator running instead of killing the session.
 		if (storage) {
-			EXIT_NOT_IMPLEMENTED(size.size == 0 || size.align == 0 ||
-			                     (address & (static_cast<uint64_t>(size.align) - 1u)) != 0);
+			return bind_null(fmt::format("misaligned storage view addr=0x{:016x} size=0x{:x} align=0x{:x}", address,
+			                             static_cast<uint64_t>(size.size), static_cast<uint64_t>(size.align)));
 		}
 		if (m_unrepresentable_textures.insert(address).second) {
 			LOGF("TextureCache: misaligned sampled view addr=0x%016" PRIx64
@@ -776,7 +779,9 @@ TextureBinding RenderExecutor::ResolveTextureUncached(
 		return {id, nullptr, std::move(desc)};
 	}
 	if (storage) {
-		ValidateStorageTexture(resource, descriptor, size.size);
+		if (auto report = StorageTextureReport(resource, descriptor, size.size); !report.empty()) {
+			return bind_null(report);
+		}
 	}
 
 	auto pixel_format = surface_format.vk_format;
@@ -838,7 +843,7 @@ TextureBinding RenderExecutor::ResolveTextureUncached(
 		image = &texture_cache.GetImage(id);
 	} else if (image->info.IsDepth()) {
 		if (storage) {
-			EXIT("depth target cannot be bound as a storage image\n");
+			return bind_null(fmt::format("depth target bound as a storage image addr=0x{:016x}", address));
 		}
 		if (auto report = UnsupportedSampledDepthBinding(resource, descriptor, *image, pixel_format, size.size);
 		    !report.empty()) {

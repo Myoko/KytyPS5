@@ -391,19 +391,22 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	phase.emplace(LiveCensus::DispatchPhase, census_shader, 0);
 	std::string unevaluated;
 	const auto  compute_program = m_context.GetPipelineCache().GetComputeProgram(
-	    cs_regs, sh_regs, input_info, indirect_args != 0 ? &unevaluated : nullptr);
+	    cs_regs, sh_regs, input_info, &unevaluated);
 	if (!compute_program && !unevaluated.empty()) {
 		// An indirect dispatch whose resource tables do not evaluate (pointers into memory the guest has not
 		// mapped, while it loads; a stale descriptor no specialization can take, such as an FMASK surface in a
 		// sampled slot, seen in the Nexus): it is skipped. With no thread groups in its arguments the GPU never
 		// reads the tables; with some it cannot run as the guest built it, and ending the game helps no one.
-		std::array<uint32_t, 3> groups {};
-		m_context.GetBufferCache().ReadMemory(indirect_args, sizeof(groups));
-		std::memcpy(groups.data(), reinterpret_cast<const void*>(indirect_args), sizeof(groups));
+		// A direct dispatch the same way: one dispatch missing beats the game ending.
+		std::array<uint32_t, 3> groups {thread_group_x, thread_group_y, thread_group_z};
+		if (indirect_args != 0) {
+			m_context.GetBufferCache().ReadMemory(indirect_args, sizeof(groups));
+			std::memcpy(groups.data(), reinterpret_cast<const void*>(indirect_args), sizeof(groups));
+		}
 		static std::atomic<uint32_t> logged {0};
 		if (logged.fetch_add(1, std::memory_order_relaxed) < 16)
-			std::printf("Dispatch: an indirect dispatch of %ux%ux%u thread groups skipped, its tables did not evaluate: %s",
-			            groups[0], groups[1], groups[2], unevaluated.c_str());
+			std::printf("Dispatch: %s dispatch of %ux%ux%u thread groups skipped, its tables did not evaluate: %s",
+			            indirect_args != 0 ? "an indirect" : "a", groups[0], groups[1], groups[2], unevaluated.c_str());
 		ResetBindings();
 		return;
 	}

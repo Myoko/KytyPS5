@@ -173,6 +173,10 @@ public:
 #endif
 	};
 
+	// Whether a program of this thread failed to evaluate its resource tables since the last call (the
+	// draw or dispatch is then skipped), and clears it.
+	[[nodiscard]] static bool TakeMaterializationFailure();
+
 	struct GraphicsPrograms {
 		ShaderProgram vertex;
 		ShaderProgram pixel;

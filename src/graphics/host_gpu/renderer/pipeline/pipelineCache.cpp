@@ -191,13 +191,24 @@ bool ReadMappedMemorySpan(void* userdata, uint64_t address, uint32_t* values, ui
 // An indirect dispatch takes a failed evaluation back (GetComputeProgram): with no thread groups in its
 // arguments the GPU never reads its tables, which then hold anything.
 thread_local std::string* g_unevaluated = nullptr;
+// A failed evaluation without a caller to take it back (draws, direct dispatches): the caller skips the work
+// (TakeMaterializationFailure) instead of the game ending over one draw whose tables hold a stale pointer.
+thread_local bool g_materialization_failed = false;
 
 bool ReportMaterialization(const char* label, ShaderType stage, uint64_t hash,
                            const ShaderRecompiler::IR::MaterializeReport& report, bool ok) {
 	if (!ok) {
 		auto message = fmt::format("shader resource materialization failed: stage={} hash=0x{:016x} reason={}\n",
 		                           static_cast<uint32_t>(stage), hash, report.reason);
-		if (g_unevaluated == nullptr) EXIT("%s", message.c_str());
+		if (g_unevaluated == nullptr) {
+			g_materialization_failed = true;
+			static std::atomic<uint32_t> logged {0};
+			if (logged.fetch_add(1, std::memory_order_relaxed) < 32) {
+				std::printf("%s (skipped)\n", message.substr(0, message.size() - 1).c_str());
+				std::fflush(stdout);
+			}
+			return false;
+		}
 		*g_unevaluated = std::move(message);
 		return false;
 	}
@@ -1981,6 +1992,10 @@ PipelineCache::GraphicsPrograms PipelineCache::GetGraphicsPrograms(
 	}
 	result.vertex = m_program_cache->Get(vertex_params, vertex_info, push_data_cursor, table_mode, table_portable[0]);
 	return result;
+}
+
+bool PipelineCache::TakeMaterializationFailure() {
+	return std::exchange(g_materialization_failed, false);
 }
 
 ShaderProgram PipelineCache::GetComputeProgram(const HW::ComputeShaderInfo& regs,
