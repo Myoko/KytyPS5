@@ -100,7 +100,7 @@ struct RenderExecutor::TablePair {
 	std::array<FlatStage, 2> flat;
 	std::vector<TableVariant>                                   variants;
 	uint64_t                                                    store_frame = 0;
-	std::unordered_map<uint64_t, std::unique_ptr<TableImageSet>> sets; // by T#/S# words
+	std::unordered_map<uint64_t, std::unique_ptr<TableImageSet>, HashedKey> sets; // by T#/S# words
 	std::array<TableImageSet*, Roles>                           last_set {}; // by role
 	// ShaderMapGeneration under which the shaders at vs and ps were proven those the programs were compiled
 	// from (the game registers shaders often; code replaced at an address resets the pair), by role.
@@ -122,8 +122,8 @@ struct RenderExecutor::TablePair {
 struct RenderExecutor::TableXpr {
 	using Pair    = TablePair;
 	using Variant = TableVariant;
-	std::unordered_map<uint64_t, Pair> pairs;          // by shader addresses
-	std::unordered_map<uint64_t, Pair> dispatches;     // by the compute stage's registers (TableDispatchKey)
+	std::unordered_map<uint64_t, Pair, HashedKey> pairs;      // by shader addresses
+	std::unordered_map<uint64_t, Pair, HashedKey> dispatches; // by the compute stage's registers (TableDispatchKey)
 	// The pairs found last, direct-mapped by key (pairs are never erased and do not move: a pointer stays valid).
 	static constexpr size_t PairCacheEntries = 256;
 	std::array<std::pair<uint64_t, Pair*>, PairCacheEntries> pair_cache {};
