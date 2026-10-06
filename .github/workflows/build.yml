@@ -1,18 +1,16 @@
 name: Build KytyPS5 (Windows)
 
-# This fork's Windows build (Demon's Souls, see README.md). Every push and pull request builds the release
-# package, kept as the run's artifact; a manual run (Actions > Build KytyPS5 (Windows) > Run workflow) or a
-# pushed v* tag also publishes it as a GitHub release, marked latest (README.md links to the latest one).
+# This fork's Windows build (Demon's Souls, see README.md): a manual run (Actions > Build KytyPS5 (Windows) >
+# Run workflow) or a pushed v* tag builds the release package and publishes it as a GitHub release, marked
+# latest (README.md links to the latest one). Pushes build nothing.
 on:
   push:
-    branches: [ '**' ]
     tags: [ 'v*' ]
-  pull_request:
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
   windows:
@@ -120,7 +118,6 @@ jobs:
   release:
     name: Publish release
     needs: windows
-    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write

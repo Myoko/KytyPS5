@@ -219,9 +219,9 @@ The shortest way to a Release build of the emulator (without the Qt launcher):
 
 The build is optimized for the CPU it is built on (`-march=native`). For an executable that other
 PCs can run, set `KYTY_CMAKE_ARGS=-DKYTY_MARCH=x86-64-v3` before the first configure. The release
-package is built that way by [`.github/workflows/build.yml`](.github/workflows/build.yml): every push
-builds it as the run's artifact, and **Actions > Build KytyPS5 (Windows) > Run workflow** or a pushed
-`v*` tag publishes it as a release.
+package is built that way by [`.github/workflows/build.yml`](.github/workflows/build.yml) when
+**Actions > Build KytyPS5 (Windows) > Run workflow** is started or a `v*` tag is pushed, and published as a
+release (pushes build nothing).
 
 ### Build requirements (Windows)
 
