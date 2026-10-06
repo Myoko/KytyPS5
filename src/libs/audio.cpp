@@ -4,6 +4,7 @@
 #include "common/emulatorConfig.h"
 #include "common/logging/log.h"
 #include "common/threads.h"
+#include "graphics/host_gpu/hostMemory.h"
 #include "kernel/pthread.h"
 #include "libs/audio_internal.h"
 #include "libs/controller.h"
@@ -14,6 +15,7 @@
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <limits>
 #include <magic_enum.hpp>
@@ -381,6 +383,29 @@ bool Audio::QueueSdlAudio(PortOut* port, const void* data, bool blocking, float 
 		return false;
 	}
 
+	// AudioOut2 receives PCM pointers owned by the guest. They may be stale when a guest audio
+	// worker races a port update/destroy. Validate the complete source span before SDL or the
+	// conversion path dereferences it; AudioOutOutputs holds m_mutex while reaching this point.
+	const auto frames           = static_cast<uint64_t>(port->samples_num);
+	const auto channels         = static_cast<uint64_t>(port->channels_num);
+	const auto bytes_per_sample = static_cast<uint64_t>(BytesPerSample(port->format));
+	if (frames == 0 || channels == 0 || bytes_per_sample == 0 ||
+	    channels > UINT64_MAX / bytes_per_sample ||
+	    frames > UINT64_MAX / (channels * bytes_per_sample)) {
+		return false;
+	}
+	const auto source_size = frames * channels * bytes_per_sample;
+	if (!Graphics::HostMemoryRangeIsReadable(reinterpret_cast<uint64_t>(data), source_size)) {
+		static std::atomic<uint64_t> invalid_pcm_count {0};
+		const auto count = invalid_pcm_count.fetch_add(1, std::memory_order_relaxed) + 1;
+		if (count <= 4 || (count & (count - 1)) == 0) {
+			LOGF("AudioOut: ignoring unreadable PCM buffer=0x%016" PRIx64 " size=%" PRIu64
+			     " (count=%" PRIu64 ")\n",
+			     reinterpret_cast<uint64_t>(data), source_size, count);
+		}
+		return false;
+	}
+
 	std::vector<uint8_t> prepared_buffer;
 	const void*          prepared_data   = PrepareOutputBuffer(*port, data, &prepared_buffer, gain);
 	const auto           output_channels = OutputChannels(*port);
@@ -546,7 +571,13 @@ bool Audio::AudioOutSetVolume(Id handle, uint32_t bitflag, const int* volume) {
 
 uint32_t Audio::AudioOutOutputs(OutputParam* params, uint32_t num, bool blocking) {
 	EXIT_NOT_IMPLEMENTED(num == 0 || num > OUT_PORTS_MAX);
-	EXIT_NOT_IMPLEMENTED(!AudioOutValid(params[0].handle));
+	// AudioOutValid takes m_mutex itself, and the loop below indexes m_out_ports with every
+	// handle, so validate all of them rather than only the first. Holding m_mutex across the whole
+	// function instead would nest with the lock the haptics branch takes below, which self
+	// deadlocks wherever Common::Mutex is a std::mutex rather than a CRITICAL_SECTION.
+	for (uint32_t i = 0; i < num; i++) {
+		EXIT_NOT_IMPLEMENTED(!AudioOutValid(params[i].handle));
+	}
 
 	const auto&                     first_port = m_out_ports[params[0].handle.GetId()];
 	std::array<bool, OUT_PORTS_MAX> paced {};
