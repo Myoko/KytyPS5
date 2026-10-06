@@ -41,12 +41,20 @@ bool TryLinearCopy(const ShaderComputeInputInfo& input, BufferCache& cache, uint
 
 bool TryLinearCopy(const LinearCopyDispatch& dispatch, BufferCache& cache, uint32_t x, uint32_t y, uint32_t z,
                    uint32_t mode) {
+	const auto copy = LinearCopyOf(dispatch, x, y, z, mode);
+	if (!copy) return false;
+	cache.CopyBuffer(copy->dst, copy->src, copy->bytes, false, false);
+	cache.ScheduleCopyFeedback(copy->dst, copy->bytes);
+	return true;
+}
+
+std::optional<LinearCopy> LinearCopyOf(const LinearCopyDispatch& dispatch, uint32_t x, uint32_t y, uint32_t z, uint32_t mode) {
 	const auto& data = dispatch.user_data;
 	if (data.size() != 12 || dispatch.thread_dimensions || mode != 0x41 || dispatch.threads[0] != 64 ||
 	    dispatch.threads[1] != 1 || dispatch.threads[2] != 1 || !dispatch.group_id[0] || dispatch.group_id[1] ||
 	    dispatch.group_id[2] || dispatch.thread_ids != 1 || dispatch.workgroup_register != 12 || dispatch.tg_size ||
 	    y != 1 || z != 1 || x == 0)
-		return false;
+		return std::nullopt;
 	ShaderBufferResource source, destination, parameters;
 	std::memcpy(source.fields, data.data(), 16);
 	std::memcpy(destination.fields, data.data() + 4, 16);
@@ -56,29 +64,27 @@ bool TryLinearCopy(const LinearCopyDispatch& dispatch, BufferCache& cache, uint3
 		// unanalysed format/swizzle/OOB/cache/addressing variation.
 		if (d->fields[3] != 0x00014004 || (d->fields[1] & 0xffff0000u) != 0x00040000u ||
 		    d->Base48() == 0 || (d->Base48() & 3) != 0)
-			return false;
+			return std::nullopt;
 	}
 	if (parameters.fields[3] != 0x0004dfac || (parameters.fields[1] & 0xffff0000u) != 0x00100000u ||
 	    parameters.NumRecords() != 1 || (parameters.Base48() & 3) != 0)
-		return false;
+		return std::nullopt;
 	std::array<uint32_t, 2> controls {};
 	if (!Libs::LibKernel::Memory::TryReadGpuCleanBackingToHost(parameters.Base48(), controls.data(),
 	                                                           sizeof(controls)))
-		return false;
+		return std::nullopt;
 	const uint64_t count = controls[0], period = controls[1], bytes = count * 4;
 	if (count == 0 || period < count || count > source.NumRecords() ||
 	    count > destination.NumRecords() || x != (count + 63) / 64 || bytes > 16 * 1024 * 1024)
-		return false;
+		return std::nullopt;
 	const auto src = source.Base48(), dst = destination.Base48();
 	if ((src < dst + bytes && dst < src + bytes) ||
 	    (parameters.Base48() < dst + bytes && dst < parameters.Base48() + 16))
-		return false;
+		return std::nullopt;
 	if (!LibKernel::Memory::IsUniqueGuestBackingRange(src, bytes) ||
 	    !LibKernel::Memory::IsUniqueGuestBackingRange(dst, bytes) ||
 	    !LibKernel::Memory::IsUniqueGuestBackingRange(parameters.Base48(), 16))
-		return false;
-	cache.CopyBuffer(dst, src, bytes, false, false);
-	cache.ScheduleCopyFeedback(dst, bytes);
-	return true;
+		return std::nullopt;
+	return LinearCopy {src, dst, bytes};
 }
 } // namespace Libs::Graphics::DemonsSouls

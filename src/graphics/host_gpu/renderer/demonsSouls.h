@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string_view>
 
@@ -24,6 +25,11 @@ struct LinearCopyDispatch {
 	uint32_t                  thread_ids = 0, workgroup_register = 0;
 	bool                      tg_size = false, thread_dimensions = false;
 };
+// What a dispatch of the linear copy shader copies (its checks passed), as TryLinearCopy copies it.
+struct LinearCopy {
+	uint64_t src = 0, dst = 0, bytes = 0;
+};
+std::optional<LinearCopy> LinearCopyOf(const LinearCopyDispatch& dispatch, uint32_t x, uint32_t y, uint32_t z, uint32_t mode);
 // A dispatch of the linear copy shader (a program of its hash), copied on the CPU.
 bool TryLinearCopy(const ShaderComputeInputInfo& input, BufferCache& cache, uint32_t x, uint32_t y,
                    uint32_t z, uint32_t mode);
