@@ -68,6 +68,9 @@ public:
 	                                                   vk::AccessFlagBits::eMemoryWrite,
 	              vk::AccessFlags destination_after  = vk::AccessFlagBits::eMemoryRead |
 	                                                   vk::AccessFlagBits::eMemoryWrite);
+	// A guest copy in a run of copies (CommandBuffer::CopyRunHandle: the run's barriers).
+	void CopyInRun(CommandBuffer& command, const Buffer& source, uint64_t source_offset, uint64_t destination_offset,
+	               uint64_t size);
 	void Fill(uint64_t offset, uint64_t size, uint32_t value);
 
 	// BufferCache state lives directly on the resource (is_deleted also read by a speculative translation's thread).

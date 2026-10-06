@@ -1140,6 +1140,7 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
       m_host_shader_upload(graphics, scheduler, MemoryUsage::Upload, 64 * MiB),
       m_table_upload(graphics, scheduler, MemoryUsage::Upload, 32 * MiB,
                      AllFlags | vk::BufferUsageFlagBits::eShaderDeviceAddress),
+      m_staging_device(graphics, scheduler, MemoryUsage::Stream, 64 * MiB),
       m_download_buffer(graphics, scheduler, MemoryUsage::Download, 32 * MiB),
       m_device_buffer(graphics, scheduler, MemoryUsage::DeviceLocal, 128 * MiB),
       m_texture_cache(texture_cache), m_resources(resources) {
@@ -1519,12 +1520,20 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 		}
 	}
 
-	auto [mapped, base_offset] = m_staging_buffer.Map(total_size, 4);
+	// In video memory while that ring has room without waiting (its copies were ~1 ms of GPU work a frame at 1-1,
+	// reading system memory across the bus, and the frame's chain waits on them), else in the host ring.
+	auto* ring                 = &m_staging_device;
+	auto [mapped, base_offset] = m_staging_device.Map(total_size, 4, false);
+	if (mapped == nullptr) {
+		ring                            = &m_staging_buffer;
+		std::tie(mapped, base_offset) = m_staging_buffer.Map(total_size, 4);
+	}
+	auto& staging_ring = *ring;
 	// KYTY_ASYNC_REPROTECT: the pages being copied were marked clean with their write
 	// protection deferred. It precedes every copy: queued ahead of them when all go to the
 	// worker, applied here otherwise.
 	if (auto deferred = MemoryTracker::TakeDeferredProtects(); !deferred.empty()) {
-		bool queued = mapped != nullptr && AsyncUpload::Enabled() && m_staging_buffer.IsCoherent();
+		bool queued = mapped != nullptr && AsyncUpload::Enabled() && staging_ring.IsCoherent();
 		for (const auto& copy: copies)
 			queued = queued && LibKernel::Memory::TryGetBackingPointer(buffer.CpuAddress() + copy.dstOffset, copy.size);
 		for (const auto& item: deferred) {
@@ -1542,7 +1551,7 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 	if (mapped != nullptr) {
 		// KYTY_ASYNC_UPLOAD: the worker fills coherent staging memory from the backing view
 		// before the submission that carries these copies; ranges without one copy here.
-		const bool async = AsyncUpload::Enabled() && m_staging_buffer.IsCoherent();
+		const bool async = AsyncUpload::Enabled() && staging_ring.IsCoherent();
 		for (auto& copy: copies) {
 			const auto address = buffer.CpuAddress() + copy.dstOffset;
 			const auto* source = async ? LibKernel::Memory::TryGetBackingPointer(address, copy.size) : nullptr;
@@ -1554,8 +1563,8 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 			copy.srcOffset += base_offset;
 		}
 		if (async) AsyncUpload::Get().Kick();
-		m_staging_buffer.Commit();
-		return m_staging_buffer.Handle();
+		staging_ring.Commit();
+		return staging_ring.Handle();
 	}
 
 	auto temporary = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::Upload, 0,
@@ -1895,7 +1904,7 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 	if (src == dst && src_offset < dst_offset + size && dst_offset < src_offset + size) {
 		EXIT("BufferCache: resolved Vulkan copy ranges overlap\n");
 	}
-	dst->CopyFrom(command, *src, src_offset, dst_offset, size);
+	dst->CopyInRun(command, *src, src_offset, dst_offset, size);
 }
 
 void BufferCache::CopyGuestMemory(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t size) {

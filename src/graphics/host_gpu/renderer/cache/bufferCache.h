@@ -296,6 +296,9 @@ private:
 	StreamBuffer                                      m_stream_buffer;
 	StreamBuffer                                      m_host_shader_upload;
 	StreamBuffer                                      m_table_upload;
+	// Buffer uploads stage here while it has room (UploadCopies): device-local host-visible memory, whose copies read
+	// video memory instead of system memory across the bus.
+	StreamBuffer                                      m_staging_device;
 	StreamBuffer                                      m_download_buffer;
 	StreamBuffer                                      m_device_buffer;
 	TextureCache&                                     m_texture_cache;
