@@ -231,7 +231,10 @@ private:
 	                                     bool is_written, bool is_texel_buffer);
 	void UploadDirtyRanges(Buffer& buffer, uint64_t vaddr, uint64_t size, bool is_written);
 	[[nodiscard]] vk::Buffer UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> copies,
-	                                      uint64_t total_size);
+	                                      uint64_t total_size, const Buffer** ring = nullptr);
+	// The open upload prologue's copies by device address (VK_NV_copy_memory_indirect): one command as it closes.
+	std::vector<VkCopyMemoryIndirectCommandNV> m_prologue_copies;
+	void                                       FlushPrologueCopies(vk::CommandBuffer command);
 	[[nodiscard]] bool SynchronizeBufferFromImage(Buffer& buffer, uint64_t vaddr, uint64_t size);
 	void DownloadBufferMemory(std::span<const DownloadCopy> copies);
 	void WriteBackGpuOwned(uint64_t address, const uint8_t* data, uint64_t size, const char* source);
