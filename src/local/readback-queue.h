@@ -5,12 +5,12 @@
 // single graphics queue (a guest reading data written frames ago otherwise waits for the whole
 // in-flight frame). Buffers are then shared by both queue families (VK_SHARING_MODE_CONCURRENT).
 //
-// Recording belongs to the GPU thread and bypasses the recording worker: this queue is not
-// ordered with the graphics command stream, only with the graphics timeline. With deferred
-// submits (KYTY_DEFERRED_SUBMIT) the submission itself goes through the worker, after the
-// graphics submissions queued before it: a copy never waits on a tick the driver has not been
-// given yet. Windows drivers stall presents, and every submission behind their device lock, on
-// such a wait-before-signal, and the worker's own submission of that tick is one of them.
+// This queue is not ordered with the graphics command stream, only with the graphics timeline.
+// With deferred submits (KYTY_DEFERRED_SUBMIT) the recording worker records the copy and submits
+// it, after the graphics submissions queued before it: a copy never waits on a tick the driver has
+// not been given yet. Windows drivers stall presents, and every submission behind their device lock,
+// on such a wait-before-signal, and the worker's own submission of that tick is one of them.
+// Without them the GPU thread records and submits.
 
 #include "common/assert.h"
 #include "graphics/host_gpu/graphicContext.h"
@@ -22,6 +22,7 @@
 #include <atomic>
 #include <cstdint>
 #include <span>
+#include <utility>
 
 namespace ReadbackQueue {
 
@@ -62,10 +63,45 @@ public:
 		submit.pSignalSemaphores    = &packet.signal;
 		Check(dispatch.vkQueueSubmit(packet.queue, 1, &submit, VK_NULL_HANDLE), "submit readback copy");
 	}
+	// The copy's commands: an earlier copy on this queue may target the same download slot (a detached request).
+	template <typename Dispatch>
+	static void Record(const Dispatch& dispatch, VkCommandBuffer command, std::span<const Region> regions,
+	                   VkBuffer destination) {
+		Check(dispatch.vkResetCommandBuffer(command, 0), "reset readback commands");
+		VkCommandBufferBeginInfo begin {};
+		begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+		Check(dispatch.vkBeginCommandBuffer(command, &begin), "begin readback commands");
+		VkMemoryBarrier barrier {};
+		barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		dispatch.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1,
+		                              &barrier, 0, nullptr, 0, nullptr);
+		for (const auto& region: regions) dispatch.vkCmdCopyBuffer(command, region.source, destination, 1, &region.copy);
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+		dispatch.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1,
+		                              &barrier, 0, nullptr, 0, nullptr);
+		Check(dispatch.vkEndCommandBuffer(command), "end readback commands");
+	}
 #ifdef KYTY_LOCAL_VULKAN_RECORDING
 	static void ReplaySubmit(std::span<const LocalVulkanRecording::Segment> segments,
 	                         const vk::detail::DispatchLoaderDynamic&      dispatch) {
 		Submit(*static_cast<const SubmitPacket*>(segments[0].data), dispatch);
+	}
+	// A copy the worker records and submits: its submission and its regions.
+	static constexpr size_t MaxDeferredRegions = 1024;
+	struct CopyPacket {
+		SubmitPacket submit;
+		VkBuffer     destination;
+		uint32_t     count;
+	};
+	static void ReplayCopy(std::span<const LocalVulkanRecording::Segment> segments,
+	                       const vk::detail::DispatchLoaderDynamic&      dispatch) {
+		const auto& copy = *static_cast<const CopyPacket*>(segments[0].data);
+		Record(dispatch, copy.submit.command, {static_cast<const Region*>(segments[1].data), copy.count}, copy.destination);
+		Submit(copy.submit, dispatch);
 	}
 #endif
 
@@ -113,25 +149,23 @@ public:
 		const auto     command = m_commands[index];
 		if (m_used[index] != 0) Wait(m_used[index]);
 		m_used[index] = value;
-		Check(d.vkResetCommandBuffer(command, 0), "reset readback commands");
-		VkCommandBufferBeginInfo begin {};
-		begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-		begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-		Check(d.vkBeginCommandBuffer(command, &begin), "begin readback commands");
-		// An earlier copy on this queue may target the same download slot (a detached request).
-		VkMemoryBarrier barrier {};
-		barrier.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		d.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1,
-		                       &barrier, 0, nullptr, 0, nullptr);
-		for (const auto& region: regions) d.vkCmdCopyBuffer(command, region.source, destination, 1, &region.copy);
-		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-		d.vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier,
-		                       0, nullptr, 0, nullptr);
-		Check(d.vkEndCommandBuffer(command), "end readback commands");
 		const SubmitPacket packet {m_queue, command, timeline, wait_value, m_semaphore, value};
+#ifdef KYTY_LOCAL_VULKAN_RECORDING
+		// With deferred submits the worker records the command buffer too: the driver calls leave the GPU thread
+		// (~1.3% of it at 1-1, ~50 readbacks a frame).
+		if (LocalVulkanRecording::DeferredSubmitEnabled() && regions.size() <= MaxDeferredRegions) {
+			const CopyPacket copy {packet, destination, static_cast<uint32_t>(regions.size())};
+			const LocalVulkanRecording::Segment segments[] {{&copy, sizeof(copy)},
+			                                                {regions.data(), regions.size_bytes()}};
+			if (LocalVulkanRecording::EnqueueDeferred(ReplayCopy, segments, true)) {
+				m_worker_records = true;
+				return value;
+			}
+		}
+		// (The pool's command buffers are recorded by one thread at a time: the worker's queued ones first.)
+		if (std::exchange(m_worker_records, false)) LocalVulkanRecording::Drain();
+#endif
+		Record(d, command, regions, destination);
 #ifdef KYTY_LOCAL_VULKAN_RECORDING
 		const LocalVulkanRecording::Segment segments[] {{&packet, sizeof(packet)}};
 		if (LocalVulkanRecording::EnqueueDeferred(ReplaySubmit, segments, true)) return value;
@@ -178,6 +212,7 @@ private:
 	std::array<VkCommandBuffer, Buffers>     m_commands {};
 	std::array<uint64_t, Buffers>            m_used {};
 	uint64_t                                 m_submitted = 0;
+	bool                                     m_worker_records = false; // the worker may record into the pool
 	std::atomic<uint64_t>                    m_known {0};
 };
 

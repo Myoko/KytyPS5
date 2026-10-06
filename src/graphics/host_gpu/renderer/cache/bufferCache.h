@@ -317,7 +317,19 @@ private:
 	// at or before the current tick); entries the GPU completed are dropped from the front.
 	struct GpuWrite {
 		uint64_t begin, end, tick;
+		bool     big = false; // spans more granules than GpuWriteSpan: not counted in m_gpu_write_granules
 	};
+	// The writes from m_gpu_writes_head on, per 64 KiB granule (hashed into the counters; a write over more than
+	// GpuWriteSpan granules counts in m_gpu_writes_big instead): a range whose granules count none (and with no big
+	// write) overlaps no in-flight write, without a walk of the log (thousands of entries a frame at 1-1).
+	static constexpr uint32_t   GpuWriteGranuleBits = 16, GpuWriteCounters = 1u << 16u, GpuWriteSpan = 64;
+	std::unique_ptr<uint32_t[]> m_gpu_write_granules = std::make_unique<uint32_t[]>(GpuWriteCounters);
+	size_t                      m_gpu_writes_big     = 0;
+	[[nodiscard]] static uint32_t GpuWriteCounter(uint64_t granule) {
+		return static_cast<uint32_t>((granule * 0x9e3779b97f4a7c15ull) >> (64u - 16u));
+	}
+	void CountGpuWrite(const GpuWrite& write, int32_t delta);
+	void ResetGpuWrites();
 	void                  NoteGpuWrite(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] uint64_t InflightWriteTick(uint64_t begin, uint64_t end, uint64_t completed,
 	                                         bool between_commands);

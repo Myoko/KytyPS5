@@ -336,13 +336,28 @@ static void TraceGpuWrite(uint64_t vaddr, uint64_t size, uint64_t tick) {
 // KYTY_READBACK_QUEUE. GPU thread, inside a command: the write is recorded at or after the
 // current tick, so its tick is only set at the next point between commands. Every GPU write
 // into a guest buffer is noted: shader writes, uploads, image copies and buffer joins.
+void BufferCache::CountGpuWrite(const GpuWrite& write, int32_t delta) {
+	if (write.big) {
+		m_gpu_writes_big += delta;
+		return;
+	}
+	for (auto g = write.begin >> GpuWriteGranuleBits; g <= (write.end - 1) >> GpuWriteGranuleBits; ++g)
+		m_gpu_write_granules[GpuWriteCounter(g)] += delta;
+}
+
+void BufferCache::ResetGpuWrites() {
+	m_gpu_writes.clear();
+	m_gpu_writes_head = m_gpu_writes_stamped = 0;
+	std::fill_n(m_gpu_write_granules.get(), GpuWriteCounters, 0u);
+	m_gpu_writes_big = 0;
+}
+
 void BufferCache::NoteGpuWrite(uint64_t vaddr, uint64_t size) {
 	TraceGpuWrite(vaddr, size, m_scheduler.CurrentTick());
 	if (kyty_local_readback_queue_mode.load(std::memory_order_relaxed) == 0 || m_graphics.readback_queue == nullptr) {
 		if (m_gpu_writes_on) {
 			m_gpu_writes_on = false;
-			m_gpu_writes.clear();
-			m_gpu_writes_head = m_gpu_writes_stamped = 0;
+			ResetGpuWrites();
 		}
 		return;
 	}
@@ -351,15 +366,16 @@ void BufferCache::NoteGpuWrite(uint64_t vaddr, uint64_t size) {
 	constexpr size_t Limit = size_t {1} << 20;
 	if (!m_gpu_writes_on || m_gpu_writes.size() - m_gpu_writes_head >= Limit) {
 		m_gpu_writes_on = true;
-		m_gpu_writes.clear();
-		m_gpu_writes_head = m_gpu_writes_stamped = 0;
+		ResetGpuWrites();
 		m_gpu_writes_from = UINT64_MAX;
 	}
 	// Writes not stamped yet all get the same tick at the next point between commands: a range
 	// noted again before then (a dispatch run writing the same buffers) adds nothing.
 	for (size_t i = m_gpu_writes.size(), last = std::max(m_gpu_writes_stamped, i > 4 ? i - 4 : 0); i > last; --i)
 		if (m_gpu_writes[i - 1].begin == vaddr && m_gpu_writes[i - 1].end == vaddr + size) return;
-	m_gpu_writes.push_back({vaddr, vaddr + size, 0});
+	const bool big = ((vaddr + size - 1) >> GpuWriteGranuleBits) - (vaddr >> GpuWriteGranuleBits) >= GpuWriteSpan;
+	m_gpu_writes.push_back({vaddr, vaddr + size, 0, big});
+	CountGpuWrite(m_gpu_writes.back(), 1);
 }
 
 
@@ -377,19 +393,25 @@ uint64_t BufferCache::InflightWriteTick(uint64_t begin, uint64_t end, uint64_t c
 	}
 	// Stamps never decrease: the completed writes are a prefix of the dated ones.
 	while (m_gpu_writes_head < m_gpu_writes_stamped && m_gpu_writes[m_gpu_writes_head].tick <= completed)
-		++m_gpu_writes_head;
+		CountGpuWrite(m_gpu_writes[m_gpu_writes_head++], -1);
 	if (m_gpu_writes_head >= 4096 && m_gpu_writes_head * 2 >= m_gpu_writes.size()) {
 		m_gpu_writes.erase(m_gpu_writes.begin(), m_gpu_writes.begin() + static_cast<std::ptrdiff_t>(m_gpu_writes_head));
 		m_gpu_writes_stamped -= m_gpu_writes_head;
 		m_gpu_writes_head = 0;
 	}
-	uint64_t tick = 0;
-	for (size_t i = m_gpu_writes_head; i < m_gpu_writes.size(); ++i) {
-		const auto& write = m_gpu_writes[i];
-		if (write.begin < end && begin < write.end)
-			tick = std::max(tick, i < m_gpu_writes_stamped ? write.tick : UINT64_MAX);
+	// No write counted in the range's granules (and no write too big to count): none overlaps it.
+	if (m_gpu_writes_big == 0 && end > begin) {
+		bool counted = false;
+		for (auto g = begin >> GpuWriteGranuleBits; g <= (end - 1) >> GpuWriteGranuleBits && !counted; ++g)
+			counted = m_gpu_write_granules[GpuWriteCounter(g)] != 0;
+		if (!counted) return 0;
 	}
-	return tick;
+	// Ticks grow with the index (undated writes are last): the latest overlapping write has the largest.
+	for (size_t i = m_gpu_writes.size(); i > m_gpu_writes_head; --i) {
+		const auto& write = m_gpu_writes[i - 1];
+		if (write.begin < end && begin < write.end) return i - 1 < m_gpu_writes_stamped ? write.tick : UINT64_MAX;
+	}
+	return 0;
 }
 
 bool BufferCache::ReadbackQueueReady(std::span<const std::pair<uint64_t, uint64_t>> ranges,
