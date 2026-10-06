@@ -55,11 +55,14 @@ python3 tools/local/play-demons-souls.py --2k  # 带运行日志的同一正式�
   构建与运行不再需要亲和性掩码（`build-windows.cmd` 只在设了 `KYTY_BUILD_AFFINITY` 时才绑核）。
 - 渲染线程限定在 P 核 1–5（配置的 `KYTY_RECORDING_CPUS`，非独占）：比自由调度快约 2.5%。**不要像 Linux 那样独占 CPU 0**：
   Windows 的中断/DPC 集中在 CPU 0，帧率直接减半；用 CPU Set 把其他线程赶出某个 P 核也会大幅变慢。
-- 给其他电脑：`.\package-windows.ps1` 在 `_Build\windows-portable` 编 x86-64-v3 版（`-DKYTY_MARCH=x86-64-v3`；
-  `-march=native` 会用到本机的 GFNI，别的 CPU 上直接非法指令），再装配 `_Build\portable\KytyPS5`（约 135 MB）：
-  exe、VC++ 运行库 DLL（随包，不用装）、libwinpthread、`srt-aot.dll`、`run-windows.ps1`、双击用的 `run.cmd`，
-  以及去掉本机 CPU 设置和 Linux 路径的 `launch.json`（不绑核）；另有预编译程序、`seeds.seeds`、`precompile.cmd` 和
-  给测试者的 `README.md`（源文件 `docs/PORTABLE-README.md`）。不含游戏、存档、着色器缓存（按 GPU+驱动区分）和 Streamline。
+- 给其他电脑：GitHub Actions（`.github/workflows/build.yml`）编 x86-64-v3 版（`-DKYTY_MARCH=x86-64-v3`；
+  `-march=native` 会用到本机的 GFNI，别的 CPU 上直接非法指令），带仓库里的 PGO profile（`tools/pgo/kyty.profdata`），
+  装配成发布包：exe、预编译程序、VC++ 运行库 DLL（随包，不用装）、libwinpthread、`run-windows.ps1`、双击用的
+  `run.cmd`、`launcher.cmd`、`precompile.cmd`、`launch.json`（= `run-windows.json`，不绑核）、种子生成脚本
+  （`tools/local/static-precompile`）和给测试者的 `README.md`（源文件 `docs/PORTABLE-README.md`）。每次推送都编译并
+  留作该次运行的 artifact；在 Actions 页 Run workflow 或推 `v*` tag 才发布 release（标为 latest，README 顶部链接到它）。
+  不含游戏、存档、着色器缓存（按 GPU+驱动区分）、Streamline、`srt-aot.dll` 和种子文件（含游戏的 shader 代码）：
+  首次启动由 `run-windows.ps1` 从玩家自己的游戏文件生成 `seeds.seeds`（Python 3 + numpy，本机 16 秒）。
   窗口比屏幕大时模拟器按比例缩进可用区域。
 - 着色器准备：启动器每次先跑 `kyty_shader_precompile --status`（约 1 秒，报告预取输入和静态管线缓存是否属于当前
   GPU+驱动），预取输入缺失或过期时自动生成（首次运行、更新驱动后）。`run.cmd` 带 `-Prompt`：静态缓存没做或游戏版本不是

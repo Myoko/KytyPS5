@@ -21,11 +21,11 @@
 # holds is not compiled again (binaries: the final merge keeps only what this run's shards made, so
 # pipelines no seed makes any more are dropped; a .bin left from before is where the first binaries run
 # takes them from without compiling). Build the program with build-windows.cmd kyty_shader_precompile.
-# A portable package (package-windows.ps1) has the program, the seed file and launch.json next to this
-# script (precompile.cmd).
+# A release package (.github/workflows/build.yml) has the program, launch.json and the seed file's generator
+# next to this script (precompile.cmd); the seed file is made there.
 param(
 	[string]$Game = '',
-	[string]$Seeds = $(if (Test-Path "$PSScriptRoot\seeds.seeds") { "$PSScriptRoot\seeds.seeds" } else { "$PSScriptRoot\_Build\static-precompile\seeds.seeds" }),
+	[string]$Seeds = $(if ((Test-Path "$PSScriptRoot\seeds.seeds") -or !(Test-Path "$PSScriptRoot\_Build")) { "$PSScriptRoot\seeds.seeds" } else { "$PSScriptRoot\_Build\static-precompile\seeds.seeds" }),
 	# The shaders as the game specialized them in recorded play (tools\local\static-precompile\precompile.py
 	# recorded-seeds): the specializations the seeds' guesses miss (a new PC compiled ~55 compute
 	# pipelines, up to 6 s each, before the HUD). '' = none.
@@ -51,7 +51,8 @@ if (!(Test-Path $Seeds)) {
 	if ($LASTEXITCODE) { throw 'precompile.py seeds failed' }
 }
 if ($Affinity -eq 0) {
-	$config = if (Test-Path "$PSScriptRoot\launch.json") { "$PSScriptRoot\launch.json" } else { "$PSScriptRoot\_Build\release-stage1-20260927\launch.json" }
+	$config = @("$PSScriptRoot\launch.json", "$PSScriptRoot\_Build\release-stage1-20260927\launch.json", "$PSScriptRoot\run-windows.json") |
+		Where-Object { Test-Path $_ } | Select-Object -First 1
 	foreach ($cpu in (Get-Content $config -Raw | ConvertFrom-Json).cpu_affinity) { $Affinity = $Affinity -bor ([int64]1 -shl [int]$cpu) }
 }
 $all = if ([Environment]::ProcessorCount -ge 64) { [int64]-1 } else { ([int64]1 -shl [Environment]::ProcessorCount) - 1 }

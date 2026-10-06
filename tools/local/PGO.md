@@ -15,7 +15,8 @@
 
 ## Windows
 
-`build-windows.cmd` 在 `_Build\pgo\windows\kyty.profdata` 存在时自动带上 `-DKYTY_PGO_USE`。源码改动多了之后，
+`build-windows.cmd` 自动带上 `-DKYTY_PGO_USE`：有 `_Build\pgo\windows\kyty.profdata` 就用它，否则用仓库里的
+`tools\pgo\kyty.profdata`（GitHub 上的发布构建用这个；重新训练后把新 profile 也复制过去提交）。源码改动多了之后，
 profile 里改过的函数会因哈希不符而失去 PGO，需要重新训练：
 
 1. `python tools\local\bench-windows.py prepare`，然后 `tools\local\windows\pgo-train.ps1`：

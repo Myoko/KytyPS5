@@ -5,8 +5,9 @@ rem   build-windows.cmd <target>   build another target (for example all)
 rem Needs Git, Visual Studio 2022 or its Build Tools with the C++ workload (CMake and Ninja come with
 rem it), LLVM clang-cl (19.1.7 tested; else the VS "C++ Clang tools" component), the Vulkan SDK and
 rem Python 3 (README.md, "Building with build-windows.cmd"). Missing submodules are checked out first.
-rem Release builds use -O3 -march=native and ThinLTO, like the Linux release; a PGO profile
-rem is used when _Build\pgo\windows\kyty.profdata exists (see tools\local\PGO.md).
+rem Release builds use -O3 -march=native and ThinLTO, like the Linux release, and a PGO profile:
+rem _Build\pgo\windows\kyty.profdata when there is one (a local training, tools\local\PGO.md), else
+rem the repository's tools\pgo\kyty.profdata (which the GitHub release build uses).
 rem   KYTY_BUILD_DIR    build directory (default _Build\windows)
 rem   KYTY_CMAKE_ARGS   extra arguments for the first configure (e.g. -DKYTY_PGO_GENERATE=ON;
 rem                     -DKYTY_MARCH=x86-64-v3 for an exe other PCs can run: native is this CPU's)
@@ -22,6 +23,7 @@ set "ROOT=%~dp0"
 set "BUILD=%ROOT%_Build\windows"
 if defined KYTY_BUILD_DIR set "BUILD=%KYTY_BUILD_DIR%"
 set "PROFILE=%ROOT%_Build\pgo\windows\kyty.profdata"
+if not exist "%PROFILE%" set "PROFILE=%ROOT%tools\pgo\kyty.profdata"
 set "PGO_ARGS="
 if exist "%PROFILE%" set "PGO_ARGS=-DKYTY_PGO_USE=%PROFILE%"
 

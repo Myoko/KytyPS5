@@ -1,7 +1,8 @@
 # KytyPS5 portable test build (Windows)
 
 A Windows test build of the Kyty PS5 emulator. So far it has been tuned only for
-**Demon's Souls (the PS5 remake)**.
+**Demon's Souls (the PS5 remake)**. It is built by GitHub Actions from the source at
+https://github.com/chenxiao07/KytyPS5, where newer builds are under Releases.
 
 ## Supported game version
 
@@ -24,6 +25,7 @@ At start-up the launcher reads the game's `sce_sys\param.json` and warns when th
 | RAM | **32 GB or more** | The game process keeps about 18–20 GB in RAM and needs about 34 GB of RAM plus page file: keep the page file "system managed" (the launcher warns when Windows cannot provide it) |
 | GPU | NVIDIA RTX with **12 GB of VRAM or more** | About 11 GB of VRAM in use; the test PC has an RTX 5090; AMD/Intel GPUs are untested |
 | GPU driver | The latest | The emulator uses Vulkan, which comes with the driver |
+| Python | Python 3 with numpy (`winget install Python.Python.3.12`, then `pip install numpy`) | Lists the game's shaders from its files at the first launch, for the shader preparation and the precompile; without it the game compiles each shader when it first appears (stutters) |
 | Disk | About 83 GB for the game, an SSD recommended | The emulator takes about 270 MB, the shader caches up to about 2.5 GB, and while playing the system temp folder needs another 4–5 GB |
 
 On the test PC (i9-14900K + RTX 5090, 2560×1440 window) the game runs at roughly 42–60 fps: about
@@ -66,12 +68,14 @@ Or **double-click `run.cmd`** to start with the default settings (do not double-
 The first launch goes like this:
 
 1. Choose the game folder (see above).
-2. A dialog shows whether the game version is the tested one and offers to precompile the shaders
+2. The console lists the game's shaders from its files (once, about 20 seconds; it needs Python 3
+   with numpy, see the system requirements).
+3. A dialog shows whether the game version is the tested one and offers to precompile the shaders
    first (see the next section).
-3. The console window makes the input files for the background shader preparation (once per
+4. The console window makes the input files for the background shader preparation (once per
    graphics card and driver version): about 50 seconds on the test PC's 22 threads, a few minutes on
    PCs with fewer threads.
-4. The game window appears. The start-up screen shows the loading progress; in the game, the top
+5. The game window appears. The start-up screen shows the loading progress; in the game, the top
    right corner shows "Preparing shaders xx%".
 
 Later launches go straight into the game. The console window stays open and shows the game's log as
@@ -159,7 +163,7 @@ can be warped too; one in the character creation cannot (it has no save yet).
 | `_PipelineCache` | Shader caches (valid only for this PC's graphics card and driver: do not copy them to other PCs) |
 | `logs` | Run logs |
 | `game-path.txt` | The remembered game location |
-| `seeds.seeds` | The list of shaders collected from the game files (contains the game's shader code), for the precompile |
+| `seeds.seeds` | The list of shaders the first launch collects from the game files (it contains the game's shader code: do not share it), for the precompile |
 | `launch.json` | The emulator's switches; normally left alone |
 
 ## Known issues
