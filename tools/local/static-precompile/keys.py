@@ -159,7 +159,7 @@ def vertex_record(code, agc):
                  'max_vertices': 0, 'max_primitives': 0, 'provoking_vertex': 0},
         'res_fields': [], 'res_dst': [], '_kind': 'vs',
     }
-    key = (0, 0, 0, 0, scratch, out_cntl, 0, 0)
+    key = (0, 0, 0, 0, scratch, out_cntl, 0xffffffff, 0, 0)  # start_instance_sgpr -1: direct draws' variant
     rsrc2 = reg_first(agc['sh_registers'], SPI_SHADER_PGM_RSRC2_GS, 0)
     return _record(warmfile.ST_VERTEX, code, _user_data_count(rsrc2), key, info)
 
