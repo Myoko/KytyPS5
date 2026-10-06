@@ -24,9 +24,11 @@
 #                                            exit code (run.cmd)
 #   .\run-windows.ps1 -DryRun                print environment and command only
 # A portable package (package-windows.ps1) has its kyty_emulator.exe, launch.json and srt-aot.dll
-# next to this script: those are used instead of the build tree's.
+# next to this script: those are used instead of the build tree's. A clone without the release config
+# under _Build takes run-windows.json (the portable package's switches).
 param(
-	[string]$Config = $(if (Test-Path "$PSScriptRoot\launch.json") { "$PSScriptRoot\launch.json" } else { "$PSScriptRoot\_Build\release-stage1-20260927\launch.json" }),
+	[string]$Config = $(@("$PSScriptRoot\launch.json", "$PSScriptRoot\_Build\release-stage1-20260927\launch.json",
+	                      "$PSScriptRoot\run-windows.json") | Where-Object { Test-Path $_ } | Select-Object -First 1),
 	[string]$Game = '',
 	[string]$Exe = $(if (Test-Path "$PSScriptRoot\kyty_emulator.exe") { "$PSScriptRoot\kyty_emulator.exe" } else { "$PSScriptRoot\_Build\windows\kyty_emulator.exe" }),
 	[int]$Width = 0,

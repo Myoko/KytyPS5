@@ -48,7 +48,8 @@ python3 tools/local/play-demons-souls.py --2k  # 带运行日志的同一正式�
 `-Patch <cheat.json>`（etaHEN 格式补丁）、`-PresentMode`、`-Vblank`、`-Game <游戏目录>`（记在 `game-path.txt`，
 都找不到时弹出选择框）、`-Affinity <十六进制掩码>`。
 
-- 依赖：VS 2022（C++ 工作负载）、LLVM 19.1.7（`winget install LLVM.LLVM --version 19.1.7`）、Vulkan SDK（glslangValidator）。
+- 依赖：VS 2022（C++ 工作负载）、LLVM 19.1.7（`winget install LLVM.LLVM --version 19.1.7`）、Vulkan SDK（glslangValidator）、
+  Python 3。缺的子模块由 `build-windows.cmd` 自动检出；新 clone 的完整步骤见 README 的 "Building with build-windows.cmd"。
   LLVM 23.1.2 编译 `agc.cpp` 时编译器自身崩溃，不要用。
 - 原 CPU 4、5 两个 P 核不稳定（clang 随机崩溃、系统蓝屏 0x20001），09-30 起在 BIOS 里禁用：现为 6 P 核（0–5）+ 16 E 核（6–21），
   构建与运行不再需要亲和性掩码（`build-windows.cmd` 只在设了 `KYTY_BUILD_AFFINITY` 时才绑核）。

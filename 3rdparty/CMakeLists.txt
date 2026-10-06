@@ -109,7 +109,9 @@ if (NOT TARGET FFmpeg::ffmpeg)
 endif()
 
 file(GLOB LIBATRAC9_SOURCES LibAtrac9/C/src/*.c)
-add_library(LibAtrac9 STATIC ${LIBATRAC9_SOURCES})
+# Its decinit.c from overrides/: the shared tables initialized once (the submodule stays at an upstream commit).
+list(FILTER LIBATRAC9_SOURCES EXCLUDE REGEX "/decinit\\.c$")
+add_library(LibAtrac9 STATIC ${LIBATRAC9_SOURCES} overrides/LibAtrac9/decinit.c)
 target_include_directories(LibAtrac9 PUBLIC LibAtrac9/C/src)
 find_package(Threads REQUIRED)
 target_link_libraries(LibAtrac9 PRIVATE Threads::Threads)

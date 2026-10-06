@@ -123,6 +123,44 @@ the Vulkan/SPIR-V validation rules.
 - A Vulkan 1.3-capable GPU with current drivers (on macOS, Vulkan is provided by the bundled
   MoltenVK)
 
+### Building with build-windows.cmd (Windows)
+
+The shortest way to a Release build of the emulator (without the Qt launcher):
+
+1. Install the tools once:
+   - Git: `winget install Git.Git`
+   - Visual Studio 2022 or Build Tools 2022 with the **Desktop development with C++** workload (its
+     **C++ CMake tools for Windows** component brings CMake and Ninja)
+   - LLVM 19 for `clang-cl`: `winget install LLVM.LLVM --version 19.1.7` (19.1.7 is tested; the
+     **C++ Clang tools for Windows** component of Visual Studio is used when LLVM is not installed;
+     LLVM 23.1.2 crashes compiling `agc.cpp`)
+   - Vulkan SDK, for `glslangValidator`: `winget install KhronosGroup.VulkanSDK`
+   - Python 3: `winget install Python.Python.3.12`
+2. Clone and build from a new terminal (so that the tools are on `PATH`):
+
+   ```powershell
+   git clone --recurse-submodules https://github.com/chenxiao07/KytyPS5.git
+   cd KytyPS5
+   .\build-windows.cmd
+   ```
+
+   The script finds Visual Studio, `clang-cl` and the Vulkan SDK, checks out submodules that are
+   missing, configures `_Build\windows` the first time (CMake downloads xbyak and zydis) and builds
+   `_Build\windows\kyty_emulator.exe`. Run it again after changes for an incremental build;
+   `.\build-windows.cmd all` builds every target.
+3. Start a game with its folder (the one with `eboot.bin`; it is remembered in `game-path.txt`):
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\run-windows.ps1 -Game "D:\Games\PPSA01341-app0"
+   ```
+
+   The emulator switches come from `run-windows.json`; `-DryRun` prints the environment and the
+   command, `-Fullscreen`, `-Width`/`-Height` and the others are listed at the top of the script.
+
+The build is optimized for the CPU it is built on (`-march=native`). For an executable that other
+PCs can run, set `KYTY_CMAKE_ARGS=-DKYTY_MARCH=x86-64-v3` before the first configure, or use
+`package-windows.ps1`, which builds that way and assembles a portable folder.
+
 ### Build requirements (Windows)
 
 - Git
@@ -130,6 +168,7 @@ the Vulkan/SPIR-V validation rules.
 - Ninja
 - Visual Studio 2022 or Build Tools 2022 with the **Desktop development with C++** workload and
   **C++ Clang tools for Windows** component
+- The Vulkan SDK (`glslangValidator`) and Python 3
 - Qt 6 for MSVC 2022 64-bit, including Concurrent, Network, and Widgets
 
 The Microsoft C++ compiler (`cl.exe`) is not supported; use `clang-cl`.
