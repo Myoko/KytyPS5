@@ -62,7 +62,13 @@ class Inventory:
             self.bundles[f] = parsed
             for code, header in parsed:
                 self._add(code, header)
-        self.embedded = agc.embedded_shaders(self.game)
+        try:
+            self.embedded = agc.embedded_shaders(self.game)
+        except (ValueError, agc.AgcError) as error:
+            # (The bundles' shaders still precompile: eboot.bin's own are left to the first frames that use them.)
+            self.embedded = []
+            self.failures.append(('eboot.bin', str(error)))
+            print(f'eboot.bin: {error}; its embedded shaders are not precompiled', file=sys.stderr)
         for shader in self.embedded:
             self._add(shader['code'], shader['agc'])
         self.materials = materials.techniques(self.game)
