@@ -173,6 +173,10 @@ struct RenderExecutor::TableXpr {
 	static constexpr size_t           ResolvedEntries = 65536;
 	std::unique_ptr<ResolvedBuffer[]> resolved = std::make_unique<ResolvedBuffer[]>(ResolvedEntries);
 	uint32_t                          special_generation = 1; // moves with the image starts and the mappings
+	// Addresses no image starts at, each with the TextureCache::StartEpoch it was proven at (only an address gaining
+	// its first image moves that epoch): TableBlocks asks the texture cache (a lock and a map lookup) again only then.
+	static constexpr size_t                           NoImageStartEntries = 1024;
+	std::array<std::pair<uint64_t, uint64_t>, NoImageStartEntries> no_image_start {};
 	uint64_t                          resolved_start = UINT64_MAX, resolved_mapping = UINT64_MAX;
 	std::vector<std::pair<std::array<uint32_t, 4>, ResolvedBuffer*>> entries; // a stage's V#s (TableDraw)
 	// A written V#'s range clamped to the mappings, and (`image_checked`) that no image starts at it, while `special`
@@ -740,7 +744,14 @@ bool RenderExecutor::TableBlocks(TablePair& pair, std::array<std::span<const uin
 	auto&      textures     = m_context.GetTextureCache();
 	auto&      upload       = buffer_cache.GetTableUploadBuffer();
 	const auto stages       = pair.programs[1] != nullptr ? 2u : 1u;
-	const auto start_epoch  = textures.StartEpoch();
+	const auto start_epoch  = textures.StartEpoch(); // (before any question below: a later image start moves it)
+	const auto image_starts = [&](uint64_t address) {
+		auto& known = table.no_image_start[(address * 0x9e3779b97f4a7c15ull) >> 54u];
+		if (known.first == address && known.second == start_epoch) return false;
+		if (textures.HasImageStartingAt(address)) return true;
+		known = {address, start_epoch};
+		return false;
+	};
 	if (table.resolved_start != start_epoch || table.resolved_mapping != table.mapping_epoch) {
 		table.resolved_start   = start_epoch;
 		table.resolved_mapping = table.mapping_epoch;
@@ -860,7 +871,7 @@ bool RenderExecutor::TableBlocks(TablePair& pair, std::array<std::span<const uin
 				if (size != 0) {
 					if (address % 4 != 0) return false;
 					if (formatted && !proof.image_checked) {
-						if (textures.HasImageStartingAt(address)) return false;
+						if (image_starts(address)) return false;
 						proof.image_checked = true;
 					}
 					const auto [owner, offset] = buffer_cache.ObtainBuffer(address, size, true, formatted);
@@ -909,7 +920,7 @@ bool RenderExecutor::TableBlocks(TablePair& pair, std::array<std::span<const uin
 				if (size != 0) {
 					// The shader reads whole dwords from the device address; a buffer an image starts at is made from
 					// the image by ObtainBuffer only (SynchronizeBufferFromImage).
-					if (address % 4 != 0 || (formatted && textures.HasImageStartingAt(address))) return false;
+					if (address % 4 != 0 || (formatted && image_starts(address))) return false;
 					// (A speculation's: the guest's writes, not those its commit makes current; with none of its own
 					// guest memory writes pending over the range, read as no GPU work wrote it.)
 					auto* const spec        = Spec::Current();
