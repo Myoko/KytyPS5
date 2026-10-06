@@ -520,7 +520,9 @@ static void WriteGuestMemory(void* dst, const void* src, uint32_t size) {
 	if (spec == nullptr) {
 		std::memcpy(dst, src, size);
 		Spec::NoteHostWrite(reinterpret_cast<uint64_t>(dst), size);
-		for (uint32_t offset = 0; offset < size; offset += 4) Spec::NoteLabel(reinterpret_cast<uint64_t>(dst) + offset);
+		// (The labels a speculation's waits check: none without speculation.)
+		if (kyty_local_speculate_mode.load(std::memory_order_relaxed) != 0)
+			for (uint32_t offset = 0; offset < size; offset += 4) Spec::NoteLabel(reinterpret_cast<uint64_t>(dst) + offset);
 		return;
 	}
 	for (uint32_t offset = 0; offset < size; offset += 4) {

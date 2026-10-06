@@ -152,6 +152,17 @@ struct RenderExecutor::TableXpr {
 	uint32_t                          special_generation = 1; // moves with the image starts and the mappings
 	uint64_t                          resolved_start = UINT64_MAX, resolved_mapping = UINT64_MAX;
 	std::vector<std::pair<std::array<uint32_t, 4>, ResolvedBuffer*>> entries; // a stage's V#s (TableDraw)
+	// A written V#'s range clamped to the mappings, and (`image_checked`) that no image starts at it, while `special`
+	// is the special generation (mappings and image starts as then): obtained as written at every use, its proofs
+	// (a memory lock and a texture cache lock and lookup) once (direct-mapped by the words).
+	struct WrittenRange {
+		std::array<uint32_t, 4> words {};
+		uint32_t                special = 0;
+		bool                    image_checked = false;
+		uint64_t                address = 0, size = 0;
+	};
+	static constexpr size_t                WrittenEntries = 1024;
+	std::array<WrittenRange, WrittenEntries> written;
 	// The draw's blocks (per stage): its slots (IR::TablePlan::BlockDwords), then its buffers.
 	std::array<std::vector<uint32_t>, 2> blocks;
 };
@@ -762,10 +773,19 @@ bool RenderExecutor::TableBlocks(TablePair& pair, std::array<std::span<const uin
 				if (writes != nullptr && resource.written && (uint64_t {words4[0]} | (words4[1] & 0xffffu)) != 0 &&
 				    words4[2] != 0)
 					*writes = true;
-				const auto [address, size] = range_of(words4);
-				vk::DeviceAddress device   = null_device;
+				auto& proof = table.written[XXH3_64bits(words4.data(), sizeof(words4)) & (TableXpr::WrittenEntries - 1)];
+				if (proof.special != table.special_generation || proof.words != words4) {
+					const auto [clamped_address, clamped_size] = range_of(words4);
+					proof = {.words = words4, .special = table.special_generation, .address = clamped_address, .size = clamped_size};
+				}
+				const auto address = proof.address, size = proof.size;
+				vk::DeviceAddress device = null_device;
 				if (size != 0) {
-					if (address % 4 != 0 || (formatted && textures.HasImageStartingAt(address))) return false;
+					if (address % 4 != 0) return false;
+					if (formatted && !proof.image_checked) {
+						if (textures.HasImageStartingAt(address)) return false;
+						proof.image_checked = true;
+					}
 					const auto [owner, offset] = buffer_cache.ObtainBuffer(address, size, true, formatted);
 					region_epochs.fill({UINT64_MAX, 0}); // (its uploads may have moved them)
 					if (owner == nullptr || buffer_cache.GetBufferIfLive(buffer_cache.FindBuffer(address, size)) != owner)
