@@ -50,6 +50,17 @@ public:
 	[[nodiscard]] bool Active() const noexcept;
 	void                           CheckActive() const;
 	CommandBuffer&                 Current();
+	// A buffer upload (BufferCache::UploadDirtyRanges) of pages whose regions were last made CPU-dirty at `last_dirty`
+	// (g_cpu_dirty_clock), no later than the open buffer began: those pages were dirty all the time since, so no
+	// command recorded into the open buffer read or wrote them (every use of a CPU-dirty range synchronizes it first),
+	// and their copies may run before all of its commands. They go into this buffer, submitted ahead of the open one:
+	// one dependency each way per submission, where an upload in order ended the render pass and drained the queue on
+	// both sides. Not into a buffer the open buffer recorded a write into (`written_serial`, Buffer::written_serial:
+	// a buffer created now gets its old buffers' bytes by a copy, an image download writes more than the range synced).
+	// Null: the upload is recorded in order (pages dirtied since, a speculation's recorder, switch off).
+	[[nodiscard]] vk::CommandBuffer UploadPrologue(uint64_t last_dirty, uint64_t written_serial);
+	// Advances with every command buffer this scheduler begins.
+	[[nodiscard]] uint64_t CommandSerial() const noexcept { return m_command_serial; }
 	// A speculative translation's (src/graphics/guest_gpu/speculation.cpp): its recorder's pending tick (from
 	// PendingTick on), which no GPU completion reaches; what it fences gets the real tick when it is committed.
 	[[nodiscard]] uint64_t         CurrentTick() const noexcept;
@@ -144,11 +155,17 @@ private:
 		return SubmitBuffers({&entry, 1}, submit);
 	}
 
+	// The open buffer's upload prologue (UploadPrologue), ended and put ahead of it in its submission.
+	[[nodiscard]] SubmitEntry ClosePrologue();
+
 	MasterSemaphore              m_master;
 	RenderContext&               m_context;
 	GraphicContext&              m_graphics;
 	CommandPool                  m_command_pool;
 	CommandBuffer                m_command;
+	CommandBuffer                m_prologue;
+	uint64_t                     m_command_clock  = 0; // g_cpu_dirty_clock when m_command began
+	uint64_t                     m_command_serial = 1;
 	uint32_t                     m_recorded_dispatches = 0;
 	uint32_t                     m_recorded_draws      = 0;
 	std::queue<PendingOperation> m_pending_operations;

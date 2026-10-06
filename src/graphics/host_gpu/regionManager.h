@@ -117,6 +117,14 @@ private:
 
 static_assert(std::atomic_uint32_t::is_always_lock_free);
 
+// Advances whenever pages become CPU-dirty (ChangeState<Cpu, true>, a new region's pages). A region's LastDirtyClock is
+// the value of its last such change: the CPU-dirty pages of a region whose clock is not above a value read earlier were
+// dirty all the time since (nothing made them clean: see CommandScheduler::UploadPrologue).
+inline std::atomic<uint64_t> g_cpu_dirty_clock {1};
+[[nodiscard]] inline uint64_t NextCpuDirtyClock() noexcept {
+	return g_cpu_dirty_clock.fetch_add(1, std::memory_order_acq_rel) + 1;
+}
+
 class RegionManager final {
 public:
 	RegionManager(PageManager& page_manager, uint64_t cpu_addr)
@@ -132,6 +140,8 @@ public:
 	KYTY_CLASS_NO_COPY(RegionManager);
 
 	[[nodiscard]] uint64_t GetCpuAddr() const { return m_cpu_addr; }
+	// See g_cpu_dirty_clock.
+	[[nodiscard]] uint64_t LastDirtyClock() const noexcept { return m_last_dirty.load(std::memory_order_acquire); }
 	[[nodiscard]] uint64_t CpuModificationEpoch() const {
 		// Pages marked clean whose write protection is still queued can change unseen:
 		// nothing is provable until the worker applied it (and moved the epoch).
@@ -182,6 +192,7 @@ public:
 				// Invalidate cached clean proofs before another CPU thread can write
 				// through the relaxed host protection. A cache miss takes this lock.
 				m_cpu_epoch.fetch_add(1, std::memory_order_release);
+				m_last_dirty.store(NextCpuDirtyClock(), std::memory_order_release);
 				BdaDirtyRegions::Mark(m_cpu_addr / TRACKER_REGION_SIZE);
 			}
 			UpdateCpuProtection<!enable>();
@@ -283,6 +294,7 @@ private:
 	alignas(64) PageManager& m_page_manager;
 	uint64_t              m_cpu_addr = 0;
 	std::atomic<uint64_t> m_cpu_epoch {1};
+	std::atomic<uint64_t> m_last_dirty {NextCpuDirtyClock()}; // (all pages start CPU-dirty)
 	std::atomic<uint32_t> m_deferred_protects {0};
 	RegionBits            m_cpu_dirty;
 	RegionBits            m_gpu_dirty;

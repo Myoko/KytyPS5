@@ -1437,6 +1437,7 @@ void BufferCache::UploadDirtyRanges(Buffer& buffer, uint64_t vaddr, uint64_t siz
 	thread_local std::vector<vk::BufferCopy> copies;
 	copies.clear();
 	uint64_t                    total_size = 0;
+	uint64_t                    last_dirty = 0;
 	vk::Buffer                  source;
 	m_memory_tracker.ForEachUploadRange(
 	    vaddr, size, is_written,
@@ -1444,11 +1445,16 @@ void BufferCache::UploadDirtyRanges(Buffer& buffer, uint64_t vaddr, uint64_t siz
 		    copies.emplace_back(total_size, buffer.Offset(address), bytes);
 		    total_size += bytes;
 	    },
-	    [&]() noexcept { source = UploadCopies(buffer, copies, total_size); });
+	    [&]() noexcept { source = UploadCopies(buffer, copies, total_size); }, &last_dirty);
 	if (source) {
 		for (const auto& copy: copies) {
 			InvalidateCopyFeedback(buffer.CpuAddress() + copy.dstOffset, copy.size);
 			NoteGpuWrite(buffer.CpuAddress() + copy.dstOffset, copy.size);
+		}
+		// Pages dirty since before the open command buffer began: copied ahead of all its commands.
+		if (const auto prologue = m_scheduler.UploadPrologue(last_dirty, buffer.written_serial)) {
+			prologue.copyBuffer(source, buffer.Handle(), static_cast<uint32_t>(copies.size()), copies.data());
+			return;
 		}
 		auto& command = m_scheduler.Current();
 		command.EndRendering();
@@ -1633,6 +1639,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	TouchBuffer(*buffer);
 	(void)SynchronizeBuffer(*buffer, vaddr, size, is_written, is_texel_buffer);
 	if (is_written) {
+		buffer->written_serial = m_scheduler.CommandSerial();
 		InvalidateCopyFeedback(vaddr, size);
 		{
 			const std::unique_lock lock(m_gpu_modified_mutex);

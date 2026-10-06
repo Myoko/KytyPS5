@@ -2677,6 +2677,7 @@ void TextureCache::DownloadImageData(Image& image, Buffer& destination, uint64_t
 	if (!plan.valid) {
 		EXIT("TextureCache: invalid image download plan\n");
 	}
+	destination.written_serial = m_scheduler.CommandSerial();
 	if (plan.depth_target) {
 		if (destination_size != image.info.data.size) {
 			EXIT("TextureCache: partial depth image download is unsupported\n");

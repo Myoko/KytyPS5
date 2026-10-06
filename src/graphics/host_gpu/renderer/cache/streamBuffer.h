@@ -74,6 +74,10 @@ public:
 	std::atomic<bool> is_deleted {false};
 	int    stream_score = 0;
 	size_t lru_id       = 0;
+	// The command buffer (CommandScheduler::CommandSerial) that last recorded a write into it: a copy or fill into it,
+	// a shader's (ObtainBuffer as written) or an image's bytes (TextureCache::DownloadImageData). Uploads into it then
+	// stay in order in that buffer (CommandScheduler::UploadPrologue).
+	uint64_t written_serial = 0;
 
 protected:
 	[[nodiscard]] GraphicContext&   Graphics() const noexcept { return *m_graphics; }

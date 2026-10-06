@@ -3,6 +3,7 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "graphics/host_gpu/graphicContext.h"
+#include "graphics/host_gpu/regionManager.h"
 #include "async-upload.h"
 #ifdef KYTY_LOCAL_VULKAN_RECORDING
 #include "vulkan-recording.h"
@@ -21,6 +22,9 @@ extern "C" {
 volatile std::atomic_uint32_t kyty_local_dispatch_batch {32};
 // Draws recorded per submission (KYTY_DRAW_BATCH, 0: no limit): about 0.5 ms of translated draws.
 volatile std::atomic_uint32_t kyty_local_draw_batch {256};
+// Buffer uploads of pages dirty since before the open command buffer began go into its upload prologue
+// (CommandScheduler::UploadPrologue).
+[[gnu::used]] volatile std::atomic<uint32_t> kyty_local_upload_prologue {1};
 // 0: refresh the master timeline before every drain attempt.
 // 1: prove the pending-operation queue empty before the timeline query and the
 //    operation lock. Draws and dispatches call this with nothing to retire.
@@ -116,7 +120,7 @@ bool CommandScheduler::InDeferredOperation() noexcept {
 
 CommandScheduler::CommandScheduler(RenderContext& context, GraphicContext& graphics)
     : m_master(graphics), m_context(context), m_graphics(graphics),
-      m_command_pool(graphics, m_master), m_command(*this),
+      m_command_pool(graphics, m_master), m_command(*this), m_prologue(*this),
       m_priority_thread([this](std::stop_token stop) { PriorityOperationsThread(stop); }),
       m_tick_monitor([this](std::stop_token stop) {
 	      LocalPlatform::SetThreadName("Kyty.TickMon");
@@ -501,7 +505,9 @@ CommandBuffer& CommandScheduler::Current() {
 }
 
 CommandBuffer& CommandScheduler::BeginCommand() {
-	EXIT_IF(!m_command.IsInvalid());
+	EXIT_IF(!m_command.IsInvalid() || !m_prologue.IsInvalid());
+	++m_command_serial;
+	m_command_clock    = g_cpu_dirty_clock.load(std::memory_order_acquire);
 	m_command.m_buffer = m_command_pool.Commit();
 	m_command.Begin();
 	LiveTrace::g_mark_command = static_cast<VkCommandBuffer>(m_command.m_buffer);
@@ -584,6 +590,36 @@ void ReplayDiscard(std::span<const LocalVulkanRecording::Segment> segments,
 } // namespace
 #endif
 
+vk::CommandBuffer CommandScheduler::UploadPrologue(uint64_t last_dirty, uint64_t written_serial) {
+	if (t_recorder != nullptr || kyty_local_upload_prologue.load(std::memory_order_relaxed) == 0 ||
+	    m_command.IsInvalid() || last_dirty > m_command_clock || written_serial == m_command_serial)
+		return nullptr;
+	if (m_prologue.IsInvalid()) {
+		// (Committed for the open buffer's submission: the pool reuses it once that completes.)
+		m_prologue.m_buffer = m_command_pool.Commit();
+		m_prologue.Begin();
+		// The copies after everything submitted before (which may read or write their destinations).
+		VulkanMemoryBarrier before {};
+		before.srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+		before.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+		m_prologue.Handle().pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer,
+		                                    {}, 1, &before, 0, nullptr, 0, nullptr);
+	}
+	return m_prologue.Handle();
+}
+
+CommandScheduler::SubmitEntry CommandScheduler::ClosePrologue() {
+	// Everything after the copies (the open buffer's commands) sees them.
+	VulkanMemoryBarrier after {};
+	after.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+	after.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+	m_prologue.Handle().pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eAllCommands, {},
+	                                    1, &after, 0, nullptr, 0, nullptr);
+	const SubmitEntry entry {m_prologue.m_buffer, false, UINT32_MAX};
+	m_prologue.m_buffer = nullptr;
+	return entry;
+}
+
 uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	if (t_recorder != nullptr) throw RecorderRefusal {"Submit"};
 	EXIT_IF(m_command.IsInvalid());
@@ -591,7 +627,11 @@ uint64_t CommandScheduler::Submit(SubmitInfo submit) {
 	// A compute chain's pending barrier closes this buffer (left pending, the next Begin recorded it into a buffer
 	// that had not begun).
 	(void)m_command.Handle();
-	const auto tick       = SubmitBuffer(m_command.m_buffer, false, m_command.m_timestamp_slot, submit);
+	std::array<SubmitEntry, 2> entries {};
+	size_t                     n = 0;
+	if (!m_prologue.IsInvalid()) entries[n++] = ClosePrologue();
+	entries[n++]          = {m_command.m_buffer, false, m_command.m_timestamp_slot};
+	const auto tick       = SubmitBuffers({entries.data(), n}, submit);
 	m_command.m_buffer    = nullptr;
 	m_recorded_dispatches = 0;
 	m_recorded_draws      = 0;
@@ -778,6 +818,7 @@ uint64_t CommandScheduler::SubmitRecorded(Recorder& recorder, size_t count) {
 	if (open) {
 		m_command.EndRendering();
 		(void)m_command.Handle(); // (a pending compute chain barrier closes it, as Submit's)
+		if (!m_prologue.IsInvalid()) entries[n++] = ClosePrologue();
 		entries[n++]          = {m_command.m_buffer, false, m_command.m_timestamp_slot};
 		m_command.m_buffer    = nullptr;
 		m_recorded_dispatches = 0;

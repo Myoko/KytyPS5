@@ -25,6 +25,7 @@ extern volatile std::atomic_uint32_t kyty_local_image_barrier_dedupe;
 extern volatile std::atomic_uint32_t kyty_local_pending_drain_mode;
 extern volatile std::atomic_uint32_t kyty_local_dispatch_batch;
 extern volatile std::atomic_uint32_t kyty_local_draw_batch;
+extern volatile std::atomic<uint32_t> kyty_local_upload_prologue;
 extern volatile std::atomic_uint32_t kyty_local_async_lod_stats_mode;
 extern volatile std::atomic<uint32_t> kyty_local_buffer_reclaim_mode;
 extern volatile std::atomic<uint32_t> kyty_local_unmap_protect_skip_mode;
@@ -101,6 +102,8 @@ inline void InitializePerformanceSwitches() {
 	    Switch {"KYTY_DISPATCH_BATCH", &kyty_local_dispatch_batch, 1, 65536},
 	    // Draws recorded per submission (0: no limit).
 	    Switch {"KYTY_DRAW_BATCH", &kyty_local_draw_batch, 0, 65536},
+	    // Buffer uploads of pages dirty since before the open command buffer in its upload prologue (on by default).
+	    Switch {"KYTY_UPLOAD_PROLOGUE", &kyty_local_upload_prologue},
 #if defined(KYTY_LOCAL_VULKAN_RECORDING)
 	    Switch {"KYTY_VULKAN_RECORDING", &kyty_local_vulkan_recording_mode},
 	    Switch {"KYTY_DEFERRED_SUBMIT", &kyty_local_deferred_submit_mode},
