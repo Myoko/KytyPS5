@@ -43,6 +43,8 @@ public:
 		return manager != nullptr && manager->DeferredProtectionPending();
 	}
 	[[nodiscard]] bool IsRegionCpuModified(uint64_t vaddr, uint64_t size);
+	// Every page CPU-dirty (untracked memory is): none is write-protected for the tracker.
+	[[nodiscard]] bool IsRegionFullyCpuModified(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsRegionFullyGpuModified(uint64_t vaddr, uint64_t size);
 	// `handoff` (a held caller lock) is released once the region lock is held, so the
 	// protection change does not extend the caller's critical section.
@@ -50,6 +52,9 @@ public:
 	                                               std::unique_lock<TrackingSpinLock>* handoff = nullptr) noexcept;
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t vaddr, uint64_t size);
 	void               MarkRegionAsCpuModified(uint64_t vaddr, uint64_t size);
+	// CPU-dirty, the write protection kept (RegionManager::MarkCpuDirtyKeepProtection): for a write through the
+	// backing view. False, with nothing changed, when a page is GPU-dirty.
+	[[nodiscard]] bool MarkRegionAsCpuDirtyKeepProtection(uint64_t vaddr, uint64_t size);
 	void               MarkRegionAsGpuModified(uint64_t vaddr, uint64_t size);
 	void               UnmarkRegionAsGpuModified(uint64_t vaddr, uint64_t size);
 	void               UntrackMemory(uint64_t vaddr, uint64_t size);

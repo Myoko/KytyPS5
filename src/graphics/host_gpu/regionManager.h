@@ -195,10 +195,24 @@ public:
 				m_last_dirty.store(NextCpuDirtyClock(), std::memory_order_release);
 				BdaDirtyRegions::Mark(m_cpu_addr / TRACKER_REGION_SIZE);
 			}
-			UpdateCpuProtection<!enable>();
+			UpdateCpuProtection<!enable>(start, end);
 		} else {
 			UpdateGpuProtection<enable>();
 		}
+	}
+
+	// CPU-dirty with the pages' write protection kept: the emulator wrote them through the backing view (no fault
+	// saw it). A page still write-watched stays so (UpdateCpuProtection moves only pages of a change's range, in its
+	// direction): its next upload finds it protected already, and a guest write before that faults once and drops
+	// the watcher as for any dirty page (ChangeState). Returns false (nothing changed) when the GPU wrote a page.
+	[[nodiscard]] bool MarkCpuDirtyKeepProtection(uint64_t vaddr, uint64_t size) {
+		const auto [start, end] = GetPageRange(vaddr, size);
+		if (m_gpu_dirty.AnyInRange(start, end)) return false;
+		m_cpu_dirty.SetRange(start, end);
+		m_cpu_epoch.fetch_add(1, std::memory_order_release);
+		m_last_dirty.store(NextCpuDirtyClock(), std::memory_order_release);
+		BdaDirtyRegions::Mark(m_cpu_addr / TRACKER_REGION_SIZE);
+		return true;
 	}
 
 	template <DirtySource source, bool clear, typename Func>
@@ -210,7 +224,7 @@ public:
 			GetBits<source>().UnsetRange(start, end);
 		}
 		if constexpr (source == DirtySource::Cpu && clear) {
-			UpdateCpuProtection<true>();
+			UpdateCpuProtection<true>(start, end);
 			ForEachRange(mask, std::forward<Func>(func));
 			return;
 		}
@@ -224,13 +238,17 @@ public:
 	alignas(64) TrackingSpinLock lock;
 
 private:
+	// The pages of [start, end) whose write watcher no longer matches their dirty state, in the change's direction:
+	// clean pages without one get it (track), dirty pages with one lose it. (Dirty pages that keep their protection,
+	// MarkCpuDirtyKeepProtection, are left alone by a change that only made other pages clean or dirty.)
 	template <bool track>
-	void UpdateCpuProtection() {
-		auto mask  = m_cpu_dirty ^ m_writable;
-		m_writable = m_cpu_dirty;
+	void UpdateCpuProtection(size_t start, size_t end) {
+		const auto changed = track ? m_writable & ~m_cpu_dirty : m_cpu_dirty & ~m_writable;
+		RegionBits mask(changed, start, end);
 		if (mask.None()) {
 			return;
 		}
+		m_writable ^= mask;
 		LiveCounters::Add(track ? LiveCounters::Reprotect : LiveCounters::Unprotect);
 		LiveCounters::Add(track ? LiveCounters::ReprotectPages : LiveCounters::UnprotectPages, mask.Count());
 		if (track && LiveCounters::g_granules_on.load(std::memory_order_relaxed)) {

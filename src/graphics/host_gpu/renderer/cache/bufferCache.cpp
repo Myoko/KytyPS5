@@ -1878,18 +1878,42 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 
 void BufferCache::CopyGuestMemory(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t size) {
 	// The game's linear copies mostly rewrite what the destination already holds (95% of the bytes in the fixed
-	// scene): only the destination pages whose bytes differ are written, so the others stay clean (no write fault, no
-	// upload of their bytes to the GPU again).
+	// scene): only the destination pages whose bytes differ are written, so the others stay clean (no upload of their
+	// bytes to the GPU again). A run of them with a write-protected page (uploaded since it was last written) is marked
+	// CPU-dirty with its protection kept and written through the backing view: no write fault a page (~190 a frame at
+	// 1-1) and no protection change, here or when it is uploaded again (the game rewrites these pages every frame).
+	uint64_t   run = 0, run_end = 0;
+	const auto write = [&] {
+		if (run_end == run) return;
+		const auto  address = dst_vaddr + run, bytes = run_end - run;
+		const auto* from    = reinterpret_cast<const void*>(src_vaddr + run);
+		if (!m_memory_tracker.IsRegionFullyCpuModified(address, bytes)) {
+			// (As the write faults would: the images over the pages first.)
+			m_texture_cache.InvalidateMemory(address, bytes);
+			if (m_memory_tracker.MarkRegionAsCpuDirtyKeepProtection(address, bytes) &&
+			    Libs::LibKernel::Memory::TryWriteBacking(address, from, bytes)) {
+				Spec::NoteHostWrite(address, bytes);
+				return;
+			}
+			// (Memory the backing view does not hold: written through the guest's view, unprotected first.)
+			InvalidateMemory(address, bytes);
+		}
+		std::memcpy(reinterpret_cast<void*>(address), from, bytes);
+		Spec::NoteHostWrite(address, bytes);
+	};
 	for (uint64_t at = 0; at < size;) {
 		const auto bytes = std::min(TRACKER_PAGE_SIZE - (dst_vaddr + at) % TRACKER_PAGE_SIZE, size - at);
-		auto*       to   = reinterpret_cast<void*>(dst_vaddr + at);
-		const auto* from = reinterpret_cast<const void*>(src_vaddr + at);
-		if (std::memcmp(to, from, bytes) != 0) {
-			std::memcpy(to, from, bytes);
-			Spec::NoteHostWrite(dst_vaddr + at, bytes);
+		if (std::memcmp(reinterpret_cast<const void*>(dst_vaddr + at), reinterpret_cast<const void*>(src_vaddr + at),
+		                bytes) != 0) {
+			if (at != run_end) {
+				write();
+				run = at;
+			}
+			run_end = at + bytes;
 		}
 		at += bytes;
 	}
+	write();
 }
 
 bool BufferCache::IsRegionRegistered(uint64_t vaddr, uint64_t size) {
