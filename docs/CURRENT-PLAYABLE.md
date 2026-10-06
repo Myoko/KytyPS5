@@ -38,7 +38,7 @@ python3 tools/local/play-demons-souls.py --2k  # 带运行日志的同一正式�
 
 ```powershell
 .\build-windows.cmd                              # clang-cl 19 + Ninja：-O3 -march=native + ThinLTO + PGO，输出 _Build\windows\kyty_emulator.exe
-.\run-windows.ps1 -Fullscreen -AspectFit         # 日常：release-stage1 全部开关，全屏，16:9 画面 1:1 居中（5120×2160 屏两侧黑边）
+.\run-windows.ps1 -Fullscreen -AspectFit         # 日常：run-windows.json 全部开关，全屏，16:9 画面 1:1 居中（5120×2160 屏两侧黑边）
 .\run-windows.ps1 -Width 1920 -Height 1080       # 窗口模式（画面拉伸铺满窗口）
 .\run-windows.ps1 -Precompile                    # 预编译全部已记录的 shader/管线后退出（换 exe 后首次约 7 s，冷驱动缓存约 2 min）
 .\run-windows.ps1 -DryRun                        # 只打印环境变量和命令

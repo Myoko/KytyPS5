@@ -1,5 +1,5 @@
-﻿# Windows launcher: runs the Windows build with the switches of a Linux launch config.
-#   .\run-windows.ps1                        release-stage1 switches, 2560x1440
+﻿# Windows launcher: runs the Windows build with the switches of a launch config.
+#   .\run-windows.ps1                        the release package's switches (run-windows.json), 2560x1440
 #   .\run-windows.ps1 -Precompile            compile every recorded shader and pipeline, then exit
 #                                            (every shader of the game: precompile-windows.ps1)
 #   .\run-windows.ps1 -Baseline              no performance switches
@@ -24,11 +24,11 @@
 #                                            exit code (run.cmd)
 #   .\run-windows.ps1 -DryRun                print environment and command only
 # A release package (.github/workflows/build.yml) has its kyty_emulator.exe and launch.json next to this
-# script: those are used instead of the build tree's. A clone without the release config under _Build
-# takes run-windows.json (the release package's switches).
+# script: those are used instead of the build tree's. A build tree takes run-windows.json (the release
+# package's switches; an older _Build\release-stage1-20260927\launch.json lacks the table modes).
 param(
-	[string]$Config = $(@("$PSScriptRoot\launch.json", "$PSScriptRoot\_Build\release-stage1-20260927\launch.json",
-	                      "$PSScriptRoot\run-windows.json") | Where-Object { Test-Path $_ } | Select-Object -First 1),
+	[string]$Config = $(@("$PSScriptRoot\launch.json", "$PSScriptRoot\run-windows.json") | Where-Object { Test-Path $_ } |
+	                    Select-Object -First 1),
 	[string]$Game = '',
 	[string]$Exe = $(if (Test-Path "$PSScriptRoot\kyty_emulator.exe") { "$PSScriptRoot\kyty_emulator.exe" } else { "$PSScriptRoot\_Build\windows\kyty_emulator.exe" }),
 	[int]$Width = 0,
@@ -161,6 +161,13 @@ if (!$Baseline) {
 			continue
 		}
 		$environment[$property.Name] = [string]$property.Value
+	}
+	# A build tree with an SRT AOT library built here (tools\local\compile-srt-aot-windows.py) uses it also when
+	# the config names none (run-windows.json: release packages have none).
+	if (!$NoAot -and !$environment.Contains('KYTY_SRT_AOT_LIBRARY')) {
+		$windows = Get-ChildItem "$PSScriptRoot\_Build\srt-aot\windows-libraries\*\srt-aot.dll" -ErrorAction SilentlyContinue |
+			Sort-Object LastWriteTime -Descending | Select-Object -First 1
+		if ($windows) { $environment['KYTY_SRT_AOT_LIBRARY'] = $windows.FullName }
 	}
 }
 

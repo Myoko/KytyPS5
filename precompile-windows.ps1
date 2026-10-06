@@ -51,8 +51,8 @@ if (!(Test-Path $Seeds)) {
 	if ($LASTEXITCODE) { throw 'precompile.py seeds failed' }
 }
 if ($Affinity -eq 0) {
-	$config = @("$PSScriptRoot\launch.json", "$PSScriptRoot\_Build\release-stage1-20260927\launch.json", "$PSScriptRoot\run-windows.json") |
-		Where-Object { Test-Path $_ } | Select-Object -First 1
+	$config = @("$PSScriptRoot\launch.json", "$PSScriptRoot\run-windows.json") | Where-Object { Test-Path $_ } |
+		Select-Object -First 1
 	foreach ($cpu in (Get-Content $config -Raw | ConvertFrom-Json).cpu_affinity) { $Affinity = $Affinity -bor ([int64]1 -shl [int]$cpu) }
 }
 $all = if ([Environment]::ProcessorCount -ge 64) { [int64]-1 } else { ([int64]1 -shl [Environment]::ProcessorCount) - 1 }

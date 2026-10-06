@@ -35,7 +35,7 @@ Kyty PS5 模拟器的 Windows 移植，目标游戏《恶魔之魂》（PPSA0134
 | 流式加载卡顿修复（部分图像脏区/行带上传、纹理池部分解映射、异步 XPR 管线、跳过解映射时的保护恢复） | 最差帧 200 → 约 113 ms |
 | 其他：全局屏障去重 +1.4%，普通 draw 录成包 −1.3 ms，图像池 −1 ms，写窗口移交 +1.1 fps | |
 
-大部分运行时优化默认由 `_Build/release-stage1-20260927/launch.json`（环境变量开关）和 `run-windows.ps1` 打开。
+大部分运行时优化默认由 `run-windows.json`（环境变量开关）和 `run-windows.ps1` 打开。
 
 **本游戏本版本专用的适配**（按标题 + 版本号 `01.007.000` 精确匹配，换版本会静默关闭，游戏照常但变慢；
 收益是早期 5–12 fps 时测的，当前未重测）：计算 dispatch 间省略屏障（+12.7%，最大）、memmove 快路径（+5%）、
@@ -102,7 +102,7 @@ Kyty PS5 模拟器的 Windows 移植，目标游戏《恶魔之魂》（PPSA0134
 
 ```powershell
 .\build-windows.cmd [target]                  # clang-cl + Ninja，默认 kyty_emulator；kyty_shader_precompile 为预编译程序
-.\run-windows.ps1                             # 按 release-stage1 配置运行（-Precompile 预编译已录制的 shader；-Set KEY=VALUE 覆盖开关）
+.\run-windows.ps1                             # 按 run-windows.json 配置运行（-Precompile 预编译已录制的 shader；-Set KEY=VALUE 覆盖开关）
 .\precompile-windows.ps1                      # 全量静态预编译（多进程，低优先级，可续跑）
 tools\local\windows\bench-run.ps1 -Label x    # 固定场景 3×20 s 测帧率（自动装基准存档、识别 HUD）
 tools\local\windows\walk-run.ps1 -Plan "w:down:0,h:down:4000,h:up:4500,w:up:25000"   # 步行路线
