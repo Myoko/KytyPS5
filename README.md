@@ -15,6 +15,49 @@
 > 下载[最新 release](https://github.com/chenxiao07/KytyPS5/releases/latest)，解压后双击 `launcher.cmd`
 > 或 `run.cmd`，选择游戏目录（含 `eboot.bin` 的那一层）。需要 32 GB 内存、12 GB 以上显存的显卡。
 
+## Fixes worth cherry-picking
+
+Most of this fork is performance work tied to its own caches, but these three fixes stand on their
+own and are useful in other KytyPS5 trees:
+
+**1. Game audio: the game was silent, then positional sounds were nearly inaudible**
+
+- [`f203d0f3`](https://github.com/chenxiao07/KytyPS5/commit/f203d0f3), its audio part only (the commit
+  also holds Windows packaging): ATRAC9 streams in a RIFF container required the whole `data` chunk in
+  the first stream piece, so every decode returned partial input and the game played no sound besides
+  its videos; AudioOut2 object ports are mixed into the main port. Take just its two audio files:
+  `git show f203d0f3 -- src/libs/ajm/atrac9_decoder.h src/libs/libAudio2.cpp | git apply`
+  (upstream has rewritten its RIFF parsing since, in `e40438f9`: compare before taking that part).
+- [`c2b48aeb`](https://github.com/chenxiao07/KytyPS5/commit/c2b48aeb), `git cherry-pick c2b48aeb` after
+  the above: the game sends its whole mix as two fifth-order ambisonics scenes on AudioOut2 object
+  ports (attribute 8 = 0x40 | ACN, SN3D). Summed into the front pair they cancelled out; they are now
+  decoded to stereo from the first order, and 7.1 ports are downmixed on stereo devices without SDL's
+  -13.5 dB front level.
+
+**2. Nexus: a ring of blue "?" models** ([`3248e372`](https://github.com/chenxiao07/KytyPS5/commit/3248e372),
+`src/libs/libAmpr.cpp` only)
+
+APR file ids were hashes of the guest path. The game resolves all of its ~250K files at start-up, 13
+pairs collided, and one file of each pair read the other's bytes: the Nexus arch model failed to load
+and the engine drew its default "?" model instead (some LODs, a collision mesh and a texture elsewhere
+were affected too). Ids are now assigned one per path. Upstream main (cdb64bfd, 2026-10-06) still hashes.
+
+![The Nexus ceiling before and after 3248e372: the ring of "?" models is gone](docs/images/nexus-question-marks.jpg)
+
+**3. Boletaria 1-1: the brazier's stone pillar and other missing objects**
+([`3b351932`](https://github.com/chenxiao07/KytyPS5/commit/3b351932))
+
+Indirect draws name a user SGPR (START_INST_LOC) that the command processor fills with the draw's
+start instance, and the shader's instance ID counts from 0. Both were ignored (the ID included
+firstInstance), so shaders that index per-object data with that SGPR read stale values: the stone
+pillar under the brazier at 1-1, rock faces there, the hall behind the cell windows of the Tower of
+Latria. The fix is in the shader recompiler (`Translate.cpp`, the SPIR-V emitter), `shader.cpp/.h`
+(the static key), `graphicsRun.cpp` / `hardwareContext.h` (the SGPR per draw) and `vulkanWindow.cpp`
+(`shaderDrawParameters`, `drawIndirectFirstInstance`); its `src/local` and `tools` changes only follow
+this fork's caches.
+
+![Boletaria 1-1 before and after 3b351932: the brazier floats without its stone pillar before the fix](docs/images/boletaria-pillar.jpg)
+
 # KytyPS5
 
 [![Build KytyPS5 (Windows)](https://img.shields.io/github/actions/workflow/status/KytyPS5/KytyPS5/build.yml?branch=main&event=push&label=Build%20KytyPS5%20%28Windows%29)](https://github.com/KytyPS5/KytyPS5/actions/workflows/build.yml)
