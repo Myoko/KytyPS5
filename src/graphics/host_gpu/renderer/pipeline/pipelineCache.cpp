@@ -1442,11 +1442,14 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 		if (const char* only = std::getenv("KYTY_SHADER_WARMUP_ONLY"); only && std::string_view(only) == "1") {
 			if (!Save()) {
 				PipelineCacheLog("Shader precompile: failed to save cache");
+				std::fflush(nullptr);
+				Common::RunExitDrain();
 				std::_Exit(1);
 			}
 			PipelineCacheLog("Shader precompile: complete ({} inputs, {} graphics and {} compute pipelines)",
 			    m_program_cache->warmup.records.size(), m_graphics_pipelines.size(), m_compute_pipelines.size());
 			std::fflush(nullptr);
+			Common::RunExitDrain();
 			std::_Exit(0);
 		}
 	}

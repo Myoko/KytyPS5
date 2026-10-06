@@ -74,8 +74,7 @@ void ReleaseRedirectedConsole() {
 		(void)FreeConsole();
 }
 
-static HANDLE                g_stdout_pipe = nullptr; // (the read end)
-static std::atomic<bool>     g_stdout_busy {false};
+static HANDLE                g_stdout_done = nullptr; // set once the writer has written all the pipe held
 
 void AsyncStdout() {
 	const HANDLE original = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -105,31 +104,32 @@ void AsyncStdout() {
 	}
 	_close(fd);
 	(void)SetStdHandle(STD_OUTPUT_HANDLE, reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(stdout))));
-	g_stdout_pipe = read_end;
+	g_stdout_done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 	std::thread([read_end, file] {
 		SetThreadName("Kyty.Stdout");
 		std::vector<char> buffer(256u << 10u);
-		for (;;) {
-			DWORD read = 0;
-			if (ReadFile(read_end, buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr) == 0 || read == 0) return;
-			g_stdout_busy.store(true, std::memory_order_release);
+		for (DWORD read = 0; ReadFile(read_end, buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr) != 0 && read != 0;)
 			for (DWORD written = 0, at = 0; at < read; at += written)
 				if (WriteFile(file, buffer.data() + at, read - at, &written, nullptr) == 0 || written == 0) break;
-			g_stdout_busy.store(false, std::memory_order_release);
-		}
+		SetEvent(g_stdout_done);
 	}).detach();
 }
 
 void DrainStdout() {
+	static std::atomic<bool> closed {false};
 	std::fflush(stdout);
-	if (g_stdout_pipe == nullptr) return;
-	// (Bounded: a crash report must not hang the process's end. Idle twice: the writer may have just read.)
-	for (int i = 0, idle = 0; i < 2000 && idle < 2; ++i) {
-		DWORD available = 0;
-		if (PeekNamedPipe(g_stdout_pipe, nullptr, 0, nullptr, &available, nullptr) == 0) return;
-		idle = available == 0 && !g_stdout_busy.load(std::memory_order_acquire) ? idle + 1 : 0;
-		Sleep(1);
+	if (g_stdout_done == nullptr) return;
+	// The pipe cannot be polled: a request on its read end waits behind the writer's pending read (a crash report
+	// hung there, 10-06). Standard output goes to NUL instead, which closes the pipe's only write end: the writer's
+	// read ends once it has taken all the pipe held (not _close: a later write to a closed descriptor would end
+	// the process before the writer is done). Bounded: a crash must not hang the end.
+	if (!closed.exchange(true)) {
+		if (const int nul = _open("NUL", _O_WRONLY); nul >= 0) {
+			(void)_dup2(nul, _fileno(stdout));
+			_close(nul);
+		}
 	}
+	WaitForSingleObject(g_stdout_done, 2000);
 }
 
 uint32_t ThreadId() {

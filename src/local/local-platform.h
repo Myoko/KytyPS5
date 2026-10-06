@@ -55,7 +55,8 @@ void ReleaseRedirectedConsole();
 
 // Standard output written to a file: through a pipe a background thread empties into the file (a write to the
 // redirected log blocked the writer ~6 ms in WriteFile: the GPU thread's per-slow-frame flush took 9% of its time,
-// 10-06). DrainStdout waits until what was written so far reached the file (before the process ends).
+// 10-06). DrainStdout, at the process's end, sends standard output to NUL and waits until what was written before
+// reached the file.
 void AsyncStdout();
 void DrainStdout();
 

@@ -103,13 +103,17 @@ void SetExitDrain(void (*drain)()) noexcept {
 	g_exit_drain = drain;
 }
 
+void RunExitDrain() noexcept {
+	if (g_exit_drain != nullptr) g_exit_drain();
+}
+
 void DbgExit(int status) {
 	if (t_recoverable) {
 		throw RecoverableExit {std::move(t_recoverable_message)};
 	}
 	Subsystems::EmergencyShutdownActive();
 	std::fflush(nullptr);
-	if (g_exit_drain != nullptr) g_exit_drain();
+	RunExitDrain();
 #if defined(_WIN32)
 	// Not ExitProcess (std::_Exit): it kills the other threads wherever they are and then runs the DLLs'
 	// detach routines on this one, where a driver's waited forever on what a killed thread held (a

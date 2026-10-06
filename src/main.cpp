@@ -13,6 +13,7 @@
 
 #include <charconv>
 #include <cstdio>
+#include <cstdlib>
 #include <fmt/format.h>
 
 using namespace Common;
@@ -334,6 +335,9 @@ int main(int argc, char* argv[]) {
 	LocalPlatform::ReleaseRedirectedConsole();
 	LocalPlatform::AsyncStdout();
 	Common::SetExitDrain(LocalPlatform::DrainStdout);
+	// (Registered first, run last: the game's window closes with quick_exit.)
+	std::atexit(LocalPlatform::DrainStdout);
+	std::at_quick_exit(LocalPlatform::DrainStdout);
 #endif
 	VirtualMemory::Init();
 	InitializeThreads();
