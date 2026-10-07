@@ -61,7 +61,28 @@ struct RenderExecutor::TableImageSet {
 	// (TableResolveSet tries again after TableImageSet::RetryFrames).
 	bool                  refused = false;
 	static constexpr uint64_t RetryFrames = 300;
+	// A dispatch's words that select another specialization of the pair's program whose table form is the same
+	// (TableInterchangeable: its images of other dimensions or formats): that program and its pipeline, which the set
+	// is made for (null: the pair's).
+	const ShaderRecompiler::IR::CompiledShaderInfo* program  = nullptr;
+	const PipelineCache::Pipeline*                  pipeline = nullptr;
 };
+
+// Two specializations of a program the table way alike but for their images' and samplers' bindings: the same slots,
+// buffers (and their decoded formats), descriptor words, page table reads and shader data. The words TableEvaluate
+// reads and the blocks TableBlocks makes for one serve the other.
+static bool TableInterchangeable(const ShaderRecompiler::IR::CompiledShaderInfo& a,
+                                 const ShaderRecompiler::IR::CompiledShaderInfo& b) {
+	const auto& x = a.bindings;
+	const auto& y = b.bindings;
+	return a.table_mode && b.table_mode && a.stage == b.stage && a.shader_hash == b.shader_hash &&
+	       a.user_data_base == b.user_data_base && a.table_plan == b.table_plan && a.info.buffers == b.info.buffers &&
+	       a.info.images.size() == b.info.images.size() && a.info.samplers.size() == b.info.samplers.size() &&
+	       a.bda_read_plan == b.bda_read_plan && x.push_data_start_dword == y.push_data_start_dword &&
+	       x.memory_offset_dword == y.memory_offset_dword && x.memory_offset_count == y.memory_offset_count &&
+	       x.buffer_word_count == y.buffer_word_count && x.lod_stats_count == y.lod_stats_count &&
+	       x.table_block_dwords == y.table_block_dwords && x.user_data_registers == y.user_data_registers;
+}
 
 struct RenderExecutor::TablePair {
 	// Evaluated slots at consecutive addresses (the same base, immediates 4 apart): one read, at the address of the
@@ -404,10 +425,23 @@ RenderExecutor::TableImageSet* RenderExecutor::TableResolveSet(CommandBuffer& bu
 	} else {
 		ResetNativeStageInput(compute_info);
 		compute_info.dispatch_thread_dimensions = pair.compute->dispatch_thread_dimensions;
-		(void)m_context.GetPipelineCache().GetComputeProgram(sh.GetCs(), ctx.GetShaderRegisters(), compute_info, nullptr,
-		                                                     true, pair.portable[0]);
-		if (m_context.GetPipelineCache().TablePending()) return nullptr;
-		if (compute_info.stage.program != pair.programs[0]) return refuse("another specialization");
+		auto&      pipelines = m_context.GetPipelineCache();
+		const auto handle    = pipelines.GetComputeProgram(sh.GetCs(), ctx.GetShaderRegisters(), compute_info, nullptr, true,
+		                                                   pair.portable[0]);
+		if (pipelines.TablePending()) return nullptr;
+		if (compute_info.stage.program != pair.programs[0]) {
+			// Another specialization the table way alike (a particle simulation's texture 2D in one emitter and 3D in
+			// another, at Latria 90 programs): the set is made for it, with its pipeline.
+			const auto* other = compute_info.stage.program;
+			if (!handle || other == nullptr || !TableInterchangeable(*pair.programs[0], *other))
+				return refuse("another specialization");
+			set->pipeline = pipelines.TryCreateComputePipeline(compute_info, handle);
+			if (set->pipeline == nullptr) {
+				pair.waiting = pipelines.PipelineWaiting(); // (asked again once it is done)
+				return nullptr;
+			}
+			set->program = other;
+		}
 		runtimes[0] = &compute_info.stage;
 	}
 	std::array<PreparedBindings, 2>                prepared;
@@ -478,7 +512,7 @@ RenderExecutor::TableImageSet* RenderExecutor::TableResolveSet(CommandBuffer& bu
 	using Kind = ShaderRecompiler::IR::DescriptorBindingKind;
 	const auto fixed = [](const Buffer* value) -> vk::DescriptorBufferInfo { return {value->Handle(), 0, value->Size()}; };
 	for (uint32_t st = 0; st < stages; ++st) {
-		const auto& program = *pair.programs[st];
+		const auto& program = set->program != nullptr ? *set->program : *pair.programs[st];
 		std::vector<uint32_t> occurrences(prepared[st].images.size(), 0);
 		for (const auto& binding: program.bindings.descriptors) {
 			Pending item;
@@ -509,7 +543,10 @@ RenderExecutor::TableImageSet* RenderExecutor::TableResolveSet(CommandBuffer& bu
 		for (const auto& dep: deps[st])
 			if (dep.layout != vk::ImageLayout::eUndefined) set->images.push_back(dep);
 	}
-	set->set = NativeXprAllocateSet((variant != nullptr ? variant->pipeline : pair.pipeline)->descriptor_set_layout,
+	set->set = NativeXprAllocateSet((variant != nullptr      ? variant->pipeline
+	                                 : set->pipeline != nullptr ? set->pipeline
+	                                                            : pair.pipeline)
+	                                    ->descriptor_set_layout,
 	                                set->pool);
 	std::vector<vk::WriteDescriptorSet> writes;
 	for (auto& item: pending) {
@@ -1606,8 +1643,9 @@ bool RenderExecutor::TableDispatch(CommandBuffer& buffer, uint32_t groups_x, uin
 	const bool chain     = DemonsSouls::IsSupportedGame();
 	const auto vk_buffer = chain ? buffer.ChainHandle() : buffer.Handle();
 	if (!TableTransit(*set, vk_buffer, nullptr)) return m_dispatch_declined = "table: transit", false;
-	const auto& pipeline = *pair.pipeline;
-	const auto& program  = *pair.programs[0];
+	// (A set made for another specialization: its program's pipeline and shader data.)
+	const auto& pipeline = set->pipeline != nullptr ? *set->pipeline : *pair.pipeline;
+	const auto& program  = set->program != nullptr ? *set->program : *pair.programs[0];
 	const auto& bindings = program.bindings;
 	vk_buffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, pipeline.pipeline_layout, 0, 1, &set->set, 0, nullptr);
 	if (bindings.UsesPushData()) {

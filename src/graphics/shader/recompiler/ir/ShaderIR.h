@@ -569,14 +569,17 @@ struct TablePlan {
 		enum class Kind : uint8_t { Immediate, UserData, Slot };
 		Kind     kind  = Kind::Immediate;
 		uint32_t value = 0; // the immediate, the scalar register or the slot
+		bool     operator==(const Operand&) const = default;
 	};
 	struct Slot {
 		Operand low, high, offset;
 		int32_t immediate = 0; // dword aligned
+		bool    operator==(const Slot&) const = default;
 	};
 	struct Descriptor {
 		std::array<Operand, 8> words {};
 		uint32_t               count = 0;
+		bool                   operator==(const Descriptor&) const = default;
 	};
 	std::vector<Slot>                   slots;
 	std::vector<std::array<Operand, 4>> buffers;
@@ -593,6 +596,7 @@ struct TablePlan {
 		return static_cast<uint32_t>(slots.size() + BufferDwords * buffer);
 	}
 	[[nodiscard]] uint32_t BlockDwords() const { return BufferDword(buffers.size()); }
+	bool                   operator==(const TablePlan&) const = default;
 };
 
 // Stable shader metadata consumed by the renderer after native IR has been discarded.
