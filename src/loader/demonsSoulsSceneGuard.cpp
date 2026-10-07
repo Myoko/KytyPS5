@@ -5,6 +5,11 @@
 // RemoveChild 0x8dae50, InsertChild 0x8daee0) never ran concurrently on one parent nor left a null in an
 // instrumented 1-1 walk. Each of the three treats a null node as an empty one here (a find returns nothing, a
 // visit visits nothing) and the first skips are printed with the registers that locate the parent's vector.
+// Three more pass a state bit of a node down its subtree (bits 0x2000, 0x8000 and 0x4000 of node + 8; 01.007.000
+// eboot+0xc5a030, +0xc5a2e0 and +0xc5a570, 01.005.000 +0xc39640, +0xc398c0 and +0xc39b20): their loops over the
+// children read each child's word at + 8 in place and crashed on the same null children when the world was torn
+// down at "save and quit" (eboot+0xc5a3be 10-07, after the first guard had skipped them 32 times). Their loops
+// skip a null child here (nothing to pass the bit to).
 #include "loader/demonsSoulsSceneGuard.h"
 
 #include "common/logging/log.h"
@@ -44,8 +49,41 @@ constexpr std::array<Traversal, 3> Traversals {{
 // Each begins with push rbp; mov rbp, rsp; push r15: its stub runs them, the jump to the stub replaces them.
 constexpr std::array<uint8_t, 6> Prologue {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57};
 
+// The children loops of the bit-passing traversals, as both builds have them: the increment and end test
+// (add r12, 8; cmp r12, [parent + 0x38]; je with a short or a near displacement), then the child's load
+// (mov REG, [r12]) and the read of its word (mov eax, [REG + 8], or 01.005.000's mov ecx, imm32 first).
+constexpr std::array<const char*, 2> ChildLoops {"49 83 c4 08 4d 3b ?? 38 74 ?? 4d 8b ?? 24",
+                                                 "49 83 c4 08 4d 3b ?? 38 0f 84 ?? ?? ?? ?? 4d 8b ?? 24"};
+struct ChildLoop {
+	uint64_t increment = 0; // the loop's add r12, 8: a null child continues there
+	uint64_t load      = 0; // mov REG, [r12]
+	uint32_t reg       = 0; // REG: r8..r15
+	uint32_t moved     = 0; // the bytes the jump to the stub replaces: the load and the next instruction
+};
+
+std::vector<ChildLoop> FindChildLoops(const Program& program) {
+	std::vector<ChildLoop> loops;
+	for (const auto* text: ChildLoops) {
+		const GuestCode::Pattern pattern(text);
+		for (const auto at: GuestCode::Find(program, pattern, 16)) {
+			const auto* code = reinterpret_cast<const uint8_t*>(at);
+			const auto* load = code + pattern.Size() - 4;
+			// cmp r12, [r8..r15 + 0x38]; mov r8..r15 (not r12), [r12]
+			const uint32_t reg = (load[2] >> 3u) & 7u;
+			if ((code[6] & 0xf8u) != 0x60u || (load[2] & 0xc7u) != 0x04u || reg == 4) continue;
+			uint32_t moved = 0;
+			if (load[4] == 0x41 && load[5] == 0x8b && load[6] == (0x40u | reg) && load[7] == 0x08) moved = 8; // mov eax, [REG + 8]
+			else if (load[4] == 0xb9) moved = 9; // mov ecx, imm32
+			else continue;
+			loops.push_back({at, at + pattern.Size() - 4, 8 + reg, moved});
+		}
+	}
+	return loops;
+}
+
 uint64_t              g_base = 0;
 std::atomic<uint32_t> g_skips {0};
+std::atomic<uint32_t> g_child_skips {0};
 
 void KYTY_SYSV_ABI Skipped(uint64_t offset, uint64_t caller, uint64_t rbx, uint64_t r14) {
 	if (g_skips.fetch_add(1, std::memory_order_relaxed) >= 32) return;
@@ -55,6 +93,14 @@ void KYTY_SYSV_ABI Skipped(uint64_t offset, uint64_t caller, uint64_t rbx, uint6
 	            static_cast<unsigned long long>(offset), static_cast<unsigned long long>(caller - g_base),
 	            static_cast<unsigned long long>(rbx), static_cast<unsigned long long>(r14));
 }
+
+void KYTY_SYSV_ABI SkippedChild(uint64_t offset, uint64_t element, uint64_t r14, uint64_t r15) {
+	if (g_child_skips.fetch_add(1, std::memory_order_relaxed) >= 32) return;
+	// (r12 points at the null element of the parent's vector; the parent is r14 in 01.007.000, r15 in 01.005.000.)
+	std::printf("Demon's Souls scene guard: a null child skipped at eboot+0x%llx (element 0x%llx, r14 0x%llx, r15 0x%llx)\n",
+	            static_cast<unsigned long long>(offset), static_cast<unsigned long long>(element),
+	            static_cast<unsigned long long>(r14), static_cast<unsigned long long>(r15));
+}
 } // namespace
 
 void Install(Program* program) {
@@ -62,17 +108,23 @@ void Install(Program* program) {
 	if (program == nullptr || !Libs::Graphics::DemonsSouls::IsSupportedGame() || program->file_name.filename() != "eboot.bin" ||
 	    program->mapped_size > CaveOffset || program->base_vaddr > UINT64_MAX - CaveOffset - PageSize)
 		return;
+	// The null node traversals: the three of a known build, or none of them.
 	std::array<uint64_t, Traversals.size()> entries {};
-	for (size_t i = 0; i < Traversals.size(); i++) {
+	bool                                    traversals = true;
+	for (size_t i = 0; i < Traversals.size() && traversals; i++) {
 		const auto entry = GuestCode::FindUnique(*program, GuestCode::Pattern(Traversals[i].code));
 		if (!entry || std::memcmp(reinterpret_cast<const void*>(*entry), Prologue.data(), Prologue.size()) != 0) {
-			std::printf("Demon's Souls scene guard: no single '%s' traversal of a known build found; retaining guest "
+			std::printf("Demon's Souls scene guard: no single '%s' traversal of a known build found; retaining their guest "
 			            "code\n",
 			            Traversals[i].what);
-			return;
+			traversals = false;
+		} else {
+			entries[i] = *entry;
 		}
-		entries[i] = *entry;
 	}
+	const auto loops = FindChildLoops(*program);
+	if (loops.empty()) std::printf("Demon's Souls scene guard: no children loop of a known build found; retaining their guest code\n");
+	if (!traversals && loops.empty()) return;
 	const auto requested = program->base_vaddr + CaveOffset;
 	const auto allocated = Libs::LibKernel::Memory::AllocateRuntimeMemory(
 	    requested, PageSize, Common::VirtualMemory::Mode::ExecuteReadWrite, "demons_souls_scene_guard", true);
@@ -84,8 +136,9 @@ void Install(Program* program) {
 	using namespace Xbyak::util;
 	Xbyak::ClearError();
 	Xbyak::CodeGenerator c(PageSize, reinterpret_cast<void*>(allocated));
+	constexpr uint8_t save_fp[] {0x48, 0x0f, 0xae, 0x04, 0x24}; // FXSAVE64 [rsp]
 	std::array<const uint8_t*, Traversals.size()> stubs {};
-	for (size_t i = 0; i < Traversals.size(); i++) {
+	for (size_t i = 0; i < Traversals.size() && traversals; i++) {
 		const auto   entry = entries[i];
 		Xbyak::Label skip;
 		c.align(16);
@@ -104,7 +157,6 @@ void Install(Program* program) {
 		c.mov(rdx, rbx);
 		c.mov(rcx, r14);
 		c.sub(rsp, 520); // entry rsp is 8 mod 16: 80 + 520 bytes align it for FXSAVE
-		constexpr uint8_t save_fp[] {0x48, 0x0f, 0xae, 0x04, 0x24}; // FXSAVE64 [rsp]
 		c.db(save_fp, sizeof(save_fp));
 		c.mov(rax, reinterpret_cast<uint64_t>(&Skipped));
 		c.call(rax);
@@ -116,6 +168,43 @@ void Install(Program* program) {
 		c.xor_(eax, eax);
 		c.ret();
 	}
+	// A children loop: the child's load, a null child continues with the next one, else the moved instruction and back.
+	std::vector<const uint8_t*> loop_stubs;
+	for (const auto& loop: loops) {
+		const auto*        load = reinterpret_cast<const uint8_t*>(loop.load);
+		const Xbyak::Reg64 child(static_cast<int>(loop.reg));
+		Xbyak::Label       null_child;
+		c.align(16);
+		loop_stubs.push_back(c.getCurr());
+		c.db(load, 4); // mov REG, [r12]
+		c.test(child, child);
+		c.jz(null_child);
+		c.db(load + 4, loop.moved - 4);
+		c.jmp(reinterpret_cast<const void*>(loop.load + loop.moved));
+		// Printed (registers, flags and FP state kept; below the red zone, on a realigned stack), then the next child.
+		c.L(null_child);
+		c.lea(rsp, ptr[rsp - 128]);
+		c.pushfq();
+		for (const auto& reg: {rax, rcx, rdx, rsi, rdi, r8, r9, r10, r11, rbx})
+			c.push(reg);
+		c.mov(rbx, rsp);
+		c.and_(rsp, -16);
+		c.sub(rsp, 512);
+		c.db(save_fp, sizeof(save_fp));
+		c.mov(rdi, loop.load - program->base_vaddr);
+		c.mov(rsi, r12);
+		c.mov(rdx, r14);
+		c.mov(rcx, r15);
+		c.mov(rax, reinterpret_cast<uint64_t>(&SkippedChild));
+		c.call(rax);
+		c.fxrstor64(ptr[rsp]);
+		c.mov(rsp, rbx);
+		for (const auto& reg: {rbx, r11, r10, r9, r8, rdi, rsi, rdx, rcx, rax})
+			c.pop(reg);
+		c.popfq();
+		c.lea(rsp, ptr[rsp + 128]);
+		c.jmp(reinterpret_cast<const void*>(loop.increment));
+	}
 	c.ready();
 	if (Xbyak::GetError() || !Common::VirtualMemory::FlushInstructionCache(allocated, c.getSize()) ||
 	    !Libs::LibKernel::Memory::ProtectGuestMemory(allocated, PageSize, Common::VirtualMemory::Mode::ExecuteRead, nullptr)) {
@@ -123,18 +212,28 @@ void Install(Program* program) {
 		return;
 	}
 	// Installation occurs before module initializers or guest worker threads run.
-	for (size_t i = 0; i < Traversals.size(); i++) {
-		const auto             entry = entries[i];
-		std::array<uint8_t, 5> jump {0xe9};
-		const auto             displacement = static_cast<int32_t>(reinterpret_cast<uint64_t>(stubs[i]) - (entry + 5));
-		std::memcpy(jump.data() + 1, &displacement, sizeof(displacement));
-		std::memcpy(reinterpret_cast<void*>(entry), jump.data(), jump.size());
-		Common::VirtualMemory::FlushInstructionCache(entry, jump.size());
-	}
-	std::printf("Demon's Souls scene guard: installed (traversals at eboot+0x%llx, 0x%llx and 0x%llx skip a null node)\n",
-	            static_cast<unsigned long long>(entries[0] - program->base_vaddr),
-	            static_cast<unsigned long long>(entries[1] - program->base_vaddr),
-	            static_cast<unsigned long long>(entries[2] - program->base_vaddr));
+	const auto patch = [](uint64_t at, const uint8_t* stub, uint32_t size) {
+		std::array<uint8_t, 16> code {};
+		code.fill(0xcc); // (the moved bytes after the jump are never reached: nothing jumps into them)
+		code[0]                 = 0xe9;
+		const auto displacement = static_cast<int32_t>(reinterpret_cast<uint64_t>(stub) - (at + 5));
+		std::memcpy(code.data() + 1, &displacement, sizeof(displacement));
+		std::memcpy(reinterpret_cast<void*>(at), code.data(), size);
+		Common::VirtualMemory::FlushInstructionCache(at, size);
+	};
+	for (size_t i = 0; i < Traversals.size() && traversals; i++)
+		patch(entries[i], stubs[i], 5);
+	for (size_t i = 0; i < loops.size(); i++)
+		patch(loops[i].load, loop_stubs[i], loops[i].moved);
+	if (traversals)
+		std::printf("Demon's Souls scene guard: installed (traversals at eboot+0x%llx, 0x%llx and 0x%llx skip a null node)\n",
+		            static_cast<unsigned long long>(entries[0] - program->base_vaddr),
+		            static_cast<unsigned long long>(entries[1] - program->base_vaddr),
+		            static_cast<unsigned long long>(entries[2] - program->base_vaddr));
+	for (const auto& loop: loops)
+		std::printf("Demon's Souls scene guard: installed (the children loop at eboot+0x%llx skips a null child)\n",
+		            static_cast<unsigned long long>(loop.load - program->base_vaddr));
 #endif
 }
 } // namespace Loader::DemonsSoulsSceneGuard
+
