@@ -82,6 +82,14 @@ function State($source) {
 		# In game: 109 slot and 151 bar pixels (the full-screen captures this replaced also counted
 		# red desktop icons next to the window).
 		if ($red -gt 70 -and $bar -gt 100) { return 'hud' }
+		# A character in soul form (half health, a short bar: 35 slot and 12 bar pixels) has the green
+		# stamina bar under it (180 pixels; none in the menus, prompt, fog or cinematics).
+		$stamina = 0
+		if ($red -gt 20) {
+			for ($y = 2; $y -lt 30; $y += 1) { for ($x = 10; $x -lt 200; $x += 1) {
+				$c = $bmp.GetPixel($x, $y); if ($c.G -gt 80 -and $c.G -gt 1.5 * $c.R -and $c.G -gt 1.3 * $c.B) { $stamina++ } } }
+		}
+		if ($stamina -gt 120) { return 'hud' }
 		# Offline prompt: black screen with a lit box in the middle. Menu: green-tinted.
 		$dark = 0; $total = 0; $sr = 0; $sg = 0; $sb = 0; $center = 0; $sat = 0
 		for ($y = 0; $y -lt 360; $y += 4) { for ($x = 0; $x -lt 640; $x += 4) {
