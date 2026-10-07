@@ -11,9 +11,10 @@ https://github.com/chenxiao07/KytyPS5, where newer builds are under Releases.
 | Game | Demon's Souls |
 | Title ID | PPSA01341 |
 | Content ID | EP9000-PPSA01341_00-DEMONSSOULS00000 |
-| Version | 01.007.000 |
+| Version | 01.007.000 (also tested: 01.005.000) |
 
 Other versions, other regions and other games have not been tested and may not run or may fail.
+Each version has shader caches of its own (versions do not share shaders): a precompile is per version.
 At start-up the launcher reads the game's `sce_sys\param.json` and warns when the version differs.
 
 ## System requirements
@@ -109,7 +110,7 @@ There are two levels of preparation, both specific to the graphics card and driv
    meanwhile. The first launch makes the input files it needs.
 2. **Full precompile (recommended once)**: compiles every shader and pipeline of the game into
    `_PipelineCache`. Afterwards shader stutters are essentially gone. With a recent NVIDIA driver the
-   result is a store the game reads pipeline by pipeline (`<title>.binaries`, about 2 GB, nothing to
+   result is a store the game reads pipeline by pipeline (`<title>_<version>.binaries`, about 2 GB, nothing to
    load at launch); with other drivers a cache each launch loads (with a progress bar).
    - Choose "Precompile first" in the dialog at launch, or double-click `precompile.cmd` on its own.
    - The time depends on the CPU threads: about 45 minutes with 22 threads, about 1 hour with 16,
@@ -163,7 +164,7 @@ can be warped too; one in the character creation cannot (it has no save yet).
 | `_PipelineCache` | Shader caches (valid only for this PC's graphics card and driver: do not copy them to other PCs) |
 | `logs` | Run logs |
 | `game-path.txt` | The remembered game location |
-| `seeds.seeds` | The list of shaders the first launch collects from the game files (it contains the game's shader code: do not share it), for the precompile |
+| `seeds-<title>_<version>.seeds` | The list of shaders the first launch collects from the game files (one per game version) (it contains the game's shader code: do not share it), for the precompile |
 | `launch.json` | The emulator's switches; normally left alone |
 
 ## Known issues
