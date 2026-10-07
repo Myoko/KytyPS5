@@ -13,8 +13,9 @@
 #   .\run-windows.ps1 -Set KEY=VALUE         override a switch of the config (KEY= removes it)
 #   .\run-windows.ps1 -FrameGen 1            DLSS frame generation, 1 generated frame per rendered
 #                                            frame (2x); needs _Build\deps\streamline\sdk
-#   .\run-windows.ps1 -Vblank 240            another virtual vblank rate (default 60, the console's;
-#                                            faster rates speed up the game's clock)
+#   .\run-windows.ps1 -Fps120                the game's frame rate up to 120 fps instead of 60 (a 120 Hz
+#                                            virtual vblank; movies play faster)
+#   .\run-windows.ps1 -Vblank 240            another virtual vblank rate (default 60, the console's)
 #   .\run-windows.ps1 -Game <folder>         the game (the folder with eboot.bin); remembered in
 #                                            game-path.txt, a folder dialog when none is known
 #   .\run-windows.ps1 -Affinity FFFFCF       only these CPUs (hex mask; default: the config's list, else all)
@@ -41,6 +42,7 @@ param(
 	[switch]$NoAot,
 	[string]$PresentMode = '',
 	[int]$Vblank = 0,
+	[switch]$Fps120,
 	[string[]]$Set = @(),
 	[string]$Patch = '',
 	[switch]$AspectFit,
@@ -155,12 +157,14 @@ if ($Height -gt 0) { Set-Option '--screen-height' "$Height" }
 if ($Fullscreen) { $options.Add('--fullscreen') }
 if ($PresentMode) { Set-Option '--present-mode' $PresentMode }
 if ($Language -ge 0) { Set-Option '--console-language' "$Language" }
-# The game's clock assumes the console's 60 Hz vblank (its frame-rate target is 60 fps and the
-# flip queue, one flip per vblank, is what paces it): with the Linux configs' 240 Hz vblank the
-# cutscenes flipped at up to 230 fps and played about four times too fast, and gameplay started
-# in slow motion. At 60 Hz both run at normal speed, and frames that miss a vblank still queue
-# (37 fps average on the walk, not a 30 fps lock).
-Set-Option '--vblank-frequency' "$(if ($Vblank -gt 0) { $Vblank } else { 60 })"
+# The flip queue, one flip per vblank, is what caps the game's frame rate: it never waits for a
+# vblank or a flip on the CPU, its submissions block once the flips queue up. At the console's
+# 60 Hz the game runs at most 60 fps; frames that miss a vblank still queue (no 30 fps lock).
+# -Fps120: a 120 Hz vblank, the game's own frames up to 120 fps (Stonefang standing 60 -> 79 fps).
+# Play keeps its speed (its clock is real time: a 0.7 s camera turn and a 0.6 s walk end in the
+# same place at 79 and 60 fps), but movies advance a frame per flip and play faster (start-up to
+# the title 70 -> 54 s). With the Linux configs' 240 Hz the intro played about four times too fast.
+Set-Option '--vblank-frequency' "$(if ($Vblank -gt 0) { $Vblank } elseif ($Fps120) { 120 } else { 60 })"
 if ($Patch) { Set-Option '--game-patch' (Resolve-Path $Patch).Path }
 # Windows dispatches exceptions on the faulting thread's stack, over the guest's SysV red
 # zone (Linux signal delivery skips it). The write-tracking faults of the performance paths
