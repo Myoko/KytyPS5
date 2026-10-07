@@ -350,6 +350,7 @@ void BufferCache::CountGpuWrite(const GpuWrite& write, int32_t delta) {
 }
 
 void BufferCache::ResetGpuWrites() {
+	m_gpu_writes_base += m_gpu_writes.size(); // (the counters' last numbers stay below it)
 	m_gpu_writes.clear();
 	m_gpu_writes_head = m_gpu_writes_stamped = 0;
 	std::fill_n(m_gpu_write_granules.get(), GpuWriteCounters, 0u);
@@ -380,6 +381,11 @@ void BufferCache::NoteGpuWrite(uint64_t vaddr, uint64_t size) {
 	const bool big = ((vaddr + size - 1) >> GpuWriteGranuleBits) - (vaddr >> GpuWriteGranuleBits) >= GpuWriteSpan;
 	m_gpu_writes.push_back({vaddr, vaddr + size, 0, big});
 	CountGpuWrite(m_gpu_writes.back(), 1);
+	if (!big) {
+		const auto number = m_gpu_writes_base + m_gpu_writes.size(); // (1 + the write's)
+		for (auto g = vaddr >> GpuWriteGranuleBits; g <= (vaddr + size - 1) >> GpuWriteGranuleBits; ++g)
+			m_gpu_write_last[GpuWriteCounter(g)] = number;
+	}
 }
 
 
@@ -401,17 +407,24 @@ uint64_t BufferCache::InflightWriteTick(uint64_t begin, uint64_t end, uint64_t c
 	if (m_gpu_writes_head >= 4096 && m_gpu_writes_head * 2 >= m_gpu_writes.size()) {
 		m_gpu_writes.erase(m_gpu_writes.begin(), m_gpu_writes.begin() + static_cast<std::ptrdiff_t>(m_gpu_writes_head));
 		m_gpu_writes_stamped -= m_gpu_writes_head;
+		m_gpu_writes_base += m_gpu_writes_head;
 		m_gpu_writes_head = 0;
 	}
-	// No write counted in the range's granules (and no write too big to count): none overlaps it.
+	// No write counted in the range's granules (and no write too big to count): none overlaps it. Else none after
+	// the last one counted in them does (a later write would have counted there too).
+	size_t start = m_gpu_writes.size();
 	if (m_gpu_writes_big == 0 && end > begin) {
-		bool counted = false;
-		for (auto g = begin >> GpuWriteGranuleBits; g <= (end - 1) >> GpuWriteGranuleBits && !counted; ++g)
-			counted = m_gpu_write_granules[GpuWriteCounter(g)] != 0;
+		bool     counted = false;
+		uint64_t last    = 0;
+		for (auto g = begin >> GpuWriteGranuleBits; g <= (end - 1) >> GpuWriteGranuleBits; ++g) {
+			counted |= m_gpu_write_granules[GpuWriteCounter(g)] != 0;
+			last = std::max(last, m_gpu_write_last[GpuWriteCounter(g)]);
+		}
 		if (!counted) return 0;
+		if (last > m_gpu_writes_base) start = static_cast<size_t>(std::min<uint64_t>(last - m_gpu_writes_base, start));
 	}
 	// Ticks grow with the index (undated writes are last): the latest overlapping write has the largest.
-	for (size_t i = m_gpu_writes.size(); i > m_gpu_writes_head; --i) {
+	for (size_t i = start; i > m_gpu_writes_head; --i) {
 		const auto& write = m_gpu_writes[i - 1];
 		if (write.begin < end && begin < write.end) return i - 1 < m_gpu_writes_stamped ? write.tick : UINT64_MAX;
 	}

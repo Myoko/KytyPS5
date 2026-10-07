@@ -331,6 +331,10 @@ private:
 	static constexpr uint32_t   GpuWriteGranuleBits = 16, GpuWriteCounters = 1u << 16u, GpuWriteSpan = 64;
 	std::unique_ptr<uint32_t[]> m_gpu_write_granules = std::make_unique<uint32_t[]>(GpuWriteCounters);
 	size_t                      m_gpu_writes_big     = 0;
+	// Per counter, 1 + the number (m_gpu_writes_base + index) of the last write counted there: no later write touches
+	// those granules, so the walk for a range starts at its granules' last one, not at the log's end.
+	std::unique_ptr<uint64_t[]> m_gpu_write_last = std::make_unique<uint64_t[]>(GpuWriteCounters);
+	uint64_t                    m_gpu_writes_base = 0; // the number of m_gpu_writes[0]
 	[[nodiscard]] static uint32_t GpuWriteCounter(uint64_t granule) {
 		return static_cast<uint32_t>((granule * 0x9e3779b97f4a7c15ull) >> (64u - 16u));
 	}
