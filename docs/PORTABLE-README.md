@@ -4,18 +4,19 @@ A Windows test build of the Kyty PS5 emulator. So far it has been tuned only for
 **Demon's Souls (the PS5 remake)**. It is built by GitHub Actions from the source at
 https://github.com/chenxiao07/KytyPS5, where newer builds are under Releases.
 
-## Supported game version
+## Supported game versions
 
-| Item | Tested version |
+| Item | Supported |
 | --- | --- |
 | Game | Demon's Souls |
 | Title ID | PPSA01341 |
 | Content ID | EP9000-PPSA01341_00-DEMONSSOULS00000 |
-| Version | 01.007.000 (also tested: 01.005.000) |
+| Versions | 01.007.000 (1.07) and 01.005.000 (1.05) |
 
-Other versions, other regions and other games have not been tested and may not run or may fail.
-Each version has shader caches of its own (versions do not share shaders): a precompile is per version.
-At start-up the launcher reads the game's `sce_sys\param.json` and warns when the version differs.
+Both versions get the same performance patches. Each version has shader caches of its own (versions do
+not share shaders), so the shader precompile is done once per version. Other versions, other regions
+and other games have not been tested and may not run or may fail. At start-up the launcher reads the
+game's `sce_sys\param.json` and warns when the version is not one of these.
 
 ## System requirements
 
@@ -71,7 +72,7 @@ The first launch goes like this:
 1. Choose the game folder (see above).
 2. The console lists the game's shaders from its files (once, about 20 seconds; it needs Python 3
    with numpy, see the system requirements).
-3. A dialog shows whether the game version is the tested one and offers to precompile the shaders
+3. A dialog shows whether the game version is a supported one and offers to precompile the shaders
    first (see the next section).
 4. The console window makes the input files for the background shader preparation (once per
    graphics card and driver version): about 50 seconds on the test PC's 22 threads, a few minutes on
