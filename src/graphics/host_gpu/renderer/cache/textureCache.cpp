@@ -52,13 +52,17 @@ constexpr uint64_t NumFramesBeforeRemoval = 32;
 // KYTY_PARTIAL_IMAGE_DIRTY: a game streaming textures into a large array writes one layer at a
 // time. The whole-image path stopped watching all of the image's pages on the first write and
 // then re-watched, copied, detiled and uploaded all of it (a 352 MiB array: 20-70 ms on the
-// render thread, several times a second while walking into a new area). Images at least this
-// large keep watching everything but the written granules and upload only the subresources
-// over them.
+// render thread, several times a second while walking into a new area). Such images keep
+// watching everything but the written granules and upload only the subresources over them.
+// (Size from which the diagnostic logs report images.)
 constexpr uint64_t PartialDirtyMinSize = uint64_t {16} << 20;
 // A write fault releases the image's granule around it (granules start at the image start):
 // a streamed layer faults a few times instead of once per 4 KiB page.
 constexpr uint64_t PartialDirtyGranule = uint64_t {1} << 20;
+// Every image of two granules or more takes partial writes: below that one granule is the whole image. Mip-streamed
+// textures (5-11 MiB BC: the game writes the levels while draws already sample it) uploaded all of it at each use
+// between the writes (2-10 times in a few ms when entering an area).
+constexpr uint64_t PartialDirtyCandidateSize = 2 * PartialDirtyGranule;
 // A refresh whose subresources cover more than this share of the image uploads all of it.
 constexpr uint64_t PartialUploadMaxShare = 2;
 // Staged runs of picked subresources closer than this are staged as one run.
@@ -615,7 +619,7 @@ bool TextureCache::PartialDirtyCandidate(const Image& image) {
 	// in a texture tile mode (the game's streamed shadow maps) uploads as a texture too; one
 	// that uploads as a depth target takes the whole-image path at refresh (UploadImagePartial).
 	return kyty_local_partial_image_dirty_mode.load(std::memory_order_relaxed) != 0 &&
-	       info.data.size >= PartialDirtyMinSize && !image.depth_id &&
+	       info.data.size >= PartialDirtyCandidateSize && !image.depth_id &&
 	       image.backing.image != nullptr && info.samples == 1 && !info.IsVolume() &&
 	       !info.HasStencil() && info.metadata.compression == VideoOutCompression::Uncompressed;
 }
@@ -1498,6 +1502,17 @@ void TextureCache::UploadStencil(Image& image, Buffer& source, uint64_t source_o
 
 // Local diagnostic: why the latest UploadImagePartial fell back to a whole upload (SLOW log).
 static thread_local const char* g_partial_fail = "";
+
+// KYTY_UPLOAD_LOG: a partial refresh's staged bytes (UPLOAD lines are the whole ones).
+static void LogPartialUpload(const Image& image, size_t pieces, uint64_t bytes) {
+	static const bool log_uploads = std::getenv("KYTY_UPLOAD_LOG") != nullptr;
+	if (!log_uploads) return;
+	std::printf("[tsc %llu] UPLOAD-PART addr=0x%llx size=0x%llx layers=%u levels=%u pieces=%zu bytes=0x%llx serial=%llu\n",
+	            static_cast<unsigned long long>(__rdtsc()), static_cast<unsigned long long>(image.info.data.address),
+	            static_cast<unsigned long long>(image.info.data.size), image.info.resources.layers,
+	            image.info.resources.levels, pieces, static_cast<unsigned long long>(bytes),
+	            static_cast<unsigned long long>(image.serial));
+}
 static bool PartialFail(const char* why) {
 	g_partial_fail = why;
 	return false;
@@ -1559,7 +1574,7 @@ void TextureCache::InitializeImage(ImageId id) {
 			static const bool log_uploads = std::getenv("KYTY_UPLOAD_LOG") != nullptr;
 			if (log_uploads) {
 				std::printf("[tsc %llu] UPLOAD %s addr=0x%llx size=0x%llx fmt=%u %ux%u layers=%u levels=%u tile=%u "
-				            "target=%d usage=%d%d%d%d gpu=%d serial=%llu\n",
+				            "target=%d usage=%d%d%d%d gpu=%d serial=%llu partial_fail=%s\n",
 				            static_cast<unsigned long long>(__rdtsc()), kind,
 				            static_cast<unsigned long long>(image.info.data.address),
 				            static_cast<unsigned long long>(image.info.data.size),
@@ -1568,7 +1583,8 @@ void TextureCache::InitializeImage(ImageId id) {
 				            static_cast<uint32_t>(image.info.tile_mode), image.binding.is_target ? 1 : 0,
 				            image.usage.texture ? 1 : 0, image.usage.storage ? 1 : 0,
 				            image.usage.render_target ? 1 : 0, image.usage.depth_target ? 1 : 0,
-				            image.IsGpuModified() ? 1 : 0, static_cast<unsigned long long>(image.serial));
+				            image.IsGpuModified() ? 1 : 0, static_cast<unsigned long long>(image.serial),
+				            image.IsPartiallyCpuDirty() && !image.IsBufferModified() ? g_partial_fail : "");
 			}
 			UploadImage(image, *source, source_offset);
 			if (kyty_local_partial_image_dirty_mode.load(std::memory_order_relaxed) == 2 &&
@@ -1784,6 +1800,7 @@ bool TextureCache::UploadDepthPartial(Image& image) {
 	image.Upload(copies, linear.buffer, linear.offset, linear.size);
 	LiveCounters::Add(LiveCounters::PartialUploads);
 	LiveCounters::Add(LiveCounters::PartialUploadBytes, total);
+	LogPartialUpload(image, pieces.size(), total);
 	return true;
 }
 
@@ -1936,6 +1953,7 @@ bool TextureCache::UploadImagePartial(Image& image) {
 	image.Upload(regions, linear.buffer, linear.offset, linear.size);
 	LiveCounters::Add(LiveCounters::PartialUploads);
 	LiveCounters::Add(LiveCounters::PartialUploadBytes, total);
+	LogPartialUpload(image, pieces.size(), total);
 	if (kyty_local_partial_image_dirty_mode.load(std::memory_order_relaxed) == 2) {
 		UpdatePartialHashes(image, false);
 	}
