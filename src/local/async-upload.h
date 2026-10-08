@@ -8,6 +8,7 @@
 // cannot fault it, and unmapping a range waits for the jobs on it before the range can be reused.
 
 #include "local-platform.h"
+#include "parallel-pages.h"
 
 #include <atomic>
 #include <cstdint>
@@ -125,11 +126,32 @@ private:
 			for (; done < head; ++done) {
 				const Job& job = m_jobs[done % Capacity];
 				if (job.call != nullptr) job.call(job.context, reinterpret_cast<uint64_t>(job.destination), job.size);
-				else std::memcpy(job.destination, job.source, job.size);
+				else Copy(job.destination, job.source, job.size);
 			}
 			m_done.store(done, std::memory_order_seq_cst);
 			if (m_waiters.load(std::memory_order_seq_cst) != 0) m_done.notify_all();
 		}
+	}
+
+	// A copy of 1 MiB or more is shared with helper threads of its own (not the render thread's page comparisons'
+	// pool, which would wait behind it). The first read of each source page through this view faults (~1.2 us a
+	// page: 2.3-3.8 GB/s on one thread, 6-11 GB/s on eight), and an image the game streams in is read once: a frame
+	// where it brings a new area (~1 GB of textures, every submission waiting for their copies) stalled ~300 ms.
+	static void Copy(uint8_t* destination, const uint8_t* source, uint64_t size) {
+		constexpr uint64_t Chunk = uint64_t {256} << 10u;
+		if (size < 4 * Chunk) {
+			std::memcpy(destination, source, size);
+			return;
+		}
+		static auto* const pool = new ParallelPages::Pool(7, "Kyty.UploadCopy"); // (never destroyed)
+		struct Context {
+			uint8_t*       destination;
+			const uint8_t* source;
+		} context {destination, source};
+		pool->For(size, Chunk, [](void* at, uint64_t first, uint64_t last) {
+			const auto& copy = *static_cast<const Context*>(at);
+			std::memcpy(copy.destination + first, copy.source + first, last - first);
+		}, &context);
 	}
 
 	std::unique_ptr<Job[]>             m_jobs;

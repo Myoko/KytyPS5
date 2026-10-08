@@ -40,8 +40,10 @@ uint32_t BufferByteAddress(ValueEmitContext& ctx, const IR::Inst& inst, const IR
 	const uint32_t stride  = packed & 0x3fffu;
 	const bool     swizzle = stride != 0u && ((packed >> 14u) & 1u) != 0u;
 	if (((packed >> 20u) & 1u) != 0u) {
-		const auto lane = Binary(state, OpBitwiseAnd, TypeU32(state),
-		                         EmitSubgroupLocalInvocationId(state), ConstantU32(state, 63));
+		// (ADD_TID: the GCN lane. A lane-local wave64 program's subgroup is half a wave: its index in the group.)
+		const auto id   = state.lane_count == 1 && state.program.lane_local ? EmitLocalInvocationIndex(state)
+		                                                                    : EmitSubgroupLocalInvocationId(state);
+		const auto lane = Binary(state, OpBitwiseAnd, TypeU32(state), id, ConstantU32(state, 63));
 		index           = Binary(state, OpIAdd, TypeU32(state), index, lane);
 	}
 	if (mem.offset != 0u) {
