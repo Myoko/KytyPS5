@@ -61,6 +61,8 @@ folder (usually named `PPSA01341-app0`).
 fullscreen (optionally keeping 16:9 with black bars), the console language and red-zone protection,
 with buttons to play, to precompile the shaders (optionally on the efficiency cores only, so the PC
 stays responsive), and to open the logs folder. It remembers the settings (`launcher-settings.json`).
+"Up to 120 fps" (off by default) lets the game render up to 120 frames a second instead of the
+console's 60 where the PC is fast enough: play keeps its speed, but pre-rendered movies play faster.
 Its settings and language list follow the KytyPS5 launcher (`src/launcher` in the source, by the
 KytyPS5 developers).
 

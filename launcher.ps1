@@ -12,7 +12,7 @@ $languages = 'Japanese', 'English (United States)', 'French (France)', 'Spanish 
 $resolutions = '1280x720', '1920x1080', '2560x1440', '3840x2160'
 
 $settings = [ordered]@{ game = ''; resolution = '2560x1440'; fullscreen = $false; aspect = $true; language = 1; redzone = $true;
-	ecores = $false; cheats = $true }
+	ecores = $false; cheats = $true; fps120 = $false }
 if (Test-Path $settingsPath) {
 	$saved = Get-Content $settingsPath -Raw | ConvertFrom-Json
 	foreach ($property in $saved.PSObject.Properties) { if ($settings.Contains($property.Name)) { $settings[$property.Name] = $property.Value } }
@@ -78,6 +78,7 @@ function Get-PlayCommand {
 		'-Width', $size[0], '-Height', $size[1], '-Language', $settings.language)
 	if ($settings.fullscreen) { $arguments += '-Fullscreen'; if ($settings.aspect) { $arguments += '-AspectFit' } }
 	if (!$settings.redzone) { $arguments += '-NoRedZone' }
+	if ($settings.fps120) { $arguments += '-Fps120' }
 	if ($settings.game) { $arguments += @('-Game', "`"$($settings.game)`"") }
 	# run-windows.ps1 passes --game-patch only for -Patch, and the emulator rejects it twice, so the
 	# file is added here rather than left to the emulator's own _Patches lookup.
@@ -162,6 +163,8 @@ $language.SelectedIndex = [Math]::Max(0, [Math]::Min($languages.Count - 1, [int]
 Add-Row 'Console language' @($language)
 $redzone = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Red-zone protection (recommended)'; AutoSize = $true; Checked = [bool]$settings.redzone }
 Add-Row '' @($redzone)
+$fps120 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Up to 120 fps (the game''s own frames; movies play faster)'; AutoSize = $true; Checked = [bool]$settings.fps120 }
+Add-Row '' @($fps120)
 $ecores = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Precompile on the efficiency cores only (slower, the PC stays responsive)'; AutoSize = $true
 	Checked = ([bool]$settings.ecores -and $efficiencyMask -ne 0); Enabled = ($efficiencyMask -ne 0) }
 Add-Row '' @($ecores)
@@ -193,6 +196,7 @@ function Read-Form {
 	$settings.aspect     = $aspect.Checked
 	$settings.language   = $language.SelectedIndex
 	$settings.redzone    = $redzone.Checked
+	$settings.fps120     = $fps120.Checked
 	$settings.ecores     = $ecores.Checked
 	$settings.cheats     = $cheats.Checked
 	Save-Settings

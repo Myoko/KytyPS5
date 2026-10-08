@@ -7,6 +7,7 @@
 #include "live-trace.h"
 #include "native-resource-state.h"
 #include "async-upload.h"
+#include "parallel-pages.h"
 #include "readback-queue.h"
 #ifdef KYTY_LOCAL_VULKAN_RECORDING
 #include "vulkan-recording.h"
@@ -349,6 +350,7 @@ void BufferCache::CountGpuWrite(const GpuWrite& write, int32_t delta) {
 }
 
 void BufferCache::ResetGpuWrites() {
+	m_gpu_writes_base += m_gpu_writes.size(); // (the counters' last numbers stay below it)
 	m_gpu_writes.clear();
 	m_gpu_writes_head = m_gpu_writes_stamped = 0;
 	std::fill_n(m_gpu_write_granules.get(), GpuWriteCounters, 0u);
@@ -379,6 +381,11 @@ void BufferCache::NoteGpuWrite(uint64_t vaddr, uint64_t size) {
 	const bool big = ((vaddr + size - 1) >> GpuWriteGranuleBits) - (vaddr >> GpuWriteGranuleBits) >= GpuWriteSpan;
 	m_gpu_writes.push_back({vaddr, vaddr + size, 0, big});
 	CountGpuWrite(m_gpu_writes.back(), 1);
+	if (!big) {
+		const auto number = m_gpu_writes_base + m_gpu_writes.size(); // (1 + the write's)
+		for (auto g = vaddr >> GpuWriteGranuleBits; g <= (vaddr + size - 1) >> GpuWriteGranuleBits; ++g)
+			m_gpu_write_last[GpuWriteCounter(g)] = number;
+	}
 }
 
 
@@ -400,17 +407,24 @@ uint64_t BufferCache::InflightWriteTick(uint64_t begin, uint64_t end, uint64_t c
 	if (m_gpu_writes_head >= 4096 && m_gpu_writes_head * 2 >= m_gpu_writes.size()) {
 		m_gpu_writes.erase(m_gpu_writes.begin(), m_gpu_writes.begin() + static_cast<std::ptrdiff_t>(m_gpu_writes_head));
 		m_gpu_writes_stamped -= m_gpu_writes_head;
+		m_gpu_writes_base += m_gpu_writes_head;
 		m_gpu_writes_head = 0;
 	}
-	// No write counted in the range's granules (and no write too big to count): none overlaps it.
+	// No write counted in the range's granules (and no write too big to count): none overlaps it. Else none after
+	// the last one counted in them does (a later write would have counted there too).
+	size_t start = m_gpu_writes.size();
 	if (m_gpu_writes_big == 0 && end > begin) {
-		bool counted = false;
-		for (auto g = begin >> GpuWriteGranuleBits; g <= (end - 1) >> GpuWriteGranuleBits && !counted; ++g)
-			counted = m_gpu_write_granules[GpuWriteCounter(g)] != 0;
+		bool     counted = false;
+		uint64_t last    = 0;
+		for (auto g = begin >> GpuWriteGranuleBits; g <= (end - 1) >> GpuWriteGranuleBits; ++g) {
+			counted |= m_gpu_write_granules[GpuWriteCounter(g)] != 0;
+			last = std::max(last, m_gpu_write_last[GpuWriteCounter(g)]);
+		}
 		if (!counted) return 0;
+		if (last > m_gpu_writes_base) start = static_cast<size_t>(std::min<uint64_t>(last - m_gpu_writes_base, start));
 	}
 	// Ticks grow with the index (undated writes are last): the latest overlapping write has the largest.
-	for (size_t i = m_gpu_writes.size(); i > m_gpu_writes_head; --i) {
+	for (size_t i = start; i > m_gpu_writes_head; --i) {
 		const auto& write = m_gpu_writes[i - 1];
 		if (write.begin < end && begin < write.end) return i - 1 < m_gpu_writes_stamped ? write.tick : UINT64_MAX;
 	}
@@ -1961,6 +1975,11 @@ void BufferCache::CopyBuffer(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t si
 	dst->CopyInRun(command, *src, src_offset, dst_offset, size);
 }
 
+// Copies from this size on compare their pages on helper threads too (ParallelPages): below it, waking them costs about
+// what they would take off this thread.
+static constexpr uint64_t ParallelCompareBytes = uint64_t {2} << 20u;
+static constexpr uint64_t ParallelComparePages = 64; // (a chunk: 256 KiB)
+
 void BufferCache::CopyGuestMemory(uint64_t dst_vaddr, uint64_t src_vaddr, uint64_t size) {
 	// The game's linear copies mostly rewrite what the destination already holds (95% of the bytes in the fixed
 	// scene): only the destination pages whose bytes differ are written, so the others stay clean (no upload of their
@@ -1986,10 +2005,34 @@ void BufferCache::CopyGuestMemory(uint64_t dst_vaddr, uint64_t src_vaddr, uint64
 		std::memcpy(reinterpret_cast<void*>(address), from, bytes);
 		Spec::NoteHostWrite(address, bytes);
 	};
+	// Which destination pages differ: compared on helper threads too when the copy is large (the 4 MiB copy the culling
+	// chain makes every frame, on the frame's critical path: 0.39 ms on this thread alone, 0.24 ms shared at Latria).
+	const auto page_of = [&](uint64_t at) { return (dst_vaddr + at) / TRACKER_PAGE_SIZE - dst_vaddr / TRACKER_PAGE_SIZE; };
+	thread_local std::vector<uint8_t> differs;
+	const bool parallel = size >= ParallelCompareBytes;
+	if (parallel) {
+		struct Compare {
+			uint64_t dst, src, size;
+			uint8_t* differs;
+		} compare {dst_vaddr, src_vaddr, size, nullptr};
+		differs.assign(page_of(size - 1) + 1, 0);
+		compare.differs = differs.data();
+		const ParallelPages::Job pages = [](void* context, uint64_t first, uint64_t last) {
+			const auto& job = *static_cast<const Compare*>(context);
+			for (auto page = first; page < last; ++page) {
+				const auto begin = page == 0 ? 0 : (job.dst / TRACKER_PAGE_SIZE + page) * TRACKER_PAGE_SIZE - job.dst;
+				const auto end   = std::min((job.dst / TRACKER_PAGE_SIZE + page + 1) * TRACKER_PAGE_SIZE - job.dst, job.size);
+				job.differs[page] = std::memcmp(reinterpret_cast<const void*>(job.dst + begin),
+				                                reinterpret_cast<const void*>(job.src + begin), end - begin) != 0;
+			}
+		};
+		ParallelPages::For(differs.size(), ParallelComparePages, pages, &compare);
+	}
 	for (uint64_t at = 0; at < size;) {
 		const auto bytes = std::min(TRACKER_PAGE_SIZE - (dst_vaddr + at) % TRACKER_PAGE_SIZE, size - at);
-		if (std::memcmp(reinterpret_cast<const void*>(dst_vaddr + at), reinterpret_cast<const void*>(src_vaddr + at),
-		                bytes) != 0) {
+		if (parallel ? differs[page_of(at)] != 0
+		             : std::memcmp(reinterpret_cast<const void*>(dst_vaddr + at),
+		                           reinterpret_cast<const void*>(src_vaddr + at), bytes) != 0) {
 			if (at != run_end) {
 				write();
 				run = at;

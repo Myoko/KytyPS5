@@ -61,7 +61,28 @@ struct RenderExecutor::TableImageSet {
 	// (TableResolveSet tries again after TableImageSet::RetryFrames).
 	bool                  refused = false;
 	static constexpr uint64_t RetryFrames = 300;
+	// A dispatch's words that select another specialization of the pair's program whose table form is the same
+	// (TableInterchangeable: its images of other dimensions or formats): that program and its pipeline, which the set
+	// is made for (null: the pair's).
+	const ShaderRecompiler::IR::CompiledShaderInfo* program  = nullptr;
+	const PipelineCache::Pipeline*                  pipeline = nullptr;
 };
+
+// Two specializations of a program the table way alike but for their images' and samplers' bindings: the same slots,
+// buffers (and their decoded formats), descriptor words, page table reads and shader data. The words TableEvaluate
+// reads and the blocks TableBlocks makes for one serve the other.
+static bool TableInterchangeable(const ShaderRecompiler::IR::CompiledShaderInfo& a,
+                                 const ShaderRecompiler::IR::CompiledShaderInfo& b) {
+	const auto& x = a.bindings;
+	const auto& y = b.bindings;
+	return a.table_mode && b.table_mode && a.stage == b.stage && a.shader_hash == b.shader_hash &&
+	       a.user_data_base == b.user_data_base && a.table_plan == b.table_plan && a.info.buffers == b.info.buffers &&
+	       a.info.images.size() == b.info.images.size() && a.info.samplers.size() == b.info.samplers.size() &&
+	       a.bda_read_plan == b.bda_read_plan && x.push_data_start_dword == y.push_data_start_dword &&
+	       x.memory_offset_dword == y.memory_offset_dword && x.memory_offset_count == y.memory_offset_count &&
+	       x.buffer_word_count == y.buffer_word_count && x.lod_stats_count == y.lod_stats_count &&
+	       x.table_block_dwords == y.table_block_dwords && x.user_data_registers == y.user_data_registers;
+}
 
 struct RenderExecutor::TablePair {
 	// Evaluated slots at consecutive addresses (the same base, immediates 4 apart): one read, at the address of the
@@ -94,6 +115,7 @@ struct RenderExecutor::TablePair {
 		std::vector<uint32_t>    level_ends;  // the run after each level
 		std::vector<FlatOperand> image_words; // every image's words, then every sampler's
 		std::vector<uint32_t>    image_counts;
+		std::vector<FlatOperand> buffer_words; // every buffer's four V# words (TableBlocks)
 		std::vector<uint32_t>    constants;
 		uint32_t                 user_words = 0; // the user data it reads: below this
 	};
@@ -403,10 +425,23 @@ RenderExecutor::TableImageSet* RenderExecutor::TableResolveSet(CommandBuffer& bu
 	} else {
 		ResetNativeStageInput(compute_info);
 		compute_info.dispatch_thread_dimensions = pair.compute->dispatch_thread_dimensions;
-		(void)m_context.GetPipelineCache().GetComputeProgram(sh.GetCs(), ctx.GetShaderRegisters(), compute_info, nullptr,
-		                                                     true, pair.portable[0]);
-		if (m_context.GetPipelineCache().TablePending()) return nullptr;
-		if (compute_info.stage.program != pair.programs[0]) return refuse("another specialization");
+		auto&      pipelines = m_context.GetPipelineCache();
+		const auto handle    = pipelines.GetComputeProgram(sh.GetCs(), ctx.GetShaderRegisters(), compute_info, nullptr, true,
+		                                                   pair.portable[0]);
+		if (pipelines.TablePending()) return nullptr;
+		if (compute_info.stage.program != pair.programs[0]) {
+			// Another specialization the table way alike (a particle simulation's texture 2D in one emitter and 3D in
+			// another, at Latria 90 programs): the set is made for it, with its pipeline.
+			const auto* other = compute_info.stage.program;
+			if (!handle || other == nullptr || !TableInterchangeable(*pair.programs[0], *other))
+				return refuse("another specialization");
+			set->pipeline = pipelines.TryCreateComputePipeline(compute_info, handle);
+			if (set->pipeline == nullptr) {
+				pair.waiting = pipelines.PipelineWaiting(); // (asked again once it is done)
+				return nullptr;
+			}
+			set->program = other;
+		}
 		runtimes[0] = &compute_info.stage;
 	}
 	std::array<PreparedBindings, 2>                prepared;
@@ -477,7 +512,7 @@ RenderExecutor::TableImageSet* RenderExecutor::TableResolveSet(CommandBuffer& bu
 	using Kind = ShaderRecompiler::IR::DescriptorBindingKind;
 	const auto fixed = [](const Buffer* value) -> vk::DescriptorBufferInfo { return {value->Handle(), 0, value->Size()}; };
 	for (uint32_t st = 0; st < stages; ++st) {
-		const auto& program = *pair.programs[st];
+		const auto& program = set->program != nullptr ? *set->program : *pair.programs[st];
 		std::vector<uint32_t> occurrences(prepared[st].images.size(), 0);
 		for (const auto& binding: program.bindings.descriptors) {
 			Pending item;
@@ -508,7 +543,10 @@ RenderExecutor::TableImageSet* RenderExecutor::TableResolveSet(CommandBuffer& bu
 		for (const auto& dep: deps[st])
 			if (dep.layout != vk::ImageLayout::eUndefined) set->images.push_back(dep);
 	}
-	set->set = NativeXprAllocateSet((variant != nullptr ? variant->pipeline : pair.pipeline)->descriptor_set_layout,
+	set->set = NativeXprAllocateSet((variant != nullptr      ? variant->pipeline
+	                                 : set->pipeline != nullptr ? set->pipeline
+	                                                            : pair.pipeline)
+	                                    ->descriptor_set_layout,
 	                                set->pool);
 	std::vector<vk::WriteDescriptorSet> writes;
 	for (auto& item: pending) {
@@ -777,14 +815,21 @@ bool RenderExecutor::TableBlocks(TablePair& pair, std::array<std::span<const uin
 	// A null buffer's device address: valid memory (the shaders' loads of a buffer are not branched around its bounds:
 	// out of bounds they load its first dword).
 	const vk::DeviceAddress null_device = upload.BufferDeviceAddress();
-	// A V#'s buffer word (IR::BufferWord, as IR::BufferDescriptorWord makes it) and stride.
+	// A V#'s buffer word (IR::BufferWord, as IR::BufferDescriptorWord makes it) and stride. (Each format's class
+	// once: the V#s of every draw's buffers asked for it.)
+	static const auto format_classes = [] {
+		std::array<uint32_t, 128> classes {};
+		for (uint32_t format = 0; format < classes.size(); ++format)
+			classes[format] = ShaderRecompiler::IR::BufferFormatClass(static_cast<Prospero::BufferFormat>(format));
+		return classes;
+	}();
 	const auto word_of = [](const std::array<uint32_t, 4>& words4) -> std::pair<uint32_t, uint32_t> {
 		ShaderBufferResource descriptor;
 		std::copy_n(words4.begin(), 4, descriptor.fields);
 		if (descriptor.Type() != 0) return {0, 0};
 		using Word = ShaderRecompiler::IR::BufferWord;
 		return {(descriptor.Stride() <= Word::MaxStride ? descriptor.Stride() : 0u) |
-		            ShaderRecompiler::IR::BufferFormatClass(descriptor.Format()) << Word::LayoutShift |
+		            format_classes[descriptor.RawFormat()] << Word::LayoutShift |
 		            descriptor.DstSelXYZW() << Word::DstSelShift,
 		        descriptor.Stride()};
 	};
@@ -822,18 +867,30 @@ bool RenderExecutor::TableBlocks(TablePair& pair, std::array<std::span<const uin
 		const auto& program = *pair.programs[st];
 		const auto& plan    = program.table_plan;
 		auto&       block   = table.blocks[st];
-		// The V#s' words and entries first: the entries' lines load together.
+		// The V#s' words and entries first: the entries' lines load together. (The flat form, TablePair::flat, as
+		// TableEvaluate takes it: every word one load.)
 		auto& entries = table.entries;
 		entries.resize(plan.buffers.size());
+		const auto& form = pair.flat[st];
+		const bool  flat = form.buffer_words.size() == 4 * plan.buffers.size() && user_data[st].size() >= form.user_words &&
+		                  user_data[st].size() <= 64;
+		const std::array<const uint32_t*, 3> bases {user_data[st].data(), block.data(), form.constants.data()};
 		for (size_t i = 0; i < plan.buffers.size(); ++i) {
 			auto& [words4, entry] = entries[i];
-			for (uint32_t w = 0; w < 4; ++w) {
-				const auto& operand = plan.buffers[i][w];
-				words4[w] = operand.kind == Kind::Immediate ? operand.value
-				            : operand.kind == Kind::Slot    ? block[operand.value]
-				            : operand.value - program.user_data_base < user_data[st].size()
-				                ? user_data[st][operand.value - program.user_data_base]
-				                : 0;
+			if (flat) {
+				for (uint32_t w = 0; w < 4; ++w) {
+					const auto& operand = form.buffer_words[4 * i + w];
+					words4[w]           = bases[operand.base][operand.index];
+				}
+			} else {
+				for (uint32_t w = 0; w < 4; ++w) {
+					const auto& operand = plan.buffers[i][w];
+					words4[w] = operand.kind == Kind::Immediate ? operand.value
+					            : operand.kind == Kind::Slot    ? block[operand.value]
+					            : operand.value - program.user_data_base < user_data[st].size()
+					                ? user_data[st][operand.value - program.user_data_base]
+					                : 0;
+				}
 			}
 			entry = &table.resolved[XXH3_64bits(words4.data(), sizeof(words4)) & (TableXpr::ResolvedEntries - 1)];
 			__builtin_prefetch(entry);
@@ -841,7 +898,7 @@ bool RenderExecutor::TableBlocks(TablePair& pair, std::array<std::span<const uin
 		// The buffers it writes first: a range it also reads through another V# is GPU-written by then, as the
 		// normal path's second lookup (RebindBuffers) sees it (not a copy of the guest's bytes in the ring).
 		for (size_t n = 0; n < 2 * plan.buffers.size(); ++n) {
-			const auto  i         = n % plan.buffers.size();
+			const auto  i         = n < plan.buffers.size() ? n : n - plan.buffers.size();
 			const auto& words4    = entries[i].first;
 			const auto& resource  = program.info.buffers[i];
 			const bool  formatted = resource.formatted;
@@ -1175,6 +1232,7 @@ RenderExecutor::TableResult RenderExecutor::TableDraw(CommandBuffer& buffer, Tab
 	}
 	m_context.GetCommandScheduler().BeginRendering(draw_state.rendering);
 	if (same_command && emit.state != &draw_state && emit.state != nullptr &&
+	    emit.state->dynamic_hash == draw_state.dynamic_hash &&
 	    std::memcmp(&emit.state->dynamic, &draw_state.dynamic, sizeof(draw_state.dynamic)) == 0)
 		emit.state = &draw_state;
 	if (!same_command || emit.state != &draw_state) {
@@ -1321,6 +1379,8 @@ void RenderExecutor::TableRuns(TablePair& pair) {
 		}
 		for (const auto& descriptor: plan.samplers)
 			for (uint32_t w = 0; w < descriptor.count; ++w) flat.image_words.push_back(flat_of(descriptor.words[w]));
+		for (const auto& words: plan.buffers)
+			for (const auto& word: words) flat.buffer_words.push_back(flat_of(word));
 	}
 }
 
@@ -1583,8 +1643,9 @@ bool RenderExecutor::TableDispatch(CommandBuffer& buffer, uint32_t groups_x, uin
 	const bool chain     = DemonsSouls::IsSupportedGame();
 	const auto vk_buffer = chain ? buffer.ChainHandle() : buffer.Handle();
 	if (!TableTransit(*set, vk_buffer, nullptr)) return m_dispatch_declined = "table: transit", false;
-	const auto& pipeline = *pair.pipeline;
-	const auto& program  = *pair.programs[0];
+	// (A set made for another specialization: its program's pipeline and shader data.)
+	const auto& pipeline = set->pipeline != nullptr ? *set->pipeline : *pair.pipeline;
+	const auto& program  = set->program != nullptr ? *set->program : *pair.programs[0];
 	const auto& bindings = program.bindings;
 	vk_buffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, pipeline.pipeline_layout, 0, 1, &set->set, 0, nullptr);
 	if (bindings.UsesPushData()) {
