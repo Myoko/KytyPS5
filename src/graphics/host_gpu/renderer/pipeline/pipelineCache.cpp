@@ -1310,7 +1310,9 @@ private:
 
 PipelineCache::CompileWorkers& PipelineCache::Workers() {
 	if (m_compile_workers == nullptr) {
-		m_compile_workers = std::make_unique<CompileWorkers>(2);
+		// The native XPR variants a new area brings (hundreds, ~100 ms each in no cache, unoptimized or not): two
+		// threads queued them for seconds (their draws on the normal path meanwhile). Background threads.
+		m_compile_workers = std::make_unique<CompileWorkers>(std::max(2u, std::thread::hardware_concurrency() / 4u), true);
 	}
 	return *m_compile_workers;
 }
@@ -1321,6 +1323,13 @@ PipelineCache::CompileWorkers& PipelineCache::TableWorkers() {
 		m_table_workers = std::make_unique<CompileWorkers>(std::max(2u, std::thread::hardware_concurrency() / 2u), true);
 	}
 	return *m_table_workers;
+}
+
+PipelineCache::CompileWorkers& PipelineCache::OptimizeWorkers() {
+	if (m_optimize_workers == nullptr) {
+		m_optimize_workers = std::make_unique<CompileWorkers>(std::max(2u, std::thread::hardware_concurrency() / 4u), true);
+	}
+	return *m_optimize_workers;
 }
 
 // KYTY_PIPELINE_FAST_BUILD=0: a pipeline no cache holds is compiled optimized before its first use
@@ -1343,12 +1352,18 @@ void PipelineCache::BuildOptimized(Pipeline& pipeline, std::function<void(Pipeli
 	auto layouts       = pipeline;
 	layouts.pipeline   = nullptr;
 	layouts.optimized  = nullptr;
-	Workers().Push([this, optimized = pipeline.optimized, layouts, build = std::move(build)]() mutable {
+	OptimizeWorkers().Push([this, optimized = pipeline.optimized, layouts, build = std::move(build)]() mutable {
 		if (!m_stopping.load(std::memory_order_relaxed)) build(layouts);
 		optimized->pipeline = layouts.pipeline;
 		optimized->done.store(true, std::memory_order_release);
 		m_optimized_builds.fetch_add(1, std::memory_order_release);
+		MainPipelineDone();
 	});
+}
+
+void PipelineCache::PromoteFinished() {
+	Common::LockGuard lock(m_mutex);
+	PromoteOptimized();
 }
 
 // Finished optimized builds replace their pipelines in place, for every holder of the Pipeline
@@ -1378,6 +1393,12 @@ void PipelineCache::TablePipelineDone() {
 	m_table_pipeline_jobs.fetch_sub(1, std::memory_order_release);
 }
 
+// A pipeline was created with the main driver cache (the saver saves it once such compiles settle).
+void PipelineCache::MainPipelineDone() {
+	m_main_pipeline_last_done.store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_release);
+	m_main_pipelines_done.fetch_add(1, std::memory_order_release);
+}
+
 void PipelineCache::FinishCompileWorkers() {
 	m_table_cache_saver = {}; // (stops and joins it)
 	if (auto& prefetch = m_program_cache->prefetch; prefetch != nullptr) {
@@ -1389,6 +1410,7 @@ void PipelineCache::FinishCompileWorkers() {
 		prefetch.reset();
 	}
 	m_stopping.store(true, std::memory_order_relaxed);
+	m_optimize_workers.reset();
 	m_table_workers.reset();
 	m_compile_workers.reset();
 	if (m_unoptimized_builds != 0) {
@@ -1740,21 +1762,31 @@ void PipelineCache::InitializeDriverCache() {
 		LocalPlatform::MakeBackgroundThread(std::getenv("KYTY_RENDER_CPUS"));
 		std::mutex                  mutex;
 		std::condition_variable_any wake;
-		uint64_t                    saved = m_table_pipelines_done.load();
+		uint64_t                    saved      = m_table_pipelines_done.load();
+		uint64_t                    main_saved = m_main_pipelines_done.load();
+		const auto settled = [](const std::atomic<int64_t>& last_done) {
+			const auto last = std::chrono::steady_clock::time_point(
+			    std::chrono::steady_clock::duration(last_done.load(std::memory_order_acquire)));
+			return std::chrono::steady_clock::now() - last >= std::chrono::seconds(20);
+		};
 		while (!stop.stop_requested()) {
 			{
 				std::unique_lock lock(mutex);
 				wake.wait_for(lock, stop, std::chrono::seconds(5), [] { return false; });
 			}
-			// Once no table pipeline has compiled for 20 s (a burst of new pairs settled).
-			const auto done = m_table_pipelines_done.load(std::memory_order_acquire);
-			const auto last = std::chrono::steady_clock::time_point(
-			    std::chrono::steady_clock::duration(m_table_pipeline_last_done.load(std::memory_order_acquire)));
-			if (stop.stop_requested() || done == saved || m_table_pipeline_jobs.load(std::memory_order_acquire) != 0 ||
-			    std::chrono::steady_clock::now() - last < std::chrono::seconds(20))
-				continue;
-			std::lock_guard save(m_table_cache_mutex);
-			if (SaveDriverCache(m_table_cache, m_table_cache_path, m_table_cache_saved_size)) saved = done;
+			// Each cache once no pipeline has compiled into it for 20 s (a burst of new pairs or pipelines settled).
+			if (stop.stop_requested()) break;
+			if (const auto done = m_table_pipelines_done.load(std::memory_order_acquire);
+			    done != saved && m_table_pipeline_jobs.load(std::memory_order_acquire) == 0 &&
+			    settled(m_table_pipeline_last_done)) {
+				std::lock_guard save(m_table_cache_mutex);
+				if (SaveDriverCache(m_table_cache, m_table_cache_path, m_table_cache_saved_size)) saved = done;
+			}
+			if (const auto done = m_main_pipelines_done.load(std::memory_order_acquire);
+			    done != main_saved && settled(m_main_pipeline_last_done)) {
+				std::lock_guard save(m_main_cache_mutex);
+				if (SaveDriverCache(m_driver_cache, m_driver_cache_path, m_driver_cache_saved_size)) main_saved = done;
+			}
 		}
 	});
 }
@@ -1897,7 +1929,10 @@ bool PipelineCache::Save() {
 	else if (m_program_cache->warmup.Enabled()) PipelineCacheLog("Shader warmup: saved {} inputs and {} pipelines",
 	    m_program_cache->warmup.records.size(), m_program_cache->warmup.pipelines.size());
 	bool saved = inputs_saved;
-	if (m_driver_cache != nullptr) saved &= SaveDriverCache(m_driver_cache, m_driver_cache_path, m_driver_cache_saved_size);
+	if (m_driver_cache != nullptr) {
+		std::lock_guard main(m_main_cache_mutex);
+		saved &= SaveDriverCache(m_driver_cache, m_driver_cache_path, m_driver_cache_saved_size);
+	}
 	if (m_table_cache != nullptr) {
 		std::lock_guard table(m_table_cache_mutex);
 		saved &= SaveDriverCache(m_table_cache, m_table_cache_path, m_table_cache_saved_size);
@@ -2287,6 +2322,7 @@ PipelineCache::Pipeline* PipelineCache::CreateGraphicsPipelineImpl(
 			                       job->static_params, table ? TablePipelineCache() : m_driver_cache,
 			                       job->native_bindings);
 			if (table) TablePipelineDone();
+			else MainPipelineDone();
 			job->done.store(true, std::memory_order_release);
 		});
 		LiveCounters::Add(LiveCounters::AsyncPipelines);
@@ -2314,6 +2350,7 @@ PipelineCache::Pipeline* PipelineCache::CreateGraphicsPipelineImpl(
 	CreatePipelineInternal(m_graphics, *cached, rendering, key.vertex_input, vs_input_info,
 	                       vertex_program, ps_input_info, pixel_program, static_params,
 	                       m_driver_cache, native_bindings, FirstBuild());
+	MainPipelineDone();
 	LogPipelineTrace("CreatePipelineInternal done", vs_id, ps_id);
 
 	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
@@ -2379,6 +2416,7 @@ PipelineCache::CreateComputePipeline(const ShaderComputeInputInfo& input_info,
 	auto cached = std::make_unique<Pipeline>();
 	CreatePipelineInternal(m_graphics, *cached, input_info, compute_program.module, m_driver_cache,
 	                       FirstBuild());
+	MainPipelineDone();
 
 	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
 	EXIT_NOT_IMPLEMENTED(cached->pipeline_layout == nullptr);
