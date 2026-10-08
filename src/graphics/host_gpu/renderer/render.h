@@ -439,6 +439,7 @@ private:
 	void                         TableRuns(TablePair& pair);
 	void                         TableReset(TablePair& pair);
 	[[nodiscard]] bool           TableEvaluate(TablePair& pair, std::array<std::span<const uint32_t>, 2> user_data);
+	void                         TableGather(const TablePair& pair, std::array<std::span<const uint32_t>, 2> user_data);
 	[[nodiscard]] TableImageSet* TableSet(CommandBuffer& buffer, TablePair& pair, const TableVariant* variant,
 	                                      const NativeXprDrawState* draw_state);
 	[[nodiscard]] bool           TableBlocks(TablePair& pair, std::array<std::span<const uint32_t>, 2> user_data,
