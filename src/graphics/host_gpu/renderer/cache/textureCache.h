@@ -67,8 +67,15 @@ public:
 	// survive image registrations elsewhere (native XPR records): the owner is
 	// still registered, not being rebound, and has the same backing and resources.
 	// Also for a storage binding (an image a record's programs only write); a sampled image may have
-	// DCC metadata (whose pending fast clears FindTexture applies: the caller checks IsMetaCleared).
-	[[nodiscard]] bool IsSampledImageCurrent(ImageId id, const ImageDesc& desc);
+	// DCC metadata (whose pending fast clears FindTexture applies: the caller checks IsMetaCleared), and with
+	// `storage_dcc` one written as storage too.
+	[[nodiscard]] bool IsSampledImageCurrent(ImageId id, const ImageDesc& desc, bool storage_dcc = false);
+	// A depth image sampled through a view of its memory (FindImage takes it through ResolveDepthOverlap, a 32-bit
+	// float view of a D32S8 image having no format of the same class, or through its stencil plane's association): the
+	// lookup finds it again while no image was registered or unregistered over the view's pages since `epoch` (the same
+	// owners, whose descriptions do not change), and its use needs nothing of FindTexture but the LRU while no CPU,
+	// GPU-buffer or stencil-plane write is pending.
+	[[nodiscard]] bool IsSampledDepthCurrent(ImageId id, const ImageDesc& desc, uint64_t epoch);
 	// Whether a render target lookup of `requested` (FindImage, any format) still finds `id`: nothing
 	// registered over its first page since `epoch`, or no newer image with the requested backing there
 	// (it would take precedence). `epoch` moves to the current one when it holds.
@@ -296,6 +303,11 @@ private:
 	ImageEpochTable    m_registration_pages;
 	void               StampRegistrationPages(const Image& image, uint64_t epoch);
 	[[nodiscard]] bool RegistrationsSince(uint64_t address, uint64_t size, uint64_t epoch) const;
+	// FindTexture's PrepareDccClear with this view's metadata would change only the fields a color target binding
+	// fills (its clear word: no reader but the comparison that moves the meta epoch): the image's DCC surface is the
+	// view's and the metadata record there is DCC's (an unknown or pending one it would make DCC). A pending fast clear
+	// is the caller's check.
+	[[nodiscard]] bool SameDccSurface(const Image& image, const ImageMetadataInfo& metadata) const;
 	// KYTY_IMAGE_GRANULES: a bit per 64 KiB granule that a registered image covered
 	// since the last rebuild (a superset); region queries skip the page walk on a miss.
 	mutable std::vector<uint64_t> m_image_granules;

@@ -220,7 +220,10 @@ public:
 	void               ClearBufferModified() noexcept { m_buffer_modified = false; }
 
 	[[nodiscard]] bool IsStencilModified() const noexcept { return m_stencil_modified; }
-	void               MarkStencilModified() noexcept { m_stencil_modified = true; }
+	void               MarkStencilModified() noexcept {
+		m_stencil_modified = true;
+		MoveImageStateEpoch();
+	}
 	void               ClearStencilModified() noexcept { m_stencil_modified = false; }
 
 	[[nodiscard]] bool Overlaps(uint64_t address, uint64_t size,
