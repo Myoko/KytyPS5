@@ -1710,7 +1710,7 @@ bool RenderExecutor::TryDrawIndexRun(uint64_t submit_id, CommandBuffer& buffer,
 	m_context.GetCommandScheduler().PopPendingOperations();
 	LiveTrace::MarkAfter gpu_mark {[&] { return m_context.GetCommandScheduler().Current().RawHandle(); },
 	                               LiveTrace::MarkDraw, buffer.GetShaders().GetPs().ps_regs.data_addr};
-	Common::LockGuard lock(m_context.GetMutex());
+	RenderLockGuard lock(m_context.GetMutex());
 	const auto        mapping_epoch = m_context.GetGpuResources().MappingEpoch();
 	const auto        alias_epoch   = m_context.GetGpuResources().PreparationAliasEpoch();
 	if (!alias_epoch) return false;
@@ -2008,7 +2008,7 @@ bool RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 	                    args.index_count, 0, 1, args.instance_count,
 	                    reinterpret_cast<uint64_t>(args.index_addr));
 
-	Common::LockGuard lock(m_context.GetMutex());
+	RenderLockGuard lock(m_context.GetMutex());
 	if (args.index_count == 0 || args.instance_count == 0) {
 		return true;
 	}
@@ -2180,7 +2180,7 @@ bool RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
 	                    args.vertex_count, 0, args.first_vertex, args.instance_count,
 	                    args.first_instance);
 
-	Common::LockGuard lock(m_context.GetMutex());
+	RenderLockGuard lock(m_context.GetMutex());
 	if (args.vertex_count == 0 || args.instance_count == 0) {
 		return true;
 	}

@@ -390,10 +390,15 @@ void GpuResourceManager::EndSubmission() {
 		m_buffer_cache.ProcessFaultBuffer();
 	}
 	m_texture_cache.ProcessDownloadImages();
+	if (std::exchange(m_gpu_flip_pending, false)) RunCollectors();
 }
 
 void GpuResourceManager::AdvanceFrame() {
 	m_texture_cache.AdvanceFrame();
+	RunCollectors();
+}
+
+void GpuResourceManager::RunCollectors() {
 	// Collection runs per frame: per submission (dozens a frame here) its ages of 16 to 160 ticks
 	// were a few frames, and it deleted what the next frames used again.
 	m_texture_cache.RunGarbageCollector();

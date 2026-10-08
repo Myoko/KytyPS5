@@ -57,10 +57,16 @@ public:
 	bool PrepareBdaReadRanges(std::span<const GuestRange> ranges);
 	// After each completed submission: its shaders' fault records and the image downloads.
 	void               EndSubmission();
-	// Once per flip: the frame count and the garbage collection (its ages count frames).
+	// A flip the GPU makes (an end-of-pipe flip, all of Demon's Souls' frames): the collectors run at the end of its
+	// submission (EndSubmission), as AdvanceFrame runs them for a CPU flip. Since collection moved to the flips
+	// (81cd311) they never ran in the game, and a GPU under 32 GB filled up. (The texture cache's frame, which
+	// ResolveOverlap's stale-image test counts, still advances with CPU flips only: in this game it never did.)
+	void               NoteGpuFlip() { m_gpu_flip_pending = true; }
+	// Once per CPU flip: the frame count and the garbage collection (its ages count frames).
 	void               AdvanceFrame();
 
 private:
+	void                      RunCollectors();
 	[[nodiscard]] bool        TryInvalidateCpuWriteWindow(uint64_t fault);
 	void                      SynchronizeDirtyBdaRegions(GuestRange range);
 	void RefreshBdaRanges();
@@ -89,6 +95,7 @@ private:
 	std::atomic<uint64_t> m_preparation_alias_epoch {uint64_t{1} << 32};
 	bool                      m_fault_process_pending = false;
 	bool                      m_bda_used              = false;
+	bool                      m_gpu_flip_pending      = false;
 };
 
 } // namespace Libs::Graphics

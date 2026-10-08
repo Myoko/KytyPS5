@@ -399,7 +399,7 @@ bool RenderExecutor::TableContinue(CommandBuffer& buffer, std::span<const uint64
 	    emit.state != table.last_state || emit.pipeline != variant.pipeline)
 		return false;
 	// (The GPU thread's: a speculation's thread does not take it.)
-	std::optional<Common::LockGuard> lock;
+	std::optional<RenderLockGuard> lock;
 	if (Role() == 0) lock.emplace(m_context.GetMutex());
 	if (!NativeXprTargetsCurrent(*table.last_state)) return false;
 	if (TableDraw(buffer, *table.last_pair, variant, *table.last_state, commands, index_base, index_bytes, index_type,
@@ -1182,6 +1182,12 @@ RenderExecutor::TableResult RenderExecutor::TableDraw(CommandBuffer& buffer, Tab
 	const auto  stages = pair.programs[1] != nullptr ? 2u : 1u;
 	const std::array<std::span<const uint32_t>, 2> user_data {std::span<const uint32_t> {sh.GetVs().gs_user_sgpr.value},
 	                                                          std::span<const uint32_t> {sh.GetPs().ps_user_sgpr.value}};
+	// (The index buffer's held entry, a cold line of a 320 KiB table, loads while the tables are evaluated.)
+	if (index_base != 0) {
+		const auto* held = &table.indices[(index_base * 0x9e3779b97f4a7c15ull) >> 51u];
+		__builtin_prefetch(held);
+		__builtin_prefetch(reinterpret_cast<const char*>(held + 1) - 1);
+	}
 	std::optional<LiveCensus::Scope> phase;
 	phase.emplace(LiveCensus::DrawPhase, 0x7ab1e, 1);
 	if (!TableEvaluate(pair, user_data)) return Spec::Refuse("table: evaluation"), TableResult::Native;
@@ -1246,12 +1252,14 @@ RenderExecutor::TableResult RenderExecutor::TableDraw(CommandBuffer& buffer, Tab
 	};
 	std::array<vk::DeviceAddress, 2> blocks {};
 	bool                             writes = false;
+	// (Before the blocks, which it does not depend on (the slots TableEvaluate read): the entries TableGather asked
+	// for meanwhile arrive.)
+	TablePrepareBda(pair, user_data);
 	// The blocks take each buffer's device address as it resolves: a later lookup that registers a buffer (a merge
 	// replaces an earlier one) leaves an earlier address stale, where the normal path binds after all its lookups
 	// (RebindBuffers). Such a draw takes the normal path; the next use finds the buffers registered.
 	const auto registration = buffer_cache.RegistrationEpoch();
 	if (!TableBlocks(pair, user_data, blocks, &writes)) return Spec::Refuse("table: blocks"), TableResult::Native;
-	TablePrepareBda(pair, user_data);
 	phase.reset();
 	phase.emplace(LiveCensus::DrawPhase, 0x7ab1e, 9);
 	std::array<std::pair<Buffer*, uint64_t>, 64> arguments;
@@ -1692,9 +1700,9 @@ bool RenderExecutor::TableDispatch(CommandBuffer& buffer, uint32_t groups_x, uin
 	std::array<vk::DeviceAddress, 2> blocks {};
 	bool                             storage_writes = false;
 	auto&                            cache          = m_context.GetBufferCache();
+	TablePrepareBda(pair, user_data); // (as TableDraw's: before the blocks)
 	const auto                       registration   = cache.RegistrationEpoch(); // (as TableDraw's)
 	if (!TableBlocks(pair, user_data, blocks, &storage_writes)) return m_dispatch_declined = "table: blocks", false;
-	TablePrepareBda(pair, user_data);
 	vk::Buffer indirect_buffer = nullptr;
 	uint64_t   indirect_offset = 0;
 	if (indirect_args != 0) {

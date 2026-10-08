@@ -340,6 +340,11 @@ double NamedThreadsCpuSeconds(const char* name) {
 	return total;
 }
 
+bool FlushProcessWriteBuffers() {
+	::FlushProcessWriteBuffers();
+	return true;
+}
+
 bool CurrentThreadStack(uint64_t* low, uint64_t* high) {
 	ULONG_PTR stack_low = 0, stack_high = 0;
 	GetCurrentThreadStackLimits(&stack_low, &stack_high);
@@ -486,6 +491,10 @@ double NamedThreadsCpuSeconds(const char* name) {
 		closedir(dir);
 	}
 	return total;
+}
+
+bool FlushProcessWriteBuffers() {
+	return false;
 }
 
 bool CurrentThreadStack(uint64_t* low, uint64_t* high) {
