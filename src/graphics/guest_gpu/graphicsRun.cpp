@@ -773,6 +773,7 @@ void GuestGpu::ThreadRun(void* data) {
 	KYTY_PROFILER_THREAD("Thread_Gpu");
 	g_gpu_thread = true;
 	g_gpu_state  = gpu;
+	gpu->m_renderer.GetMutex().BecomeOwner();
 	BdaDirtyRegions::g_translating = true;
 	LiveTrace::g_mark_thread = true;
 	InitializePerformanceSwitches();
@@ -846,6 +847,7 @@ void GuestGpu::ThreadRun(void* data) {
 		}
 		if (should_stop) {
 			gpu->m_gfx_cp->BufferWait();
+			gpu->m_renderer.GetMutex().ResignOwner();
 			g_gpu_state  = nullptr;
 			g_gpu_thread = false;
 			return;
@@ -2442,7 +2444,7 @@ void CommandProcessor::EmitGlobalBarrier() {
 	}
 #endif
 
-	Common::LockGuard lock(m_renderer.GetMutex());
+	RenderLockGuard lock(m_renderer.GetMutex());
 
 	vk::MemoryBarrier2 barrier {};
 	barrier.srcStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
@@ -2467,7 +2469,7 @@ void CommandProcessor::BreakComputeChain() {
 	// Guest synchronization may be implemented without a host command.
 	// It still ends the compatibility profile's independent dispatch group.
 	if (!GetScheduler().Active()) return;
-	Common::LockGuard lock(m_renderer.GetMutex());
+	RenderLockGuard lock(m_renderer.GetMutex());
 	auto& buffer = CurrentBuffer();
 	if (buffer.ComputeChainPending()) (void)buffer.Handle();
 }

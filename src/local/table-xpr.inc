@@ -399,7 +399,7 @@ bool RenderExecutor::TableContinue(CommandBuffer& buffer, std::span<const uint64
 	    emit.state != table.last_state || emit.pipeline != variant.pipeline)
 		return false;
 	// (The GPU thread's: a speculation's thread does not take it.)
-	std::optional<Common::LockGuard> lock;
+	std::optional<RenderLockGuard> lock;
 	if (Role() == 0) lock.emplace(m_context.GetMutex());
 	if (!NativeXprTargetsCurrent(*table.last_state)) return false;
 	if (TableDraw(buffer, *table.last_pair, variant, *table.last_state, commands, index_base, index_bytes, index_type,

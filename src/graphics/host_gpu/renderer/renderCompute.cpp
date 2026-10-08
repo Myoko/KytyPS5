@@ -382,7 +382,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	                    sh_ctx.GetCs().cs_regs.data_addr);
 
 	// (The GPU thread's: a speculation's thread does not take it.)
-	std::optional<Common::LockGuard> lock;
+	std::optional<RenderLockGuard> lock;
 	if (Role() == 0) lock.emplace(m_context.GetMutex());
 	if (const auto* spec = Spec::Current(); spec != nullptr && spec->refused != nullptr) return;
 	if (sh_ctx.GetCs().cs_regs.data_addr == 0) {

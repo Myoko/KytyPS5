@@ -33,6 +33,10 @@ double NamedThreadsCpuSeconds(const char* name);
 // Stack bounds of the calling thread; false when unknown.
 bool CurrentThreadStack(uint64_t* low, uint64_t* high);
 
+// Each processor running a thread of the process serializes: their stores made visible, their later loads after
+// the caller's stores (the slow side of an asymmetric lock, RenderMutex). False where the host has no such call.
+bool FlushProcessWriteBuffers();
+
 // The calling thread kept off the CPUs of a list (KYTY_RENDER_CPUS; null or empty: any CPU); with
 // below-normal priority too: background work that must not hold up the game's threads.
 void AvoidCpuList(const char* avoid_cpus);

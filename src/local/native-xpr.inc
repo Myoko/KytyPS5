@@ -3107,7 +3107,7 @@ bool RenderExecutor::NativeXprDraw(CommandBuffer& buffer, const NativeXprDrawArg
 		return false;
 	auto& cache = *m_native_xpr;
 	m_context.GetCommandScheduler().PopPendingOperations();
-	Common::LockGuard lock(m_context.GetMutex());
+	RenderLockGuard lock(m_context.GetMutex());
 
 	NativeXprKey(buffer, cache.key);
 	const auto hash  = XXH3_64bits(cache.key.data(), cache.key.size() * sizeof(uint32_t));
@@ -3157,7 +3157,7 @@ bool RenderExecutor::NativeXprTry(CommandBuffer& buffer, bool clean, std::span<c
 		return false;
 	m_context.GetCommandScheduler().PopPendingOperations();
 	// (The GPU thread's: a speculation's thread does not take it.)
-	std::optional<Common::LockGuard> lock;
+	std::optional<RenderLockGuard> lock;
 	if (Role() == 0) lock.emplace(m_context.GetMutex());
 	NativeXprCollect();
 
