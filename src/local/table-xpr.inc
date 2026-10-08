@@ -200,7 +200,10 @@ struct RenderExecutor::TableXpr {
 	static constexpr size_t                           NoImageStartEntries = 1024;
 	std::array<std::pair<uint64_t, uint64_t>, NoImageStartEntries> no_image_start {};
 	uint64_t                          resolved_start = UINT64_MAX, resolved_mapping = UINT64_MAX;
-	std::vector<std::pair<std::array<uint32_t, 4>, ResolvedBuffer*>> entries; // a stage's V#s (TableDraw)
+	// Each stage's V#s and their entries (TableGather), gathered for `gathered` (the pair of the draw or dispatch being
+	// made, null once TableBlocks took them).
+	std::array<std::vector<std::pair<std::array<uint32_t, 4>, ResolvedBuffer*>>, 2> entries;
+	const TablePair*                                                                gathered = nullptr;
 	// A written V#'s range clamped to the mappings, and (`image_checked`) that no image starts at it, while `special`
 	// is the special generation (mappings and image starts as then): obtained as written at every use, its proofs
 	// (a memory lock and a texture cache lock and lookup) once (direct-mapped by the words).
@@ -272,6 +275,8 @@ static void TablePrefetchArrays(const Pair& pair, const Set* set) {
 		lines(form.image_counts);
 		lines(form.buffer_words);
 		lines(form.constants);
+		lines(pair.programs[st]->table_plan.buffers); // (TableBlocks' plan and resource flags of each V#)
+		lines(pair.programs[st]->info.buffers);
 	}
 	if (set != nullptr) {
 		__builtin_prefetch(set);
@@ -807,6 +812,46 @@ RenderExecutor::TableImageSet* RenderExecutor::TableSet(CommandBuffer& buffer, T
 // after its slots, in the table upload ring. A read-only V# is resolved once (TableXpr::resolved); a written one
 // is obtained as written at every use, as the normal path's NativeStorageBuffer (the buffer cache tracks the GPU's
 // writes). False: a buffer the shaders cannot take.
+// The V#s' words and their resolved entries (TableXpr::entries), as soon as TableEvaluate made the slots they are read
+// from: the entries' lines (a 4 MiB direct-mapped table: TLB misses too) load while the image set is found (TableSet).
+void RenderExecutor::TableGather(const TablePair& pair, std::array<std::span<const uint32_t>, 2> user_data) {
+	using Kind        = ShaderRecompiler::IR::TablePlan::Operand::Kind;
+	auto&      table  = OwnTable();
+	const auto stages = pair.programs[1] != nullptr ? 2u : 1u;
+	for (uint32_t st = 0; st < stages; ++st) {
+		const auto& program = *pair.programs[st];
+		const auto& plan    = program.table_plan;
+		const auto& block   = table.blocks[st];
+		auto&       entries = table.entries[st];
+		entries.resize(plan.buffers.size());
+		const auto& form = pair.flat[st];
+		const bool  flat = form.buffer_words.size() == 4 * plan.buffers.size() && user_data[st].size() >= form.user_words &&
+		                  user_data[st].size() <= 64;
+		const std::array<const uint32_t*, 3> bases {user_data[st].data(), block.data(), form.constants.data()};
+		for (size_t i = 0; i < plan.buffers.size(); ++i) {
+			auto& [words4, entry] = entries[i];
+			if (flat) {
+				for (uint32_t w = 0; w < 4; ++w) {
+					const auto& operand = form.buffer_words[4 * i + w];
+					words4[w]           = bases[operand.base][operand.index];
+				}
+			} else {
+				for (uint32_t w = 0; w < 4; ++w) {
+					const auto& operand = plan.buffers[i][w];
+					words4[w] = operand.kind == Kind::Immediate ? operand.value
+					            : operand.kind == Kind::Slot    ? block[operand.value]
+					            : operand.value - program.user_data_base < user_data[st].size()
+					                ? user_data[st][operand.value - program.user_data_base]
+					                : 0;
+				}
+			}
+			entry = &table.resolved[XXH3_64bits(words4.data(), sizeof(words4)) & (TableXpr::ResolvedEntries - 1)];
+			__builtin_prefetch(entry);
+		}
+	}
+	table.gathered = &pair;
+}
+
 bool RenderExecutor::TableBlocks(TablePair& pair, std::array<std::span<const uint32_t>, 2> user_data,
                                  std::array<vk::DeviceAddress, 2>& blocks, bool* writes) {
 	using Kind         = ShaderRecompiler::IR::TablePlan::Operand::Kind;
@@ -896,38 +941,13 @@ bool RenderExecutor::TableBlocks(TablePair& pair, std::array<std::span<const uin
 		       (!resource.formatted || resource.descriptor_format == Prospero::BufferFormat::kInvalid ||
 		        (descriptor.Format() == resource.descriptor_format && descriptor.DstSelXYZW() == resource.descriptor_swizzle));
 	};
+	if (table.gathered != &pair) TableGather(pair, user_data);
+	table.gathered = nullptr; // (taken: a later draw or dispatch gathers its own)
 	for (uint32_t st = 0; st < stages; ++st) {
 		const auto& program = *pair.programs[st];
 		const auto& plan    = program.table_plan;
 		auto&       block   = table.blocks[st];
-		// The V#s' words and entries first: the entries' lines load together. (The flat form, TablePair::flat, as
-		// TableEvaluate takes it: every word one load.)
-		auto& entries = table.entries;
-		entries.resize(plan.buffers.size());
-		const auto& form = pair.flat[st];
-		const bool  flat = form.buffer_words.size() == 4 * plan.buffers.size() && user_data[st].size() >= form.user_words &&
-		                  user_data[st].size() <= 64;
-		const std::array<const uint32_t*, 3> bases {user_data[st].data(), block.data(), form.constants.data()};
-		for (size_t i = 0; i < plan.buffers.size(); ++i) {
-			auto& [words4, entry] = entries[i];
-			if (flat) {
-				for (uint32_t w = 0; w < 4; ++w) {
-					const auto& operand = form.buffer_words[4 * i + w];
-					words4[w]           = bases[operand.base][operand.index];
-				}
-			} else {
-				for (uint32_t w = 0; w < 4; ++w) {
-					const auto& operand = plan.buffers[i][w];
-					words4[w] = operand.kind == Kind::Immediate ? operand.value
-					            : operand.kind == Kind::Slot    ? block[operand.value]
-					            : operand.value - program.user_data_base < user_data[st].size()
-					                ? user_data[st][operand.value - program.user_data_base]
-					                : 0;
-				}
-			}
-			entry = &table.resolved[XXH3_64bits(words4.data(), sizeof(words4)) & (TableXpr::ResolvedEntries - 1)];
-			__builtin_prefetch(entry);
-		}
+		auto&       entries = table.entries[st];
 		// The buffers it writes first: a range it also reads through another V# is GPU-written by then, as the
 		// normal path's second lookup (RebindBuffers) sees it (not a copy of the guest's bytes in the ring).
 		for (size_t n = 0; n < 2 * plan.buffers.size(); ++n) {
@@ -1148,6 +1168,7 @@ RenderExecutor::TableResult RenderExecutor::TableDraw(CommandBuffer& buffer, Tab
 	std::optional<LiveCensus::Scope> phase;
 	phase.emplace(LiveCensus::DrawPhase, 0x7ab1e, 1);
 	if (!TableEvaluate(pair, user_data)) return Spec::Refuse("table: evaluation"), TableResult::Native;
+	TableGather(pair, user_data);
 	phase.reset();
 	phase.emplace(LiveCensus::DrawPhase, 0x7ab1e, 2);
 	const auto* set = TableSet(buffer, pair, &variant, &draw_state);
@@ -1643,6 +1664,7 @@ bool RenderExecutor::TableDispatch(CommandBuffer& buffer, uint32_t groups_x, uin
 	std::optional<LiveCensus::Scope> phase;
 	phase.emplace(LiveCensus::DrawPhase, 0x7ab1f, 1);
 	if (!TableEvaluate(pair, user_data)) return m_dispatch_declined = "table: tables unmapped", false;
+	TableGather(pair, user_data);
 	phase.reset();
 	phase.emplace(LiveCensus::DrawPhase, 0x7ab1f, 2);
 	const auto* set = TableSet(buffer, pair, nullptr, nullptr);
