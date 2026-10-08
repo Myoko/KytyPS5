@@ -14,6 +14,7 @@
 
 #include <array>
 #include <atomic>
+#include <deque>
 #include <map>
 #include <memory>
 #include <shared_mutex>
@@ -323,22 +324,22 @@ private:
 	// at or before the current tick); entries the GPU completed are dropped from the front.
 	struct GpuWrite {
 		uint64_t begin, end, tick;
-		bool     big = false; // spans more granules than GpuWriteSpan: not counted in m_gpu_write_granules
+		bool     big = false; // spans more granules than GpuWriteSpan: in m_gpu_big_writes, not m_gpu_write_last
 	};
-	// The writes from m_gpu_writes_head on, per 64 KiB granule (hashed into the counters; a write over more than
-	// GpuWriteSpan granules counts in m_gpu_writes_big instead): a range whose granules count none (and with no big
-	// write) overlaps no in-flight write, without a walk of the log (thousands of entries a frame at 1-1).
+	// Per 64 KiB granule (hashed into the counters), 1 + the number (m_gpu_writes_base + index) of the last small write
+	// there; a write over more than GpuWriteSpan granules is in m_gpu_big_writes instead. The in-flight writes are the
+	// log's tail: a range whose granules' last write completed overlaps no in-flight small write, and the walk for one
+	// that may starts at that last write, not at the log's end (thousands of entries a frame at 1-1). (Counting the
+	// writes per granule, up at each write and down at its completion, cost a random read-modify-write per granule.)
 	static constexpr uint32_t   GpuWriteGranuleBits = 16, GpuWriteCounters = 1u << 16u, GpuWriteSpan = 64;
-	std::unique_ptr<uint32_t[]> m_gpu_write_granules = std::make_unique<uint32_t[]>(GpuWriteCounters);
-	size_t                      m_gpu_writes_big     = 0;
-	// Per counter, 1 + the number (m_gpu_writes_base + index) of the last write counted there: no later write touches
-	// those granules, so the walk for a range starts at its granules' last one, not at the log's end.
 	std::unique_ptr<uint64_t[]> m_gpu_write_last = std::make_unique<uint64_t[]>(GpuWriteCounters);
+	// The numbers of the big writes, oldest first (the completed ones dropped at queries): a query looks for an
+	// overlapping one in them (one in flight, a 4-8 MiB copy every frame, made every query walk the log from its end).
+	std::deque<uint64_t>        m_gpu_big_writes;
 	uint64_t                    m_gpu_writes_base = 0; // the number of m_gpu_writes[0]
 	[[nodiscard]] static uint32_t GpuWriteCounter(uint64_t granule) {
 		return static_cast<uint32_t>((granule * 0x9e3779b97f4a7c15ull) >> (64u - 16u));
 	}
-	void CountGpuWrite(const GpuWrite& write, int32_t delta);
 	void ResetGpuWrites();
 	void                  NoteGpuWrite(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] uint64_t InflightWriteTick(uint64_t begin, uint64_t end, uint64_t completed,
