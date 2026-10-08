@@ -248,6 +248,37 @@ void RenderExecutor::DropStaleCatalog() {
 	table.last_set   = nullptr;
 }
 
+// A table draw's or dispatch's pair: each draw's pair is another, cold, object and its evaluation
+// walks a dozen arrays one after the other (runs, operands, V# words, constants, the last image set's words). Their
+// lines are asked for once the pair is known (its own lines first: the vectors' headers), so the misses overlap the
+// checks before the evaluation instead of following each other (1-1 spin, per call: table draw path 1.78 -> 1.68 us,
+// table dispatch path 2.96 -> 2.86 us).
+template <typename Pair>
+static void TablePrefetchPair(const Pair& pair) {
+	for (size_t line = 0; line < sizeof(Pair); line += 64) __builtin_prefetch(reinterpret_cast<const char*>(&pair) + line);
+}
+template <typename Pair, typename Set>
+static void TablePrefetchArrays(const Pair& pair, const Set* set) {
+	const auto lines = [](const auto& items) {
+		const auto* at    = reinterpret_cast<const char*>(items.data());
+		const auto  bytes = std::min<size_t>(items.size() * sizeof(*items.data()), 256);
+		for (size_t offset = 0; offset < bytes; offset += 64) __builtin_prefetch(at + offset);
+	};
+	for (uint32_t st = 0; st < 2 && pair.programs[st] != nullptr; ++st) {
+		const auto& form = pair.flat[st];
+		lines(form.runs);
+		lines(form.level_ends);
+		lines(form.image_words);
+		lines(form.image_counts);
+		lines(form.buffer_words);
+		lines(form.constants);
+	}
+	if (set != nullptr) {
+		__builtin_prefetch(set);
+		lines(set->words);
+	}
+}
+
 RenderExecutor::TableResult RenderExecutor::TableTry(CommandBuffer& buffer, std::span<const uint64_t> commands,
                                                      uint64_t index_base, uint64_t index_bytes,
                                                      vk::IndexType index_type, const NativeXprDirectDraw* direct) {
@@ -288,6 +319,7 @@ RenderExecutor::TableResult RenderExecutor::TableTry(CommandBuffer& buffer, std:
 		if (own != nullptr) cached = {pair_hash, known};
 	}
 	auto& pair = *known;
+	TablePrefetchPair(pair);
 	if (pair.vs != vs_address || pair.ps != ps_address || pair.start_instance != vs.start_instance_user_sgpr)
 		return Spec::Refuse("table: pair key"), TableResult::Native;
 	if (const auto generation = ShaderMapGeneration(); generation != pair.generation[Role()]) {
@@ -340,6 +372,7 @@ RenderExecutor::TableResult RenderExecutor::TableTry(CommandBuffer& buffer, std:
 		cache.last_state     = state_it->second.get();
 	}
 	const auto& draw_state = *cache.last_state;
+	TablePrefetchArrays(pair, pair.last_set[Role()]);
 	if (!NativeXprTargetsCurrent(draw_state)) return LiveCounters::Add(LiveCounters::TableStoreTargets), request_store();
 	return TableDraw(buffer, pair, *variant, draw_state, commands, index_base, index_bytes, index_type, direct);
 }
@@ -1529,6 +1562,7 @@ bool RenderExecutor::TableDispatch(CommandBuffer& buffer, uint32_t groups_x, uin
 		return m_dispatch_declined = found->second.special != nullptr ? found->second.special : "dispatch: refused", false;
 	if ((Role() == 0 && found->second.sightings < 2) || found->second.vs != cs.cs_regs.data_addr) return false;
 	auto& pair = found->second;
+	TablePrefetchPair(pair);
 	LiveCensus::Scope census(LiveCensus::DrawPhase, 0x7ab1f, 0); // census: the dispatches' phases (b)
 	// The dispatch executor's sets retire here too (NativeXprTry collects only the draw executor's): without it they
 	// were never reused or freed, a new pool every 1024.
@@ -1553,6 +1587,7 @@ bool RenderExecutor::TableDispatch(CommandBuffer& buffer, uint32_t groups_x, uin
 		if (!pair.waiting->load(std::memory_order_acquire)) return false;
 		pair.waiting.reset();
 	}
+	TablePrefetchArrays(pair, pair.last_set[Role()]);
 	auto& pipelines = m_context.GetPipelineCache();
 	if (Spec::Current() != nullptr && (pair.programs[0] == nullptr || pair.pipeline == nullptr))
 		return Spec::Refuse("table program"), false;
