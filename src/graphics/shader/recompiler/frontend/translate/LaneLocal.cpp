@@ -403,6 +403,32 @@ private:
 		}
 	}
 
+	// The scalar registers source `s` names: whole descriptors and address pairs, 64-bit operands.
+	static uint32_t SourceWidth(const Instruction& inst, uint32_t s) {
+		switch (inst.family) {
+			case Family::SMEM: return s == 0 ? (magic_enum::enum_name(inst.opcode).starts_with("S_BUFFER_") ? 4u : 2u) : 1u;
+			case Family::MUBUF:
+			case Family::MTBUF: return s == 1 ? 4u : 1u;
+			case Family::MIMG: {
+				// (The sampler: only an instruction that samples reads it.)
+				const auto name = magic_enum::enum_name(inst.opcode);
+				const bool sampler =
+				    name.starts_with("IMAGE_SAMPLE") || name.starts_with("IMAGE_GATHER") || name == "IMAGE_GET_LOD";
+				return s == 1 ? (inst.image_r128 ? 4u : 8u) : s == 2 ? (sampler ? 4u : 0u) : 1u;
+			}
+			case Family::FLAT: return 2u;
+			default: return static_cast<int>(s) == LaneSelectSource(inst) || NameHas64(inst.opcode) ? 2u : 1u;
+		}
+	}
+
+	// Whether one of the `count` scalar registers from the operand's holds a lane mask.
+	static bool MaskIn(const Operand& operand, uint32_t count, const State& state) {
+		const auto reg = ScalarIndex(operand);
+		for (uint32_t k = 0; reg >= 0 && k < count && reg + static_cast<int>(k) < 128; ++k)
+			if (state.mask.test(static_cast<size_t>(reg) + k)) return true;
+		return false;
+	}
+
 	// The lane-select source of a VALU instruction (a mask there selects per lane), or -1.
 	static int LaneSelectSource(const Instruction& inst) {
 		switch (inst.opcode) {
@@ -599,8 +625,14 @@ private:
 				if (inst.dst.kind == OperandKind::Vgpr) {
 					const bool uniform = LaneSelectSource(inst) < 0 && inst.opcode != Opcode::V_PERMLANE16_B32 &&
 					                     inst.opcode != Opcode::V_PERMLANEX16_B32 && UniformSources(inst, before);
-					const uint32_t count = NameHas64(inst.opcode) ? 2u : 1u;
-					for (uint32_t k = 0; k < count && inst.dst.reg + k < 256; ++k) state.uniform.set(inst.dst.reg + k, uniform);
+					// (A write of part of the register keeps the rest: an SDWA selection, a 16-bit result (names with
+					// 16, but packed ones).)
+					const auto     name    = magic_enum::enum_name(inst.opcode);
+					const bool     partial = inst.dst.sdwa_sel != 6u ||
+					                     (name.find("16") != std::string_view::npos && !name.starts_with("V_PK_"));
+					const uint32_t count   = NameHas64(inst.opcode) ? 2u : 1u;
+					for (uint32_t k = 0; k < count && inst.dst.reg + k < 256; ++k)
+						state.uniform.set(inst.dst.reg + k, uniform && (!partial || before.uniform.test(inst.dst.reg + k)));
 				}
 				break;
 			}
@@ -708,7 +740,7 @@ private:
 			case Family::FLAT:
 			case Family::MIMG:
 				for (uint32_t s = 0; s < 4; ++s)
-					if (is_mask(*Source(inst, s))) return "a lane mask used as an address or resource";
+					if (MaskIn(*Source(inst, s), SourceWidth(inst, s), state)) return "a lane mask used as an address or resource";
 				break;
 			case Family::VOP1:
 			case Family::VOP2:
@@ -747,25 +779,10 @@ private:
 			for (uint32_t k = 0; reg >= 0 && k < count && reg + static_cast<int>(k) < 128; ++k)
 				uses.set(static_cast<size_t>(reg) + k);
 		};
-		const uint32_t wide   = NameHas64(inst.opcode) ? 2u : 1u;
-		const int      select = LaneSelectSource(inst);
 		for (uint32_t s = 0; s < 4; ++s) {
 			const auto& source = *Source(inst, s);
 			if (source.kind == OperandKind::Scc) uses.set(Scc);
-			uint32_t width = wide;
-			switch (inst.family) {
-				case Family::SMEM:
-					width = s == 0 ? (magic_enum::enum_name(inst.opcode).starts_with("S_BUFFER_") ? 4u : 2u) : 1u;
-					break;
-				case Family::MUBUF:
-				case Family::MTBUF: width = s == 1 ? 4u : 1u; break;
-				case Family::MIMG: width = s == 1 ? (inst.image_r128 ? 4u : 8u) : s == 2 ? 4u : 1u; break;
-				case Family::FLAT: width = 2u; break;
-				default:
-					if (static_cast<int>(s) == select) width = 2u;
-					break;
-			}
-			add(ScalarIndex(source), width);
+			add(ScalarIndex(source), SourceWidth(inst, s));
 		}
 		if (ReadsScc(inst.opcode)) uses.set(Scc);
 		if (inst.opcode == Opcode::S_CBRANCH_VCCZ || inst.opcode == Opcode::S_CBRANCH_VCCNZ ||

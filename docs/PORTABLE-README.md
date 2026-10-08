@@ -27,7 +27,6 @@ game's `sce_sys\param.json` and warns when the version is not one of these.
 | RAM | **32 GB or more** | The game process keeps about 18–20 GB in RAM and needs about 34 GB of RAM plus page file: keep the page file "system managed" (the launcher warns when Windows cannot provide it) |
 | GPU | NVIDIA RTX with **12 GB of VRAM or more** | About 11 GB of VRAM in use; the test PC has an RTX 5090; AMD/Intel GPUs are untested |
 | GPU driver | The latest | The emulator uses Vulkan, which comes with the driver |
-| Python | Python 3 with numpy (`winget install Python.Python.3.12`, then `pip install numpy`) | Lists the game's shaders from its files at the first launch, for the shader preparation and the precompile; without it the game compiles each shader when it first appears (stutters) |
 | Disk | About 83 GB for the game, an SSD recommended | The emulator takes about 270 MB, the shader caches up to about 2.5 GB, and while playing the system temp folder needs another 4–5 GB |
 
 On the test PC (i9-14900K + RTX 5090, 2560×1440 window) the game runs at roughly 42–60 fps: about
@@ -72,8 +71,7 @@ Or **double-click `run.cmd`** to start with the default settings (do not double-
 The first launch goes like this:
 
 1. Choose the game folder (see above).
-2. The console lists the game's shaders from its files (once, about 20 seconds; it needs Python 3
-   with numpy, see the system requirements).
+2. The console lists the game's shaders from its files (once; nothing to install for it).
 3. A dialog shows whether the game version is a supported one and offers to precompile the shaders
    first (see the next section).
 4. The console window makes the input files for the background shader preparation (once per

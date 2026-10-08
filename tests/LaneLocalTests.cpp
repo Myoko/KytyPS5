@@ -99,6 +99,15 @@ const Case Cases[] = {
     {"layout_dead", "", {0x7d8a0080, 0x87ea6a00, 0xbf810000}},
     // the same; v_cndmask_b32 v1, 0, v2 (selected by it)
     {"layout_select", "a lane select from the wave's layout", {0x7d8a0080, 0x87ea6a00, 0x02020480, 0xbf810000}},
+    // (Without v_cmpx.) v_cmp_ne_u32 vcc, 0, v0; s_mov_b64 s[10:11], vcc; buffer_load_dword v1, v2, s[8:11], 0 idxen
+    // (a mask as the V#'s third word)
+    {"vsharp_mask", "a lane mask used as an address", {0x7d8a0080, 0xbe8a046a, 0xe0302000, 0x80020102, 0xbf810000}},
+    // s_mov_b64 s[0:1], exec; image_load v1, v[2:3], s[4:11], s[0:3] dmask:0x1 dim:2d (no sampler read)
+    {"sampler_unused", "", {0xbe80047e, 0xf0000108, 0x00010102, 0xbf810000}},
+    // v_mov_b32 v1, v0; v_mov_b32 v2, s5; v_add_f16 v1, s4, v2 (v1's high half stays); v_readfirstlane_b32 s6, v1
+    {"half16", "V_READFIRSTLANE of a lane value", {0x7e020300, 0x7e040205, 0x64020404, 0x7e0c0501, 0xbf810000}},
+    // the same with v_add_f32
+    {"half32", "", {0x7e020300, 0x7e040205, 0x06020404, 0x7e0c0501, 0xbf810000}},
 };
 
 } // namespace
