@@ -19,7 +19,7 @@
 extern "C" {
 // KYTY_BUFFER_RECLAIM: 1: a retired buffer's memory is freed on a worker thread. Freeing a
 // dedicated allocation is a kernel call (~0.1 ms on Windows) the render thread paid for every
-// buffer the cache retired while the game streams. VMA synchronizes internally, and a buffer
+// such buffer the cache retired while the game streams. VMA synchronizes internally, and a buffer
 // is destroyed only after the GPU is done with it.
 [[gnu::used]] volatile std::atomic<uint32_t> kyty_local_buffer_reclaim_mode {0};
 }
@@ -150,12 +150,13 @@ Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsag
 		buffer_info.pQueueFamilyIndices   = families;
 	}
 
-	const bool with_bda = bool(flags & vk::BufferUsageFlagBits::eShaderDeviceAddress);
-	const VmaAllocationCreateFlags bda_flag =
-	    with_bda ? VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT : 0;
+	// A buffer with device addresses is placed in VMA's blocks as any other (the allocator is made with buffer device
+	// addresses; VMA itself gives a big one its own memory). Each its own allocation, as before, cost a kernel call:
+	// ~100 us a buffer (2.4 us placed), 8400 buffers while a save loads and 100-400 in a frame where the game streams
+	// a new area.
+	const bool              with_bda = bool(flags & vk::BufferUsageFlagBits::eShaderDeviceAddress);
 	VmaAllocationCreateInfo allocation_info {};
-	allocation_info.flags =
-	    VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | bda_flag | AllocationFlags(usage);
+	allocation_info.flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | AllocationFlags(usage);
 	allocation_info.usage = AllocationUsage(usage);
 	allocation_info.preferredFlags = usage == MemoryUsage::DeviceLocal
 	                                     ? VkMemoryPropertyFlags {}
