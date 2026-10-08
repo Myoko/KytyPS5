@@ -2195,10 +2195,21 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 	return result;
 }
 
-bool TextureCache::IsSampledImageCurrent(ImageId id, const ImageDesc& desc) {
+bool TextureCache::SameDccSurface(const Image& image, const ImageMetadataInfo& metadata) const {
+	const auto& held = image.info.metadata;
+	if (held.kind != metadata.kind || !(held.range == metadata.range) || held.compression != metadata.compression) {
+		return false;
+	}
+	const auto entry = m_surface_metas.find(metadata.range.address);
+	return entry != m_surface_metas.end() && entry->second.type == MetaDataInfo::Type::Dcc;
+}
+
+bool TextureCache::IsSampledImageCurrent(ImageId id, const ImageDesc& desc, bool storage_dcc) {
 	std::scoped_lock lock {m_lock};
-	// A sampled DCC image keeps the metadata FindTexture gave it (its user checks for a pending clear).
-	const bool dcc = desc.type == BindingType::Texture && desc.info.metadata.kind == ImageMetadataKind::Dcc;
+	// A DCC image keeps the surface FindTexture gave it (its user checks for a pending clear): sampled, or written as
+	// storage by a caller that checks at every use too.
+	const bool dcc = (desc.type == BindingType::Texture || (storage_dcc && desc.type == BindingType::Storage)) &&
+	                 desc.info.metadata.kind == ImageMetadataKind::Dcc;
 	if (m_scheduler.Current().IsInvalid() || (desc.type != BindingType::Texture && desc.type != BindingType::Storage) ||
 	    desc.info.data.Empty() || desc.info.IsDepth() || (desc.info.HasMetadata() && !dcc) ||
 	    desc.info.HasStencil() || desc.info.tile_mode == Prospero::TileMode::kDepth) {
@@ -2207,10 +2218,40 @@ bool TextureCache::IsSampledImageCurrent(ImageId id, const ImageDesc& desc) {
 	auto* image = m_slot_images.try_get(id);
 	if (image == nullptr || !image->registered || image->depth_id ||
 	    image->binding.needs_rebind || image->info.IsDepth() || (image->info.HasMetadata() && !dcc) ||
-	    (dcc && !(image->info.metadata == desc.info.metadata)) ||
+	    (dcc && !SameDccSurface(*image, desc.info.metadata)) ||
 	    image->info.HasStencil() || !SameBacking(image->info, desc.info, true) ||
 	    !(image->info.resources == desc.info.resources)) {
 		return false;
+	}
+	if (Spec::Current() == nullptr) image->frame_accessed_last = m_frame.load(std::memory_order_relaxed);
+	TouchImage(*image);
+	return true;
+}
+
+bool TextureCache::IsSampledDepthCurrent(ImageId id, const ImageDesc& desc, uint64_t epoch) {
+	std::scoped_lock lock {m_lock};
+	// (A DCC view would ask PrepareDccClear for work.)
+	auto* image = m_slot_images.try_get(id);
+	if (m_scheduler.Current().IsInvalid() || desc.type != BindingType::Texture || desc.info.data.Empty() ||
+	    desc.info.metadata.kind == ImageMetadataKind::Dcc || image == nullptr || !image->registered || image->depth_id ||
+	    image->binding.needs_rebind || !image->info.IsDepth() || image->IsCpuDirty() || image->IsBufferModified() ||
+	    image->IsStencilModified() || RegistrationsSince(desc.info.data.address, desc.info.data.size, epoch)) {
+		return false;
+	}
+	// A view of the stencil plane: the lookup finds the plane's association (one per address: AssociateStencil reuses
+	// it), which leads to the depth image the last depth target binding with that plane was given, without registering
+	// anything: the same while the one association there leads to this image.
+	if (image->info.data.address != desc.info.data.address) {
+		if (!image->info.HasStencil() || image->info.stencil.address != desc.info.data.address) return false;
+		uint32_t associations = 0;
+		bool     leads_here   = false;
+		for (const auto association: m_stencil_associations) {
+			const auto* record = m_slot_images.try_get(association);
+			if (record == nullptr || !record->registered || record->info.data.address != desc.info.data.address) continue;
+			++associations;
+			leads_here = record->depth_id == id;
+		}
+		if (associations != 1 || !leads_here) return false;
 	}
 	if (Spec::Current() == nullptr) image->frame_accessed_last = m_frame.load(std::memory_order_relaxed);
 	TouchImage(*image);

@@ -421,6 +421,8 @@ RenderExecutor::TableImageSet* RenderExecutor::TableResolveSet(CommandBuffer& bu
 	if (Spec::Current() != nullptr) return Spec::Refuse("table image set"), nullptr;
 	auto       set      = std::make_unique<TableImageSet>();
 	auto&      textures = m_context.GetTextureCache();
+	// (Before the lookups: a registration they make over a depth image's pages is one IsSampledDepthCurrent sees.)
+	const auto epoch    = textures.ResolutionEpoch();
 	auto&      buffers  = m_context.GetBufferCache();
 	const auto stages   = pair.programs[1] != nullptr ? 2u : 1u;
 	const auto& sh      = buffer.GetShaders();
@@ -602,9 +604,15 @@ RenderExecutor::TableImageSet* RenderExecutor::TableResolveSet(CommandBuffer& bu
 		                                                    , LocalVulkanRecording::DirectDispatch()
 #endif
 		);
-	set->resolution_epoch[0] = textures.ResolutionEpoch();
+	set->resolution_epoch[0] = epoch;
 	LiveCounters::Add(LiveCounters::TableEvaluations);
 	return publish();
+}
+
+// What FindTexture's RefreshImage uploads before an image is used: guest bytes the CPU wrote, a GPU buffer write over
+// them, or one over its stencil plane.
+static bool TableRefreshPending(const Image& image) {
+	return image.IsCpuDirty() || image.IsBufferModified() || image.IsStencilModified();
 }
 
 // A set's images are the same objects, registered and current (as NativeXprValidateResources proves a record's):
@@ -617,20 +625,28 @@ bool RenderExecutor::TableValidateSet(TableImageSet& set) {
 	for (const auto& dep: set.images) {
 		auto* image = textures.m_slot_images.try_get(dep.id);
 		if (image == nullptr || image->serial != dep.serial) return false;
-		// The guest rewrote it (a texture streaming in): upload it as the normal path's FindTexture does.
-		if (image->IsCpuDirty()) {
+		// The guest rewrote it (a texture streaming in), or a GPU buffer write its bytes or its stencil plane: upload it
+		// as the normal path's FindTexture does.
+		if (TableRefreshPending(*image)) {
 			if (Spec::Current() != nullptr) return Spec::Refuse("texture upload"), false;
 			if (!image->registered || image->depth_id || image->binding.needs_rebind) return false;
 			(void)textures.FindTexture(dep.id, dep.desc);
 			image = textures.m_slot_images.try_get(dep.id);
-			if (image == nullptr || image->serial != dep.serial || image->IsCpuDirty()) return false;
+			if (image == nullptr || image->serial != dep.serial || TableRefreshPending(*image)) return false;
 		}
 		if (dep.target) {
 			if (!image->registered || image->binding.needs_rebind) return false;
 			(void)textures.GetImage(dep.id); // LRU
 			continue;
 		}
-		if (!textures.IsSampledImageCurrent(dep.id, dep.desc)) return false; // (and its LRU, as FindTexture's)
+		// (And its LRU, as FindTexture's. A DCC image written as storage, a downsampling chain's levels: TableTransit
+		// checks its pending clears at every use, as a sampled one's.) A depth image sampled as a texture (the scene's
+		// depth and stencil read by lighting and post passes: at 1-1 their sets were made again every other frame) is
+		// found by other rules than a texture's: the proof is that nothing was registered over its view since the set
+		// was last proven (or made).
+		if (!textures.IsSampledImageCurrent(dep.id, dep.desc, true) &&
+		    !textures.IsSampledDepthCurrent(dep.id, dep.desc, set.resolution_epoch[Role()]))
+			return false;
 	}
 	set.validated_frame[Role()]  = frame;
 	set.resolution_epoch[Role()] = textures.ResolutionEpoch();
@@ -1128,8 +1144,9 @@ bool RenderExecutor::TableTransit(const TableImageSet& set, vk::CommandBuffer vk
 			return false;
 		if (is_target) continue;
 		// An image the shader writes is GPU-modified, CPU-clean and current with buffer writes (as the normal path's
-		// FindTexture leaves a storage image: it acquires it again otherwise).
-		if (dep.storage && !image->SafeToDownload()) return false;
+		// FindTexture leaves a storage image: it acquires it again otherwise). One written since the set was proven this
+		// frame (by the CPU, a GPU buffer write, or into its stencil plane) is uploaded by the normal path's FindTexture.
+		if ((dep.storage && !image->SafeToDownload()) || TableRefreshPending(*image)) return false;
 		if (dep.desc.info.metadata.kind == ImageMetadataKind::Dcc) {
 			if (image->info.IsVolume()) return false;
 			const auto address = dep.desc.info.metadata.range.address;
