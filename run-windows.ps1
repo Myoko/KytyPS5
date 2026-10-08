@@ -356,20 +356,16 @@ $tool = Join-Path (Split-Path $Exe) 'kyty_shader_precompile.exe'
 # The seed file of this game version (Rename-TitleCaches).
 $seedName = if ($param -and $titleId -and $param.contentVersion) { "seeds-$($titleId)_$($param.contentVersion).seeds" } else { 'seeds.seeds' }
 $seeds = @("$PSScriptRoot\$seedName", "$PSScriptRoot\_Build\static-precompile\$seedName") | Where-Object { Test-Path $_ } | Select-Object -First 1
-# No seed file yet (a release has none: it holds the game's shader code): made from the game's files once, as
-# precompile-windows.ps1 makes it (Python 3 with numpy; 16 s on 22 CPUs).
-$generator = "$PSScriptRoot\tools\local\static-precompile\precompile.py"
-if (!$seeds -and !$Precompile -and (Test-Path $tool) -and (Test-Path $generator)) {
-	cmd /c 'python -c "import numpy" >nul 2>nul'
-	if ($LASTEXITCODE -eq 0) {
-		$made = if (Test-Path "$PSScriptRoot\_Build") { "$PSScriptRoot\_Build\static-precompile\$seedName" } else { "$PSScriptRoot\$seedName" }
-		New-Item -ItemType Directory -Force (Split-Path $made) | Out-Null
-		Write-Host "shaders:  listing the game's shaders from its files (once)"
-		python $generator --game $Game seeds $made | Out-Null
-		if ($LASTEXITCODE -eq 0 -and (Test-Path $made)) { $seeds = $made } else { Write-Host 'shaders:  listing failed: the game compiles its shaders when they first appear' }
-	} else {
-		Write-Host 'shaders:  no Python 3 with numpy (winget install Python.Python.3.12, then pip install numpy): the game compiles its shaders when they first appear'
-	}
+# No seed file yet (a release has none: it holds the game's shader code): made from the game's files once by the
+# precompile program, as precompile-windows.ps1 makes it (--make-seeds, with the render-pass states of
+# pass-states.json; precompile.py seeds without Python).
+$passStates = "$PSScriptRoot\tools\local\static-precompile\pass-states.json"
+if (!$seeds -and !$Precompile -and (Test-Path $tool) -and (Test-Path $passStates)) {
+	$made = if (Test-Path "$PSScriptRoot\_Build") { "$PSScriptRoot\_Build\static-precompile\$seedName" } else { "$PSScriptRoot\$seedName" }
+	New-Item -ItemType Directory -Force (Split-Path $made) | Out-Null
+	Write-Host "shaders:  listing the game's shaders from its files (once)"
+	& $tool --game $Game --make-seeds $made --states $passStates | Out-Null
+	if ($LASTEXITCODE -eq 0 -and (Test-Path $made)) { $seeds = $made } else { Write-Host 'shaders:  listing failed: the game compiles its shaders when they first appear' }
 }
 $shaders = !$Precompile -and $seeds -and (Test-Path $tool)
 # The precompile program on the launch's CPUs, its output in the console or a file: its exit code.
