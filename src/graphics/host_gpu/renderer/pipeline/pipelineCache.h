@@ -429,6 +429,10 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
                             const ShaderComputeInputInfo& input_info,
                             vk::ShaderModule compute_module, vk::PipelineCache driver_cache,
                             PipelineBuild build = PipelineBuild::Full, bool native_bindings = false);
+// KYTY_PIPELINE_KEY_LOG (diagnostic): a PIPEKEY line with the driver key of each pipeline the static store did not
+// hold (the precompile: of each it makes) and its modules' shader and SPIR-V hashes.
+bool PipelineKeyLog();
+void NotePipelineKeyModule(vk::ShaderModule module, uint64_t shader_hash, uint64_t spirv_hash);
 
 } // namespace Libs::Graphics
 

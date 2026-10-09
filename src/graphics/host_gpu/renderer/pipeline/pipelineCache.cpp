@@ -48,6 +48,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <spirv-tools/libspirv.hpp>
 #include <string_view>
@@ -686,6 +687,10 @@ struct PipelineCache::ProgramCache {
 		RequireVulkanSuccess(device.createShaderModule(&create_info, nullptr, &module),
 		                     "create recompiled shader module");
 		EXIT_IF(module == nullptr);
+		if (PipelineKeyLog()) {
+			NotePipelineKeyModule(module, options.shader_hash,
+			                      XXH3_64bits(spirv.data(), spirv.size() * sizeof(uint32_t)));
+		}
 		SetVulkanObjectNameF(device, module, "Kyty.Shader.{}[0x{:016x}]", stage_name,
 		                     options.shader_hash);
 		return module;
@@ -2316,6 +2321,13 @@ PipelineCache::Pipeline* PipelineCache::CreateGraphicsPipelineImpl(
 		const bool table = vs_input_info.stage.program != nullptr && vs_input_info.stage.program->table_mode;
 		if (table) m_table_pipeline_jobs.fetch_add(1, std::memory_order_relaxed);
 		(table ? TableWorkers() : Workers()).Push([this, job, table] {
+			// (KYTY_HITCH_LOG_MS: a pipeline no cache held, compiled while its draws took another path.)
+			SlowLog::Scope slow([&](double ms) {
+				const auto* pixel = job->ps_active ? job->ps_input_info.stage.program : nullptr;
+				std::printf("SLOW AsyncGraphicsPipeline %.1f ms %s VS=0x%016llx PS=0x%016llx\n", ms, table ? "table" : "native",
+				            static_cast<unsigned long long>(job->vs_input_info.stage.program->shader_hash),
+				            static_cast<unsigned long long>(pixel != nullptr ? pixel->shader_hash : 0));
+			}, SlowLog::HitchThreshold());
 			CreatePipelineInternal(m_graphics, *job->pipeline, job->rendering, job->vertex_input,
 			                       job->vs_input_info, job->vertex_program,
 			                       job->ps_active ? &job->ps_input_info : nullptr, job->pixel_program,
@@ -2466,6 +2478,10 @@ PipelineCache::Pipeline* PipelineCache::TryCreateComputePipeline(const ShaderCom
 	m_pending_compute_pipelines.emplace(compute_program.id, job);
 	m_table_pipeline_jobs.fetch_add(1, std::memory_order_relaxed);
 	TableWorkers().Push([this, job] { // (table dispatches' pipelines)
+		SlowLog::Scope slow([&](double ms) {
+			std::printf("SLOW AsyncComputePipeline %.1f ms table CS=0x%016llx\n", ms,
+			            static_cast<unsigned long long>(job->input_info.stage.program->shader_hash));
+		}, SlowLog::HitchThreshold());
 		CreatePipelineInternal(m_graphics, *job->pipeline, job->input_info, job->module, TablePipelineCache(),
 		                       PipelineBuild::Full, true);
 		TablePipelineDone();
