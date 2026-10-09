@@ -862,6 +862,12 @@ template <bool insert>
 void BufferCache::ChangeRegister(BufferId id) {
 	DrainGuestReadback(m_slot_buffers[id].CpuAddress(), m_slot_buffers[id].Size());
 	m_sync_buffers_valid = false;
+	if (!m_sync_changes_lost) {
+		if (m_sync_changes.size() < 256)
+			m_sync_changes.push_back({id, m_slot_buffers[id].CpuAddress(), m_slot_buffers[id].Size(), insert});
+		else
+			m_sync_changes_lost = true;
+	}
 	const auto epoch = m_registration_epoch.fetch_add(1, std::memory_order_acq_rel) + 1;
 	if (m_registration_spans.size() < 64) {
 		m_registration_spans.push_back({m_slot_buffers[id].CpuAddress(), m_slot_buffers[id].Size()});
@@ -2274,8 +2280,58 @@ void BufferCache::SynchronizeRegionRequest(SyncRegionRequest& request) {
 	}
 }
 
+// The index's pieces of a buffer: its range split at tracker region boundaries.
+template <typename Fn>
+static void ForEachSyncPiece(uint64_t address, uint64_t size, Fn&& fn) {
+	const auto end = address + size;
+	for (auto start = address; start < end;) {
+		const auto finish = std::min(end, (start / TRACKER_REGION_SIZE + 1) * TRACKER_REGION_SIZE);
+		fn(start, finish);
+		start = finish;
+	}
+}
+
+// The registration changes into the index, in order; false when one does not fit it (pieces not where they would be:
+// the caller rebuilds). Pieces are sorted by address and disjoint, as registered buffers are.
+bool BufferCache::ApplySyncChanges() {
+	for (const auto& change: m_sync_changes) {
+		const auto end = change.address + change.size;
+		const auto first = std::lower_bound(m_sync_buffers.begin(), m_sync_buffers.end(), change.address,
+		                                    [](const SyncBuffer& piece, uint64_t address) { return piece.start < address; });
+		const auto at    = static_cast<size_t>(first - m_sync_buffers.begin());
+		if (!change.insert) {
+			auto last = at;
+			while (last < m_sync_buffers.size() && m_sync_buffers[last].id == change.id && m_sync_buffers[last].start < end)
+				++last;
+			if (last == at || m_sync_buffers[at].start != change.address || m_sync_buffers[last - 1].end != end) return false;
+			m_sync_buffers.erase(m_sync_buffers.begin() + static_cast<ptrdiff_t>(at),
+			                     m_sync_buffers.begin() + static_cast<ptrdiff_t>(last));
+			m_sync_stamps.erase(m_sync_stamps.begin() + static_cast<ptrdiff_t>(at),
+			                    m_sync_stamps.begin() + static_cast<ptrdiff_t>(last));
+			continue;
+		}
+		auto* buffer = m_slot_buffers.try_get(change.id);
+		if (buffer == nullptr) continue; // (erased since: its removal follows, and finds nothing either)
+		if ((at > 0 && m_sync_buffers[at - 1].end > change.address) ||
+		    (at < m_sync_buffers.size() && m_sync_buffers[at].start < end))
+			return false;
+		size_t count = 0;
+		ForEachSyncPiece(change.address, change.size, [&](uint64_t, uint64_t) { ++count; });
+		m_sync_buffers.insert(m_sync_buffers.begin() + static_cast<ptrdiff_t>(at), count, SyncBuffer {});
+		m_sync_stamps.insert(m_sync_stamps.begin() + static_cast<ptrdiff_t>(at), count, SyncStamp {});
+		auto piece = at;
+		ForEachSyncPiece(change.address, change.size,
+		                 [&](uint64_t start, uint64_t finish) { m_sync_buffers[piece++] = {start, finish, buffer, change.id}; });
+	}
+	return true;
+}
+
 void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size) {
 	DrainGuestReadback(vaddr, size, true);
+	if (!m_sync_buffers_valid && !m_sync_changes_lost && ApplySyncChanges()) {
+		m_sync_changes.clear();
+		m_sync_buffers_valid = true;
+	}
 	if (!m_sync_buffers_valid) {
 		// The pieces of buffers that stayed registered keep their stamps: a stamp is about its own buffer's
 		// contents against the CPU epoch of its region, which another buffer's registration does not move.
@@ -2299,6 +2355,8 @@ void BufferCache::SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size) {
 			}
 		}
 		m_sync_buffers_valid = true;
+		m_sync_changes.clear();
+		m_sync_changes_lost = false;
 	}
 	const auto end = vaddr + size;
 

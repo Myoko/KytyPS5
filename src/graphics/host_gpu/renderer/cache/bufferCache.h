@@ -290,6 +290,17 @@ private:
 	std::vector<SyncStamp> m_sync_stamps;
 	std::vector<SyncBuffer> m_old_sync_buffers; // rebuild scratch
 	std::vector<SyncStamp>  m_old_sync_stamps;
+	// The registration changes since the index was current, applied to it in order (ApplySyncChanges) instead of a
+	// rebuild from every registered buffer (a walk of m_buffers' nodes and slots: ~5 a frame at 1-1, 2% of the GPU
+	// thread). Lost: too many, or the index was never built; the next use rebuilds it.
+	struct SyncChange {
+		BufferId id;
+		uint64_t address = 0, size = 0;
+		bool     insert  = false;
+	};
+	std::vector<SyncChange> m_sync_changes;
+	bool                    m_sync_changes_lost = true;
+	[[nodiscard]] bool      ApplySyncChanges();
 	PageTable                                         m_page_table;
 	RangeSet                                          m_gpu_modified_ranges;
 	std::shared_mutex                                 m_gpu_modified_mutex; // (its changes: HasGpuDirtyBytes)
