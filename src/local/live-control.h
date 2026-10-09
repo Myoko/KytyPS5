@@ -606,7 +606,7 @@ inline void StallWatch(int64_t threshold_ns) {
 		              static_cast<double>(idle) / 1e6, dumps, static_cast<double>(since - last) / 1e6);
 		out += line;
 		for (const auto& [tid, name]: LocalPlatform::ProcessThreads()) {
-			if (tid == self || name.rfind("Kyty.", 0) == 0 || name.rfind("SDLAudio", 0) == 0) continue;
+			if (tid == self || (std::getenv("KYTY_STALL_DUMP_ALL") == nullptr && name.rfind("Kyty.", 0) == 0) || name.rfind("SDLAudio", 0) == 0) continue;
 			const auto handle = LocalPlatform::OpenThreadForSampling(tid);
 			if (handle == 0) continue;
 			uint64_t words[SampleWords] {};
