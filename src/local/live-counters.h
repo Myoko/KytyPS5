@@ -146,6 +146,9 @@ inline std::atomic_bool g_dispatch_keys_on {std::getenv("KYTY_DISPATCH_KEYS") !=
 inline void (*g_vma_report)(const char* path) = nullptr;
 // Live "images <path>": the texture cache's images as a tab-separated table (TextureCache::WriteReport).
 inline void (*g_image_report)(const char* path) = nullptr;
+// Live "sync": the GPU timelines, deferred submissions and pending guest readbacks (BufferCache::PrintSyncState):
+// where a stalled GPU thread waits.
+inline void (*g_sync_report)() = nullptr;
 // Render thread: the last draw (0) or dispatch shader address.
 inline thread_local uint64_t g_last_dispatch_shader = 0;
 
