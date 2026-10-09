@@ -2209,6 +2209,7 @@ void BufferCache::RunGarbageCollector(bool collect) {
 		}
 		return ++retire_count == limit;
 	});
+	LiveCounters::Add(LiveCounters::GcBufferDeletes, retire_count);
 	if (dirty_buffers.empty()) {
 		return;
 	}
