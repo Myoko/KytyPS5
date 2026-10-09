@@ -2004,8 +2004,10 @@ void BufferCache::CopyGuestMemory(uint64_t dst_vaddr, uint64_t src_vaddr, uint64
 		if (!m_memory_tracker.IsRegionFullyCpuModified(address, bytes)) {
 			// (As the write faults would: the images over the pages first.)
 			m_texture_cache.InvalidateMemory(address, bytes);
+			// (The pages are not GPU-modified, CopyBuffer checked: no GPU result is written back there.)
 			if (m_memory_tracker.MarkRegionAsCpuDirtyKeepProtection(address, bytes) &&
-			    Libs::LibKernel::Memory::TryWriteBacking(address, from, bytes)) {
+			    (Libs::LibKernel::Memory::TryWriteCpuBacking(address, from, bytes) ||
+			     Libs::LibKernel::Memory::TryWriteBacking(address, from, bytes))) {
 				Spec::NoteHostWrite(address, bytes);
 				return;
 			}
