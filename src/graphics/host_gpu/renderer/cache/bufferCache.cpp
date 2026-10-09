@@ -1621,6 +1621,8 @@ void BufferCache::UploadDirtyRanges(Buffer& buffer, uint64_t vaddr, uint64_t siz
 			prologue.copyBuffer(source, buffer.Handle(), static_cast<uint32_t>(copies.size()), copies.data());
 			return;
 		}
+		LiveCounters::Add(LiveCounters::InOrderUploads);
+		LiveCounters::Add(LiveCounters::InOrderUploadBytes, total_size);
 		auto& command = m_scheduler.Current();
 		command.EndRendering();
 		const auto native = command.Handle();
