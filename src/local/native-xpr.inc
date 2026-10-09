@@ -214,6 +214,9 @@ struct RenderExecutor::NativeXprDrawState {
 	mutable uint64_t                 meta_epoch = 0;
 	// Texture cache resolution epoch under which the targets were what a lookup finds (0: not yet).
 	mutable uint64_t                 targets_epoch = 0;
+	// The resolution epoch NativeXprTargetsCurrent last found the targets current at (0: not yet): images are made and
+	// deleted (a slot reused) only with a registration change, which moves it.
+	mutable uint64_t                 targets_checked = 0;
 };
 
 // One object: its resources under the compiled programs it was translated with.
@@ -2966,7 +2969,10 @@ bool RenderExecutor::NativeXprEmitTargets(const NativeXprDrawState& draw_state, 
 // now), and a newer image with the same backing as a target is what the registers now select: the
 // normal path captures the state again.
 bool RenderExecutor::NativeXprTargetsCurrent(const NativeXprDrawState& draw_state) {
-	auto& textures = m_context.GetTextureCache();
+	auto&      textures = m_context.GetTextureCache();
+	const auto checked  = textures.ResolutionEpoch();
+	// (Every table draw asked: a slot lookup and a cold image object per target, ~28K a frame at 1-1.)
+	if (draw_state.targets_checked == checked) return true;
 	for (const auto& target: draw_state.targets) {
 		const auto* image = textures.m_slot_images.try_get(target.id);
 		if (image == nullptr || image->serial != target.serial) return false;
@@ -2980,6 +2986,7 @@ bool RenderExecutor::NativeXprTargetsCurrent(const NativeXprDrawState& draw_stat
 		}
 		draw_state.targets_epoch = proven != UINT64_MAX ? proven : textures.ResolutionEpoch();
 	}
+	draw_state.targets_checked = checked;
 	return true;
 }
 
