@@ -1580,6 +1580,35 @@ static bool PartialFail(const char* why) {
 	return false;
 }
 
+// A texture the game writes while draws sample it (mip streaming: its threads write the levels while the frame is
+// translated) was dirty again at each draw, and each uploaded all of it: 6-14 times in a millisecond for one 2.75 MiB
+// texture, 1.5 GB of the 2.85 GB uploaded in a 10 s walk. While the command buffer that recorded its last whole upload
+// is open, those copies have not run: the upload worker copies the guest bytes again into the same staging, and
+// that upload carries them. Images only sampled (the GPU never writes them): draws recorded since its upload read
+// the bytes written up to the submission, as the console's GPU, a frame behind, reads them when it runs the draws.
+// KYTY_UPLOAD_LOG: why the last RefillUpload did not refill.
+static thread_local const char* g_refill_refusal = "";
+
+bool TextureCache::RefillUpload(Image& image) {
+	const auto refuse = [](const char* why) {
+		g_refill_refusal = why;
+		return false;
+	};
+	if (image.staged_ring == nullptr) return refuse("none");
+	if (image.staged_serial != m_scheduler.CommandSerial() || m_scheduler.CurrentTick() >= CommandScheduler::PendingTick ||
+	    m_scheduler.Current().IsInvalid())
+		return refuse("submitted");
+	if (image.IsBufferModified() || image.IsGpuModified() || image.usage.storage || image.usage.render_target ||
+	    image.usage.depth_target || image.binding.is_target || UploadBinding(image) == BindingType::DepthTarget)
+		return refuse("written");
+	if (!m_buffer_cache.RefillImageStaging(*image.staged_ring, image.staged_offset, image.info.data.address,
+	                                       image.info.data.size))
+		return refuse("source");
+	LiveCounters::Add(LiveCounters::ImageRefills);
+	LiveCounters::Add(LiveCounters::ImageRefillBytes, image.info.data.size);
+	return true;
+}
+
 void TextureCache::InitializeImage(ImageId id) {
 	using Clock = std::chrono::steady_clock;
 	auto&             image = m_slot_images[id];
@@ -1616,17 +1645,26 @@ void TextureCache::InitializeImage(ImageId id) {
 	}
 	const bool upload = image.IsBufferModified() || image.IsCpuDirty();
 	if (upload) {
-		bool uploaded = false;
-		if (image.IsPartiallyCpuDirty() && !image.IsBufferModified()) {
+		// A refill first: no GPU work at all, where a partial upload records some (and would end the refills: its
+		// copies come after the whole upload's, which a refill would then overwrite with older bytes).
+		bool uploaded = RefillUpload(image);
+		if (uploaded && kyty_local_partial_image_dirty_mode.load(std::memory_order_relaxed) == 2 &&
+		    PartialDirtyCandidate(image)) {
+			UpdatePartialHashes(image, true);
+		}
+		if (!uploaded && image.IsPartiallyCpuDirty() && !image.IsBufferModified()) {
 			g_partial_fail = "";
 			uploaded = UploadImagePartial(image);
 			if (!uploaded) {
 				LiveCounters::Add(LiveCounters::PartialFallbacks);
+			} else {
+				image.staged_ring = nullptr;
 			}
 		}
 		if (!uploaded) {
+			bool refillable = false;
 			const auto [source, source_offset] =
-			    m_buffer_cache.ObtainBufferForImage(image.info.data.address, image.info.data.size);
+			    m_buffer_cache.ObtainBufferForImage(image.info.data.address, image.info.data.size, &refillable);
 			marks[2] = Clock::now();
 			if (source == nullptr) {
 				EXIT("TextureCache: failed to obtain image upload source\n");
@@ -1636,7 +1674,7 @@ void TextureCache::InitializeImage(ImageId id) {
 			static const bool log_uploads = std::getenv("KYTY_UPLOAD_LOG") != nullptr;
 			if (log_uploads) {
 				std::printf("[tsc %llu] UPLOAD %s addr=0x%llx size=0x%llx fmt=%u %ux%u layers=%u levels=%u tile=%u "
-				            "target=%d usage=%d%d%d%d gpu=%d serial=%llu partial_fail=%s\n",
+				            "target=%d usage=%d%d%d%d gpu=%d serial=%llu partial_fail=%s refill=%s\n",
 				            static_cast<unsigned long long>(__rdtsc()), kind,
 				            static_cast<unsigned long long>(image.info.data.address),
 				            static_cast<unsigned long long>(image.info.data.size),
@@ -1646,9 +1684,13 @@ void TextureCache::InitializeImage(ImageId id) {
 				            image.usage.texture ? 1 : 0, image.usage.storage ? 1 : 0,
 				            image.usage.render_target ? 1 : 0, image.usage.depth_target ? 1 : 0,
 				            image.IsGpuModified() ? 1 : 0, static_cast<unsigned long long>(image.serial),
-				            image.IsPartiallyCpuDirty() && !image.IsBufferModified() ? g_partial_fail : "");
+				            image.IsPartiallyCpuDirty() && !image.IsBufferModified() ? g_partial_fail : "",
+				            g_refill_refusal);
 			}
 			UploadImage(image, *source, source_offset);
+			image.staged_ring   = refillable ? source : nullptr;
+			image.staged_offset = source_offset;
+			image.staged_serial = m_scheduler.CommandSerial();
 			if (kyty_local_partial_image_dirty_mode.load(std::memory_order_relaxed) == 2 &&
 			    PartialDirtyCandidate(image)) {
 				UpdatePartialHashes(image, true);

@@ -1859,7 +1859,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	return {buffer, buffer->Offset(vaddr)};
 }
 
-std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, uint64_t size) {
+std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, uint64_t size, bool* refillable) {
 	using Clock = std::chrono::steady_clock;
 	Clock::time_point marks[4] {Clock::now()};
 	const char*       path = "staging";
@@ -1908,32 +1908,12 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 	// records GPU work on it, and every submission waits for the copies pushed before it).
 	if (staging != nullptr && kyty_local_async_upload_mode.load(std::memory_order_relaxed) >= 2 &&
 	    m_staging_buffer.IsCoherent()) {
-		bool queued = false;
-		if (const auto* source = Libs::LibKernel::Memory::TryGetBackingPointer(vaddr, size)) {
-			AsyncUpload::Get().Push(staging, source, size, vaddr);
-			queued = true;
-		} else if (Libs::LibKernel::Memory::TryGetBackingPieces(vaddr, size, m_backing_pieces)) {
-			// Large images usually span several guest mappings.
-			uint64_t offset = 0;
-			for (const auto& [piece, bytes]: m_backing_pieces) {
-				AsyncUpload::Get().Push(staging + offset, piece, bytes, vaddr + offset);
-				offset += bytes;
-			}
-			queued = true;
-		} else {
-			// Partly unmapped (a texture pool with released layers): the worker reads the mapped
-			// parts; the render thread copied hundreds of MiB here synchronously before.
-			path = "sparse";
-			AsyncUpload::Get().PushCall(ReadMappedOrZeroCall, reinterpret_cast<void*>(vaddr),
-			                            reinterpret_cast<uint64_t>(staging), size, vaddr, size);
-			queued = true;
-		}
-		if (queued) {
-			AsyncUpload::Get().Kick();
-			LiveCounters::Add(LiveCounters::AsyncImageBytes, size);
-			m_staging_buffer.Commit();
-			return {&m_staging_buffer, stage_offset};
-		}
+		if (!PushImageStagingCopies(staging, vaddr, size)) path = "sparse";
+		AsyncUpload::Get().Kick();
+		LiveCounters::Add(LiveCounters::AsyncImageBytes, size);
+		m_staging_buffer.Commit();
+		if (refillable != nullptr) *refillable = true;
+		return {&m_staging_buffer, stage_offset};
 	}
 	const char* prt_failure = "not-attempted";
 	if (staging == nullptr || (!Libs::LibKernel::Memory::TryReadBacking(vaddr, staging, size) &&
@@ -1946,6 +1926,44 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 	}
 	m_staging_buffer.Commit();
 	return {&m_staging_buffer, stage_offset};
+}
+
+bool BufferCache::PushImageStagingCopies(uint8_t* staging, uint64_t vaddr, uint64_t size) {
+	if (const auto* source = Libs::LibKernel::Memory::TryGetBackingPointer(vaddr, size)) {
+		AsyncUpload::Get().Push(staging, source, size, vaddr);
+		return true;
+	}
+	if (Libs::LibKernel::Memory::TryGetBackingPieces(vaddr, size, m_backing_pieces)) {
+		// Large images usually span several guest mappings.
+		uint64_t offset = 0;
+		for (const auto& [piece, bytes]: m_backing_pieces) {
+			AsyncUpload::Get().Push(staging + offset, piece, bytes, vaddr + offset);
+			offset += bytes;
+		}
+		return true;
+	}
+	// Partly unmapped (a texture pool with released layers): the worker reads the mapped
+	// parts; the render thread copied hundreds of MiB here synchronously before.
+	AsyncUpload::Get().PushCall(ReadMappedOrZeroCall, reinterpret_cast<void*>(vaddr),
+	                            reinterpret_cast<uint64_t>(staging), size, vaddr, size);
+	return false;
+}
+
+bool BufferCache::RefillImageStaging(const Buffer& ring, uint64_t offset, uint64_t vaddr, uint64_t size) {
+	// ObtainBufferForImage's staging path, in its order: not over a cached buffer holding the range or GPU-written pages.
+	if (&ring != &m_staging_buffer || !GuestRange {vaddr, size}.Valid() || offset > ring.Size() ||
+	    size > ring.Size() - offset || kyty_local_async_upload_mode.load(std::memory_order_relaxed) < 2 ||
+	    !ring.IsCoherent())
+		return false;
+	DrainGuestReadback(vaddr, size);
+	if (const auto* owner = m_page_table.Find(vaddr >> PageTable::kPageBits);
+	    owner != nullptr && *owner && m_slot_buffers[*owner].IsInBounds(vaddr, size))
+		return false;
+	if (IsRegionGpuModified(vaddr, size)) return false;
+	(void)PushImageStagingCopies(ring.Mapped().data() + offset, vaddr, size);
+	AsyncUpload::Get().Kick();
+	LiveCounters::Add(LiveCounters::AsyncImageBytes, size);
+	return true;
 }
 
 std::pair<Buffer*, uint64_t> BufferCache::StageImagePieces(const std::vector<StagingPiece>& pieces,

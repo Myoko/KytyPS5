@@ -225,6 +225,7 @@ private:
 	void                        RefreshImage(ImageId id);
 	void                        PrepareDccClear(ImageId id, const ImageDesc& desc);
 	void                        InitializeImage(ImageId id);
+	[[nodiscard]] bool          RefillUpload(Image& image);
 	[[nodiscard]] TextureTransferPlan
 	BuildTextureTransfer(const Image& image, BindingType binding, TransferDirection direction) const;
 	[[nodiscard]] DownloadPlan BuildDownload(const Image& image) const;

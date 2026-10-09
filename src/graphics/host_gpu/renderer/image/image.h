@@ -286,6 +286,11 @@ public:
 	uint64_t         transit_group      = 0;
 	// Unique per image object: a deleted image's slot id goes to later images.
 	uint64_t         serial             = 0;
+	// The staging copy of the last whole-image upload (null: none or not refillable) and the command buffer it was
+	// recorded in (CommandScheduler::CommandSerial): TextureCache::InitializeImage.
+	const Buffer*    staged_ring        = nullptr;
+	uint64_t         staged_offset      = 0;
+	uint64_t         staged_serial      = 0;
 	// The barrier state (backing.state, backing.subresource_states, transit_group): changed under this lock, which a
 	// speculative translation's thread reads it under (SpeculativeEntry).
 	struct StateLock {

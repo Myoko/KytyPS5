@@ -88,7 +88,14 @@ public:
 	[[nodiscard]] const Buffer* GetGdsBuffer() const noexcept { return &m_gds_buffer; }
 	[[nodiscard]] Buffer* GetBdaPageTableBuffer() noexcept { return &m_bda_pagetable_buffer; }
 	[[nodiscard]] Buffer* GetFaultBuffer() noexcept { return m_fault_manager.GetFaultBuffer(); }
-	[[nodiscard]] std::pair<Buffer*, uint64_t> ObtainBufferForImage(uint64_t vaddr, uint64_t size);
+	// `refillable`: set when the bytes went to the staging ring by the upload worker (RefillImageStaging may copy them
+	// again while the upload is unsubmitted).
+	[[nodiscard]] std::pair<Buffer*, uint64_t> ObtainBufferForImage(uint64_t vaddr, uint64_t size,
+	                                                               bool* refillable = nullptr);
+	// The guest bytes of [vaddr, vaddr + size) copied again by the upload worker to a staging copy ObtainBufferForImage
+	// made (`ring` at `offset`): whose GPU copies are recorded but not submitted, so they upload the new bytes. False,
+	// with nothing done, where ObtainBufferForImage would not stage them that way now.
+	[[nodiscard]] bool RefillImageStaging(const Buffer& ring, uint64_t offset, uint64_t vaddr, uint64_t size);
 	// Guest ranges staged one after another in one staging allocation of `total` bytes, each
 	// at its `offset`. Returns nullptr (nothing staged) when a range starts in a cached buffer
 	// or holds GPU-written pages: the caller then uploads the whole image instead.
@@ -310,6 +317,9 @@ private:
 	StreamBuffer                                      m_staging_buffer;
 	// ObtainBufferForImage (KYTY_ASYNC_UPLOAD=2): the backing pieces of an image upload.
 	std::vector<std::pair<const uint8_t*, uint64_t>>  m_backing_pieces;
+	// The upload worker's copies of guest [vaddr, vaddr + size) to `staging`; false when it reads the mapped parts
+	// only (a partly unmapped range: the rest is zeros).
+	bool PushImageStagingCopies(uint8_t* staging, uint64_t vaddr, uint64_t size);
 	StreamBuffer                                      m_stream_buffer;
 	StreamBuffer                                      m_host_shader_upload;
 	StreamBuffer                                      m_table_upload;
