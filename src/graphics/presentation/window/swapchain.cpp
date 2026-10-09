@@ -28,6 +28,7 @@
 #include <string_view>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <vector>
 #include <vulkan/vk_platform.h>
 
@@ -892,7 +893,10 @@ Presenter::Frame& Presenter::PrepareBlankFrame(uint32_t width, uint32_t height, 
 	KYTY_PROFILER_FUNCTION();
 	auto              format = m_impl->frames.GetFormat();
 	auto*             frame  = m_impl->frames.Acquire();
-	RenderLockGuard render_lock(m_impl->renderer.GetMutex());
+	// Into the GPU thread's command buffer (its flip) under the renderer's lock; the present thread's blank frame
+	// (no producer) touches only the presenter's own scheduler and frame, as Present does.
+	std::optional<RenderLockGuard> render_lock;
+	if (producer != nullptr) render_lock.emplace(m_impl->renderer.GetMutex());
 	frame->fg.valid = false;
 	frame->Configure(m_impl->window.graphic_ctx, {width, height}, format);
 	vk::ClearColorValue clear {};
@@ -959,7 +963,12 @@ void Presenter::Present(Frame& frame, bool reuse) {
 			continue;
 		}
 		{
-			RenderLockGuard render_lock(m_impl->renderer.GetMutex());
+			// The present thread records and submits on its own scheduler (present_scheduler: its own pool, timeline
+			// and command buffers; the queue has its own lock), from the presenter's frame image into the swapchain's:
+			// nothing the GPU thread uses. Under the renderer's lock, its GPU thread waited for the whole recording
+			// and submission once a frame (~60 us, ~110 us with the wake-up). Frame generation shares the renderer's.
+			std::optional<RenderLockGuard> render_lock;
+			if (FrameGen::Enabled()) render_lock.emplace(m_impl->renderer.GetMutex());
 			auto&             command          = m_impl->present_scheduler.BeginCommand();
 			const bool        draw_system_overlay =
 			    (overlay_visual.active || hud != nullptr) && swapchain.PrepareSystemOverlay(hud);
