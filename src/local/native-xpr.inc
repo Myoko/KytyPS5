@@ -1345,7 +1345,7 @@ bool RenderExecutor::NativeXprSwitchVariant(NativeXprRecord& record, uint64_t si
 	auto& textures = m_context.GetTextureCache();
 	for (const auto& dep: found->images) {
 		const auto* image = textures.m_slot_images.try_get(dep.id);
-		if (image == nullptr || image->serial != dep.serial || image->IsCpuDirty() ||
+		if (image == nullptr || image->serial != dep.serial || TextureCache::RefreshPending(*image, dep.desc) ||
 		    !textures.IsSampledImageCurrent(dep.id, dep.desc)) {
 			NativeXprRetireSet(found->pool, found->set);
 			record.variants.erase(found);
@@ -2823,7 +2823,7 @@ bool RenderExecutor::NativeXprValidateResources(NativeXprRecord& record, uint64_
 		if (buffers_clean && !images_clean) {
 			images_clean = std::ranges::none_of(record.images, [&](const auto& dep) {
 				const auto* image = textures.m_slot_images.try_get(dep.id);
-				return image == nullptr || image->serial != dep.serial || image->IsCpuDirty();
+				return image == nullptr || image->serial != dep.serial || TextureCache::RefreshPending(*image, dep.desc);
 			});
 			if (images_clean) record.image_dirty_epoch = image_epoch;
 		}
@@ -2904,11 +2904,12 @@ bool RenderExecutor::NativeXprValidateResources(NativeXprRecord& record, uint64_
 		if (image == nullptr || image->serial != dep.serial) return rebind();
 		// The guest rewrote it (a texture streaming in): upload it as the normal path's FindTexture does,
 		// instead of dropping the record and storing it again.
-		if (image->IsCpuDirty()) {
+		if (TextureCache::RefreshPending(*image, dep.desc)) {
 			if (!image->registered || image->depth_id || image->binding.needs_rebind) return false;
 			(void)textures.FindTexture(dep.id, dep.desc);
 			image = textures.m_slot_images.try_get(dep.id);
-			if (image == nullptr || image->serial != dep.serial || image->IsCpuDirty()) return false;
+			if (image == nullptr || image->serial != dep.serial || TextureCache::RefreshPending(*image, dep.desc))
+				return false;
 		}
 		if (registrations_moved) {
 			if (per_image && image->registered && image->registrations == dep.registration &&
