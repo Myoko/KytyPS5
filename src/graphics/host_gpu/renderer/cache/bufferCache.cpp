@@ -231,11 +231,9 @@ std::shared_ptr<BufferCache::GuestReadback> BufferCache::BeginGuestReadback(
 	copies.clear();
 	std::vector<GuestRange> pages;
 	pages.reserve(available_pages.Count());
-	available_pages.ForEach([&](uint64_t a, uint64_t end) {
-		pages.push_back({a, end - a});
-		m_gpu_modified_ranges.ForEachIntersection(a, end - a, [&](RangeSet::Range range) {
-			copies.push_back({&buffer, buffer.Offset(range.address), range.address, range.size});
-		});
+	available_pages.ForEach([&](uint64_t a, uint64_t end) { pages.push_back({a, end - a}); });
+	m_gpu_modified_ranges.ForEachIntersection(available_pages, [&](RangeSet::Range range) {
+		copies.push_back({&buffer, buffer.Offset(range.address), range.address, range.size});
 	});
 	if (copies.empty()) {
 		if (completed) *completed = true;
