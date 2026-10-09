@@ -193,9 +193,15 @@ private:
 	                                        uint64_t granule);
 	void               UntrackImagePages(Image& image, uint64_t begin, uint64_t end);
 	void               RetrackHoles(Image& image);
+	// The holes' pages inside [begin, end) only (page-aligned); the others stay released.
+	void               RetrackHoles(Image& image, uint64_t begin, uint64_t end);
 	void               FinishRefresh(Image& image);
 	[[nodiscard]] bool UploadImagePartial(Image& image);
-	[[nodiscard]] bool UploadDepthPartial(Image& image);
+	// The dirty layers in [first_layer, last_layer) only.
+	[[nodiscard]] bool UploadDepthPartial(Image& image, uint32_t first_layer = 0,
+	                                      uint32_t last_layer = UINT32_MAX);
+	// A depth target binding's refresh of the layers its view covers; false: RefreshImage's.
+	[[nodiscard]] bool RefreshDepthLayers(ImageId id, const ImageViewInfo& view);
 	void               UpdatePartialHashes(Image& image, bool all);
 	[[nodiscard]] bool CheckPartialHashes(const Image& image);
 	void                      MarkAsMaybeDirty(ImageId id, Image& image);
@@ -224,7 +230,8 @@ private:
 	void DownloadImageData(Image& image, Buffer& destination, uint64_t destination_offset,
 	                       uint64_t destination_size, DownloadPlan plan);
 	void DownloadDepth(Image& image, Buffer& destination, uint64_t destination_offset);
-	void CommitGpuWrite(Image& image);
+	// `keep_partial`: the image stays dirty in the ranges a scoped refresh left (RefreshDepthLayers).
+	void CommitGpuWrite(Image& image, bool keep_partial = false);
 	// Caller holds m_lock. Volume layer ranges select depth slices.
 	void ClearImage(CommandBuffer& command, ImageId id, const vk::ImageSubresourceRange& range,
 	                const vk::ClearValue& clear);

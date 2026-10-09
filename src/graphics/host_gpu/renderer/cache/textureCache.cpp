@@ -52,13 +52,17 @@ constexpr uint64_t NumFramesBeforeRemoval = 32;
 // KYTY_PARTIAL_IMAGE_DIRTY: a game streaming textures into a large array writes one layer at a
 // time. The whole-image path stopped watching all of the image's pages on the first write and
 // then re-watched, copied, detiled and uploaded all of it (a 352 MiB array: 20-70 ms on the
-// render thread, several times a second while walking into a new area). Images at least this
-// large keep watching everything but the written granules and upload only the subresources
-// over them.
+// render thread, several times a second while walking into a new area). Such images keep
+// watching everything but the written granules and upload only the subresources over them.
+// (Size from which the diagnostic logs report images.)
 constexpr uint64_t PartialDirtyMinSize = uint64_t {16} << 20;
 // A write fault releases the image's granule around it (granules start at the image start):
 // a streamed layer faults a few times instead of once per 4 KiB page.
 constexpr uint64_t PartialDirtyGranule = uint64_t {1} << 20;
+// Every image of two granules or more takes partial writes: below that one granule is the whole image. Mip-streamed
+// textures (5-11 MiB BC: the game writes the levels while draws already sample it) uploaded all of it at each use
+// between the writes (2-10 times in a few ms when entering an area).
+constexpr uint64_t PartialDirtyCandidateSize = 2 * PartialDirtyGranule;
 // A refresh whose subresources cover more than this share of the image uploads all of it.
 constexpr uint64_t PartialUploadMaxShare = 2;
 // Staged runs of picked subresources closer than this are staged as one run.
@@ -602,6 +606,29 @@ void TextureCache::RetrackHoles(Image& image) {
 	image.untracked_holes.clear();
 }
 
+void TextureCache::RetrackHoles(Image& image, uint64_t begin, uint64_t end) {
+	if (image.untracked_holes.empty()) {
+		return;
+	}
+	if (!image.IsTracked()) {
+		EXIT("TextureCache: untracked image keeps page holes\n");
+	}
+	std::vector<std::pair<uint64_t, uint64_t>> kept;
+	kept.reserve(image.untracked_holes.size() + 1);
+	for (const auto& [hole_begin, hole_end]: image.untracked_holes) {
+		const auto from = std::max(hole_begin, begin);
+		const auto to   = std::min(hole_end, end);
+		if (from >= to) {
+			kept.emplace_back(hole_begin, hole_end);
+			continue;
+		}
+		m_page_manager.UpdatePageWatchers<true>(from, to - from);
+		if (hole_begin < from) kept.emplace_back(hole_begin, from);
+		if (to < hole_end) kept.emplace_back(to, hole_end);
+	}
+	image.untracked_holes = std::move(kept);
+}
+
 void TextureCache::FinishRefresh(Image& image) {
 	// Watch the released pages again before the image counts as clean.
 	RetrackHoles(image);
@@ -615,18 +642,25 @@ bool TextureCache::PartialDirtyCandidate(const Image& image) {
 	// in a texture tile mode (the game's streamed shadow maps) uploads as a texture too; one
 	// that uploads as a depth target takes the whole-image path at refresh (UploadImagePartial).
 	return kyty_local_partial_image_dirty_mode.load(std::memory_order_relaxed) != 0 &&
-	       info.data.size >= PartialDirtyMinSize && !image.depth_id &&
+	       info.data.size >= PartialDirtyCandidateSize && !image.depth_id &&
 	       image.backing.image != nullptr && info.samples == 1 && !info.IsVolume() &&
 	       !info.HasStencil() && info.metadata.compression == VideoOutCompression::Uncompressed;
 }
 
+// An image the GPU wrote stays GPU-owned outside the invalidated span: its other bytes are the GPU's, the span is
+// uploaded from guest memory at the next use (RefreshImage -> InitializeImage takes the partial path; a depth array
+// uploads whole layers, UploadDepthPartial; a target binding refreshes it before the GPU writes again), as on the
+// console, where a CPU write or a remap replaces only those bytes. A whole-image invalidation uploaded everything from
+// memory, which does not hold what the GPU rendered. The game's shadow-map pool (an 80-layer depth array, 320 MiB) lends
+// its free layers to the texture streamer, which remaps one layer at a time and tiles textures into it from the CPU
+// while shadows render into others: the whole array went to the GPU again every few seconds (100-270 ms frames) and the
+// rendered layers were lost.
 bool TextureCache::TryInvalidatePartial(Image& image, uint64_t address, uint64_t size,
                                         uint64_t granule) {
 	const auto& info = image.info;
 	if (!PartialDirtyCandidate(image) || !image.registered || !image.IsTracked() ||
 	    image.track_addr != info.data.address || image.track_addr_end != info.data.End() ||
-	    !image.CanTakePartialDirty() || image.IsGpuModified() || image.IsBufferModified() ||
-	    image.IsStencilModified()) {
+	    !image.CanTakePartialDirty() || image.IsBufferModified() || image.IsStencilModified()) {
 		return false;
 	}
 	const auto base  = info.data.address;
@@ -1492,6 +1526,17 @@ void TextureCache::UploadStencil(Image& image, Buffer& source, uint64_t source_o
 
 // Local diagnostic: why the latest UploadImagePartial fell back to a whole upload (SLOW log).
 static thread_local const char* g_partial_fail = "";
+
+// KYTY_UPLOAD_LOG: a partial refresh's staged bytes (UPLOAD lines are the whole ones).
+static void LogPartialUpload(const Image& image, size_t pieces, uint64_t bytes) {
+	static const bool log_uploads = std::getenv("KYTY_UPLOAD_LOG") != nullptr;
+	if (!log_uploads) return;
+	std::printf("[tsc %llu] UPLOAD-PART addr=0x%llx size=0x%llx layers=%u levels=%u pieces=%zu bytes=0x%llx serial=%llu\n",
+	            static_cast<unsigned long long>(__rdtsc()), static_cast<unsigned long long>(image.info.data.address),
+	            static_cast<unsigned long long>(image.info.data.size), image.info.resources.layers,
+	            image.info.resources.levels, pieces, static_cast<unsigned long long>(bytes),
+	            static_cast<unsigned long long>(image.serial));
+}
 static bool PartialFail(const char* why) {
 	g_partial_fail = why;
 	return false;
@@ -1553,7 +1598,7 @@ void TextureCache::InitializeImage(ImageId id) {
 			static const bool log_uploads = std::getenv("KYTY_UPLOAD_LOG") != nullptr;
 			if (log_uploads) {
 				std::printf("[tsc %llu] UPLOAD %s addr=0x%llx size=0x%llx fmt=%u %ux%u layers=%u levels=%u tile=%u "
-				            "target=%d usage=%d%d%d%d gpu=%d serial=%llu\n",
+				            "target=%d usage=%d%d%d%d gpu=%d serial=%llu partial_fail=%s\n",
 				            static_cast<unsigned long long>(__rdtsc()), kind,
 				            static_cast<unsigned long long>(image.info.data.address),
 				            static_cast<unsigned long long>(image.info.data.size),
@@ -1562,7 +1607,8 @@ void TextureCache::InitializeImage(ImageId id) {
 				            static_cast<uint32_t>(image.info.tile_mode), image.binding.is_target ? 1 : 0,
 				            image.usage.texture ? 1 : 0, image.usage.storage ? 1 : 0,
 				            image.usage.render_target ? 1 : 0, image.usage.depth_target ? 1 : 0,
-				            image.IsGpuModified() ? 1 : 0, static_cast<unsigned long long>(image.serial));
+				            image.IsGpuModified() ? 1 : 0, static_cast<unsigned long long>(image.serial),
+				            image.IsPartiallyCpuDirty() && !image.IsBufferModified() ? g_partial_fail : "");
 			}
 			UploadImage(image, *source, source_offset);
 			if (kyty_local_partial_image_dirty_mode.load(std::memory_order_relaxed) == 2 &&
@@ -1700,10 +1746,10 @@ bool TextureCache::CheckPartialHashes(const Image& image) {
 	return true;
 }
 
-// A depth array whose CPU writes cover some layers (the game streams shadow maps into an 80-layer
-// pool, a few 4 MiB layers at a time): only those layers are staged, detiled and copied. The
-// whole-image path staged and detiled every layer (320 MiB), 20-65 ms per refresh.
-bool TextureCache::UploadDepthPartial(Image& image) {
+// A depth array whose CPU writes cover some layers (the game's 80-layer shadow-map pool, whose free 4 MiB layers its
+// texture streamer fills from the CPU): only those layers are staged, detiled and copied (of [first_layer, last_layer)
+// only, for RefreshDepthLayers). The whole-image path staged and detiled every layer (320 MiB), 20-65 ms per refresh.
+bool TextureCache::UploadDepthPartial(Image& image, uint32_t first_layer, uint32_t last_layer) {
 	const auto& info = image.info;
 	// What UploadImage's depth path handles without a D16 promotion, one level, whole layers.
 	if (info.samples != 1 || image.backing.samples != 1 || info.HasStencil() || info.IsVolume() ||
@@ -1717,7 +1763,7 @@ bool TextureCache::UploadDepthPartial(Image& image) {
 	const uint64_t base   = info.data.address;
 	const auto&    dirty  = image.CpuDirtyRanges();
 	std::vector<uint32_t> picked;
-	for (uint32_t layer = 0; layer < layers; ++layer) {
+	for (uint32_t layer = first_layer; layer < std::min(layers, last_layer); ++layer) {
 		if (IntersectsRanges(dirty, base + slice * layer, base + slice * (layer + 1))) {
 			picked.push_back(layer);
 		}
@@ -1778,6 +1824,7 @@ bool TextureCache::UploadDepthPartial(Image& image) {
 	image.Upload(copies, linear.buffer, linear.offset, linear.size);
 	LiveCounters::Add(LiveCounters::PartialUploads);
 	LiveCounters::Add(LiveCounters::PartialUploadBytes, total);
+	LogPartialUpload(image, pieces.size(), total);
 	return true;
 }
 
@@ -1930,6 +1977,7 @@ bool TextureCache::UploadImagePartial(Image& image) {
 	image.Upload(regions, linear.buffer, linear.offset, linear.size);
 	LiveCounters::Add(LiveCounters::PartialUploads);
 	LiveCounters::Add(LiveCounters::PartialUploadBytes, total);
+	LogPartialUpload(image, pieces.size(), total);
 	if (kyty_local_partial_image_dirty_mode.load(std::memory_order_relaxed) == 2) {
 		UpdatePartialHashes(image, false);
 	}
@@ -2023,6 +2071,42 @@ void TextureCache::RefreshImage(ImageId id) {
 		return;
 	}
 	InitializeImage(id);
+}
+
+// A depth target binding writes only the layers its view covers. Of a depth array that is also dirty in other layers,
+// only the dirty layers it covers are uploaded; the others stay dirty (their pages released: no write faults) until a
+// binding covers them. The game's 80-layer shadow-map pool (320 MiB) renders shadows into layers 0-4 while its texture
+// streamer tiles textures into free layers from the CPU: each shadow pass uploaded the layer being streamed (4 MiB per
+// binding, 145 times = 600 MiB in one 101 ms frame at the Shrine).
+bool TextureCache::RefreshDepthLayers(ImageId id, const ImageViewInfo& view) {
+	auto&       image  = m_slot_images[id];
+	const auto& info   = image.info;
+	const auto  layers = info.resources.layers;
+	if (!image.IsPartiallyCpuDirty() || image.IsBufferModified() || image.IsStencilModified() ||
+	    image.IsMaybeCpuDirty() || image.track_addr != info.data.address || image.track_addr_end != info.data.End() ||
+	    layers < 2 || view.layer_count == 0 ||
+	    view.base_layer >= layers || view.layer_count > layers - view.base_layer ||
+	    view.layer_count == layers || info.data.size % layers != 0 ||
+	    (info.data.size / layers) % TRACKER_PAGE_SIZE != 0 || info.data.address % TRACKER_PAGE_SIZE != 0 ||
+	    info.metadata.compression != VideoOutCompression::Uncompressed ||
+	    UploadBinding(image) != BindingType::DepthTarget) {
+		return false;
+	}
+	const uint32_t first = view.base_layer;
+	const uint32_t last  = view.base_layer + view.layer_count;
+	const uint64_t slice = info.data.size / layers;
+	const uint64_t begin = info.data.address + slice * first;
+	const uint64_t end   = info.data.address + slice * last;
+	if (IntersectsRanges(image.CpuDirtyRanges(), begin, end)) {
+		g_partial_fail = "";
+		if (!UploadDepthPartial(image, first, last)) {
+			return false;
+		}
+		// As FinishRefresh, for these layers: watched again before they count as clean.
+		RetrackHoles(image, begin, end);
+		image.RefreshRangeComplete(begin, end);
+	}
+	return true;
 }
 
 void TextureCache::AssociateStencil(ImageId depth_id, GuestRange stencil) {
@@ -2463,7 +2547,10 @@ vk::ImageView TextureCache::FindDepthTarget(ImageId id, const ImageDesc& desc) {
 	TouchImage(image);
 	image.MarkGpuModified();
 	image.usage.depth_target = true;
-	RefreshImage(id);
+	const bool scoped = RefreshDepthLayers(id, desc.view_info);
+	if (!scoped) {
+		RefreshImage(id);
+	}
 	if (desc.info.HasMetadata()) {
 		// The epoch moves only when metadata state changes: every depth target
 		// acquisition passes here.
@@ -2484,7 +2571,7 @@ vk::ImageView TextureCache::FindDepthTarget(ImageId id, const ImageDesc& desc) {
 		}
 		if (changed) m_meta_epoch.fetch_add(1, std::memory_order_release);
 	}
-	CommitGpuWrite(image);
+	CommitGpuWrite(image, scoped);
 	if (desc.info.HasStencil()) {
 		AssociateStencil(id, desc.info.stencil);
 	}
@@ -2503,12 +2590,12 @@ void TextureCache::MarkGpuWritten(ImageId id) {
 	CommitGpuWrite(image);
 }
 
-void TextureCache::CommitGpuWrite(Image& image) {
+void TextureCache::CommitGpuWrite(Image& image, bool keep_partial) {
 	if (image.depth_id || image.backing.image == nullptr) {
 		EXIT("TextureCache: stencil association cannot own image contents\n");
 	}
 	image.ClearBufferModified();
-	if (image.IsCpuDirty()) {
+	if (image.IsCpuDirty() && !(keep_partial && image.IsPartiallyCpuDirty())) {
 		FinishRefresh(image);
 	}
 	image.MarkGpuModified();

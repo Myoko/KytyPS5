@@ -1011,6 +1011,11 @@ bool TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size) {
 	       g_guest_address_space->TryWriteBacking(vaddr, data, size);
 }
 
+bool TryWriteCpuBacking(uint64_t vaddr, const void* data, uint64_t size) {
+	return g_guest_address_space != nullptr &&
+	       g_guest_address_space->TryWriteCpuBacking(vaddr, data, size);
+}
+
 [[gnu::noinline]] bool TryReadBacking(uint64_t vaddr, void* data, uint64_t size) {
 	// Diagnostic (live timecensus, source BackingRead): which code reads the backing, how much.
 	if (size >= 0x10000) KYTY_TIME_CENSUS(BackingRead, size);

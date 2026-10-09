@@ -337,26 +337,16 @@ static void TraceGpuWrite(uint64_t vaddr, uint64_t size, uint64_t tick) {
 	if (LiveTrace::WriteTicks()) LiveTrace::Event(LiveTrace::GpuWrite, vaddr, size | tick << 32u);
 }
 
-// KYTY_READBACK_QUEUE. GPU thread, inside a command: the write is recorded at or after the
-// current tick, so its tick is only set at the next point between commands. Every GPU write
-// into a guest buffer is noted: shader writes, uploads, image copies and buffer joins.
-void BufferCache::CountGpuWrite(const GpuWrite& write, int32_t delta) {
-	if (write.big) {
-		m_gpu_writes_big += delta;
-		return;
-	}
-	for (auto g = write.begin >> GpuWriteGranuleBits; g <= (write.end - 1) >> GpuWriteGranuleBits; ++g)
-		m_gpu_write_granules[GpuWriteCounter(g)] += delta;
-}
-
 void BufferCache::ResetGpuWrites() {
 	m_gpu_writes_base += m_gpu_writes.size(); // (the counters' last numbers stay below it)
 	m_gpu_writes.clear();
 	m_gpu_writes_head = m_gpu_writes_stamped = 0;
-	std::fill_n(m_gpu_write_granules.get(), GpuWriteCounters, 0u);
-	m_gpu_writes_big = 0;
+	m_gpu_big_writes.clear();
 }
 
+// KYTY_READBACK_QUEUE. GPU thread, inside a command: the write is recorded at or after the
+// current tick, so its tick is only set at the next point between commands. Every GPU write
+// into a guest buffer is noted: shader writes, uploads, image copies and buffer joins.
 void BufferCache::NoteGpuWrite(uint64_t vaddr, uint64_t size) {
 	TraceGpuWrite(vaddr, size, m_scheduler.CurrentTick());
 	if (kyty_local_readback_queue_mode.load(std::memory_order_relaxed) == 0 || m_graphics.readback_queue == nullptr) {
@@ -380,8 +370,9 @@ void BufferCache::NoteGpuWrite(uint64_t vaddr, uint64_t size) {
 		if (m_gpu_writes[i - 1].begin == vaddr && m_gpu_writes[i - 1].end == vaddr + size) return;
 	const bool big = ((vaddr + size - 1) >> GpuWriteGranuleBits) - (vaddr >> GpuWriteGranuleBits) >= GpuWriteSpan;
 	m_gpu_writes.push_back({vaddr, vaddr + size, 0, big});
-	CountGpuWrite(m_gpu_writes.back(), 1);
-	if (!big) {
+	if (big) {
+		m_gpu_big_writes.push_back(m_gpu_writes_base + m_gpu_writes.size() - 1);
+	} else {
 		const auto number = m_gpu_writes_base + m_gpu_writes.size(); // (1 + the write's)
 		for (auto g = vaddr >> GpuWriteGranuleBits; g <= (vaddr + size - 1) >> GpuWriteGranuleBits; ++g)
 			m_gpu_write_last[GpuWriteCounter(g)] = number;
@@ -403,32 +394,51 @@ uint64_t BufferCache::InflightWriteTick(uint64_t begin, uint64_t end, uint64_t c
 	}
 	// Stamps never decrease: the completed writes are a prefix of the dated ones.
 	while (m_gpu_writes_head < m_gpu_writes_stamped && m_gpu_writes[m_gpu_writes_head].tick <= completed)
-		CountGpuWrite(m_gpu_writes[m_gpu_writes_head++], -1);
+		++m_gpu_writes_head;
 	if (m_gpu_writes_head >= 4096 && m_gpu_writes_head * 2 >= m_gpu_writes.size()) {
 		m_gpu_writes.erase(m_gpu_writes.begin(), m_gpu_writes.begin() + static_cast<std::ptrdiff_t>(m_gpu_writes_head));
 		m_gpu_writes_stamped -= m_gpu_writes_head;
 		m_gpu_writes_base += m_gpu_writes_head;
 		m_gpu_writes_head = 0;
 	}
-	// No write counted in the range's granules (and no write too big to count): none overlaps it. Else none after
-	// the last one counted in them does (a later write would have counted there too).
-	size_t start = m_gpu_writes.size();
-	if (m_gpu_writes_big == 0 && end > begin) {
-		bool     counted = false;
-		uint64_t last    = 0;
-		for (auto g = begin >> GpuWriteGranuleBits; g <= (end - 1) >> GpuWriteGranuleBits; ++g) {
-			counted |= m_gpu_write_granules[GpuWriteCounter(g)] != 0;
-			last = std::max(last, m_gpu_write_last[GpuWriteCounter(g)]);
-		}
-		if (!counted) return 0;
-		if (last > m_gpu_writes_base) start = static_cast<size_t>(std::min<uint64_t>(last - m_gpu_writes_base, start));
-	}
 	// Ticks grow with the index (undated writes are last): the latest overlapping write has the largest.
-	for (size_t i = start; i > m_gpu_writes_head; --i) {
-		const auto& write = m_gpu_writes[i - 1];
-		if (write.begin < end && begin < write.end) return i - 1 < m_gpu_writes_stamped ? write.tick : UINT64_MAX;
+	const auto tick_of = [&](size_t index) { return index < m_gpu_writes_stamped ? m_gpu_writes[index].tick : UINT64_MAX; };
+	if (end <= begin) {
+		for (size_t i = m_gpu_writes.size(); i > m_gpu_writes_head; --i) {
+			const auto& write = m_gpu_writes[i - 1];
+			if (write.begin < end && begin < write.end) return tick_of(i - 1);
+		}
+		return 0;
 	}
-	return 0;
+	// The big writes (not in m_gpu_write_last), from their own list: the latest overlapping one.
+	while (!m_gpu_big_writes.empty() && m_gpu_big_writes.front() < m_gpu_writes_base + m_gpu_writes_head)
+		m_gpu_big_writes.pop_front();
+	size_t found = 0; // 1 + the index of the latest overlapping write found
+	for (auto it = m_gpu_big_writes.rbegin(); it != m_gpu_big_writes.rend(); ++it) {
+		const auto  index = static_cast<size_t>(*it - m_gpu_writes_base);
+		const auto& write = m_gpu_writes[index];
+		if (write.begin < end && begin < write.end) {
+			found = index + 1;
+			break;
+		}
+	}
+	// The last small write in the range's granules completed (the in-flight writes are the log's tail): none in flight
+	// overlaps it. Else none after that one does (a later one would be the last there), and one before the overlapping
+	// big write is older than it.
+	uint64_t last = 0;
+	for (auto g = begin >> GpuWriteGranuleBits; g <= (end - 1) >> GpuWriteGranuleBits; ++g)
+		last = std::max(last, m_gpu_write_last[GpuWriteCounter(g)]);
+	if (last > m_gpu_writes_base + m_gpu_writes_head) {
+		const auto start = static_cast<size_t>(std::min<uint64_t>(last - m_gpu_writes_base, m_gpu_writes.size()));
+		for (size_t i = start; i > std::max(m_gpu_writes_head, found); --i) {
+			const auto& write = m_gpu_writes[i - 1];
+			if (!write.big && write.begin < end && begin < write.end) {
+				found = i;
+				break;
+			}
+		}
+	}
+	return found == 0 ? 0 : tick_of(found - 1);
 }
 
 bool BufferCache::ReadbackQueueReady(std::span<const std::pair<uint64_t, uint64_t>> ranges,
@@ -1994,8 +2004,10 @@ void BufferCache::CopyGuestMemory(uint64_t dst_vaddr, uint64_t src_vaddr, uint64
 		if (!m_memory_tracker.IsRegionFullyCpuModified(address, bytes)) {
 			// (As the write faults would: the images over the pages first.)
 			m_texture_cache.InvalidateMemory(address, bytes);
+			// (The pages are not GPU-modified, CopyBuffer checked: no GPU result is written back there.)
 			if (m_memory_tracker.MarkRegionAsCpuDirtyKeepProtection(address, bytes) &&
-			    Libs::LibKernel::Memory::TryWriteBacking(address, from, bytes)) {
+			    (Libs::LibKernel::Memory::TryWriteCpuBacking(address, from, bytes) ||
+			     Libs::LibKernel::Memory::TryWriteBacking(address, from, bytes))) {
 				Spec::NoteHostWrite(address, bytes);
 				return;
 			}

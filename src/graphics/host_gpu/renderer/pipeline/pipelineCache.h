@@ -232,6 +232,9 @@ public:
 	// (native bindings, for table mode programs).
 	[[nodiscard]] Pipeline* TryCreateComputePipeline(const ShaderComputeInputInfo& input_info,
 	                                                 const ShaderProgram&          compute_program);
+	// The optimized builds finished since replace their unoptimized pipelines (at each flip: the draws of native
+	// XPR records hold their pipelines and look nothing up). GPU thread.
+	void PromoteFinished();
 	// Native XPR records (src/local/native-xpr.inc): the SRT evaluation of a stage
 	// whose compiled permutation is already chosen, with the readers the normal
 	// path uses. False when the evaluation fails or would select another
@@ -356,6 +359,9 @@ private:
 	// Table mode programs and pipelines (src/local/table-xpr.inc): a new area brings hundreds, which ahead of the
 	// native records' pipelines in one queue kept the draws on the normal path for a minute.
 	std::unique_ptr<CompileWorkers> m_table_workers;
+	// The optimized builds of pipelines in use unoptimized (BuildOptimized): background threads of their own, so a
+	// pipeline a draw waits for is never queued behind them (0.1-4 s each).
+	std::unique_ptr<CompileWorkers> m_optimize_workers;
 	// Unoptimized pipelines whose optimized build is pending, and those it replaced (recorded commands
 	// may still use them).
 	std::vector<Pipeline*>    m_optimizing;
@@ -373,6 +379,12 @@ private:
 	std::atomic<uint32_t> m_table_pipeline_jobs {0};
 	std::atomic<uint64_t> m_table_pipelines_done {0};
 	std::atomic<int64_t>  m_table_pipeline_last_done {0};
+	// The main driver cache's compiles, for the same saver: a session that does not end at the window (killed, or
+	// a crash) lost every pipeline it compiled, and the next one compiled them again (hundreds of native record
+	// variants when entering an area, ~100 ms each).
+	std::mutex            m_main_cache_mutex; // (a save)
+	std::atomic<uint64_t> m_main_pipelines_done {0};
+	std::atomic<int64_t>  m_main_pipeline_last_done {0};
 	std::jthread          m_table_cache_saver;
 
 	Pipeline* CreateGraphicsPipelineImpl(std::span<const RenderColorInfo> colors, const RenderDepthInfo& depth,
@@ -383,6 +395,7 @@ private:
 	void      FinishCompileWorkers();
 	CompileWorkers& Workers();
 	CompileWorkers& TableWorkers();
+	CompileWorkers& OptimizeWorkers();
 	void            BuildOptimized(Pipeline& pipeline, std::function<void(Pipeline&)> build);
 	void            PromoteOptimized();
 	void InitializeDriverCache();
@@ -390,6 +403,7 @@ private:
 	bool SaveDriverCache(vk::PipelineCache cache, const std::filesystem::path& file_path, size_t& saved_size);
 	vk::PipelineCache TablePipelineCache() const { return m_table_cache != nullptr ? m_table_cache : m_driver_cache; }
 	void              TablePipelineDone();
+	void              MainPipelineDone();
 	void InitializeStaticCache(bool create);
 	void WarmPipelines();
 #ifdef KYTY_STATIC_PRECOMPILE
@@ -415,6 +429,10 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
                             const ShaderComputeInputInfo& input_info,
                             vk::ShaderModule compute_module, vk::PipelineCache driver_cache,
                             PipelineBuild build = PipelineBuild::Full, bool native_bindings = false);
+// KYTY_PIPELINE_KEY_LOG (diagnostic): a PIPEKEY line with the driver key of each pipeline the static store did not
+// hold (the precompile: of each it makes) and its modules' shader and SPIR-V hashes.
+bool PipelineKeyLog();
+void NotePipelineKeyModule(vk::ShaderModule module, uint64_t shader_hash, uint64_t spirv_hash);
 
 } // namespace Libs::Graphics
 
