@@ -2,6 +2,7 @@
 
 #include "common/assert.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
+#include "graphics/shader/recompiler/ir/passes/SrtWalker.h"
 
 #include <algorithm>
 #include <array>
@@ -86,6 +87,66 @@ std::optional<TablePlan::Operand> TableOperand(Value value, size_t slots) {
 	return TablePlan::Operand {Kind::Slot, slot.U32()};
 }
 
+// A value of the stage's code address and immediates alone (no user data, memory or control flow).
+bool OfShaderBaseOnly(Value value, uint32_t depth = 0) {
+	value = value.Resolve();
+	if (value.IsImmediate()) return true;
+	const auto* inst = value.TryInstruction();
+	if (inst == nullptr || depth > 32) return false;
+	switch (inst->GetOpcode()) {
+		case ValueOpcode::GetShaderBase: return true;
+		case ValueOpcode::Identity:
+		case ValueOpcode::CompositeConstructU64:
+		case ValueOpcode::CompositeExtractU64:
+		case ValueOpcode::CompositeConstructU32x2:
+		case ValueOpcode::CompositeExtractU32x2:
+		case ValueOpcode::IAdd32:
+		case ValueOpcode::IAdd64:
+		case ValueOpcode::IAddCarry32:
+		case ValueOpcode::ISub32:
+		case ValueOpcode::ISub64:
+		case ValueOpcode::BitwiseAnd32:
+		case ValueOpcode::BitwiseAnd64:
+		case ValueOpcode::BitwiseOr32:
+		case ValueOpcode::BitwiseXor32:
+		case ValueOpcode::ShiftLeftLogical32:
+		case ValueOpcode::ShiftRightLogical32:
+		case ValueOpcode::SelectU1:
+		case ValueOpcode::SelectU32:
+		case ValueOpcode::IEqual32:
+		case ValueOpcode::INotEqual32:
+		case ValueOpcode::ULessThan32:
+		case ValueOpcode::LogicalOr:
+		case ValueOpcode::LogicalAnd:
+		case ValueOpcode::LogicalNot:
+			for (size_t i = 0; i < inst->NumArgs(); ++i)
+				if (!OfShaderBaseOnly(inst->Arg(i), depth + 1)) return false;
+			return true;
+		default: return false;
+	}
+}
+
+// A descriptor's base address dwords (`low`, `high`) as the stage's code address plus an offset below 2^31, the high
+// dword holding nothing else: the offset. Proven by evaluating them at code addresses whose low dword carries into the
+// high one too.
+std::optional<uint32_t> ShaderBaseOffset(Value low, Value high) {
+	if (!OfShaderBaseOnly(low) || !OfShaderBaseOnly(high)) return std::nullopt;
+	const ResourcePlan   none {};
+	const std::array     values {low, high};
+	std::optional<uint32_t> offset;
+	for (const uint64_t base: {0x2'0000'0000ull, 0x2'ffff'ff00ull, 0x9'0271'be00ull, 0x7fff'ffff'ff00ull, 0x3'8000'0000ull}) {
+		SrtRuntime runtime;
+		runtime.shader_base = base;
+		std::array<uint32_t, 2> words {};
+		if (!EvaluateUniformValues(none, values, runtime, words)) return std::nullopt;
+		const auto address = uint64_t {words[0]} | uint64_t {words[1]} << 32u;
+		if (address < base || address - base >= 0x8000'0000ull) return std::nullopt;
+		if (offset && *offset != address - base) return std::nullopt;
+		offset = static_cast<uint32_t>(address - base);
+	}
+	return offset;
+}
+
 } // namespace
 
 void EnterTableMode(Program& program) {
@@ -120,7 +181,20 @@ void EnterTableMode(Program& program) {
 		if (source_index >= program.descriptor_sources.size()) refuse("a descriptor without a source");
 		const auto& source = program.descriptor_sources[source_index];
 		if (source.dword_count != count || source.indirect_image) refuse("a descriptor table mode cannot evaluate");
+		// A V# of constants the code embeds (s_getpc_b64 plus an offset): its base address words are the code address
+		// plus that offset, which the renderer adds to the address of the pair's code (a compute or pixel shader's: the
+		// one its registers name).
+		std::optional<uint32_t> embedded;
+		if (count == 4 && (program.stage == ShaderType::Compute || program.stage == ShaderType::Pixel) &&
+		    (!TableOperand(source.dwords[0], program.srt_reads.size()) ||
+		     !TableOperand(source.dwords[1], program.srt_reads.size())))
+			embedded = ShaderBaseOffset(source.dwords[0], source.dwords[1]);
 		for (uint32_t i = 0; i < count; ++i) {
+			if (embedded && i < 2) {
+				words[i] = {i == 0 ? TablePlan::Operand::Kind::ShaderBaseLow : TablePlan::Operand::Kind::ShaderBaseHigh,
+				            *embedded};
+				continue;
+			}
 			const auto word = TableOperand(source.dwords[i], program.srt_reads.size());
 			if (!word) refuse("a descriptor word table mode cannot evaluate");
 			words[i] = *word;

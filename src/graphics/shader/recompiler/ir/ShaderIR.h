@@ -566,9 +566,11 @@ struct ResourceBlock {
 // and stride, resolved from its V#. The shader reads the block through its device address (TableBlockDword).
 struct TablePlan {
 	struct Operand {
-		enum class Kind : uint8_t { Immediate, UserData, Slot };
+		// ShaderBaseLow/High: the low or high dword of the stage's code address plus `value` (a V# of constants the code
+		// embeds, addressed from s_getpc_b64; the renderer has the address from the registers).
+		enum class Kind : uint8_t { Immediate, UserData, Slot, ShaderBaseLow, ShaderBaseHigh };
 		Kind     kind  = Kind::Immediate;
-		uint32_t value = 0; // the immediate, the scalar register or the slot
+		uint32_t value = 0; // the immediate, the scalar register, the slot or the offset from the code address
 		bool     operator==(const Operand&) const = default;
 	};
 	struct Slot {
