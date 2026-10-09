@@ -44,6 +44,9 @@ bool FlushProcessWriteBuffers();
 // below-normal priority too: background work that must not hold up the game's threads.
 void AvoidCpuList(const char* avoid_cpus);
 void MakeBackgroundThread(const char* avoid_cpus);
+// The calling thread above the normal priority of the game's threads (Windows: THREAD_PRIORITY_HIGHEST; Linux:
+// unchanged): the render thread, which every frame waits for, is not time-sliced against them on its CPUs.
+void MakeCriticalThread();
 
 // A temporary file for scratch data, deleted when it is closed or the process ends (Windows keeps it
 // in memory while it can: FILE_ATTRIBUTE_TEMPORARY); 0 when none could be made. Writes and reads go

@@ -531,6 +531,10 @@ void MakeBackgroundThread(const char* avoid_cpus) {
 	AvoidCpuList(avoid_cpus);
 }
 
+void MakeCriticalThread() {
+	(void)SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+}
+
 uint64_t OpenScratchFile() {
 	wchar_t directory[MAX_PATH + 1] {}, path[MAX_PATH + 1] {};
 	if (GetTempPathW(MAX_PATH + 1, directory) == 0 || GetTempFileNameW(directory, L"kyt", 0, path) == 0) return 0;
@@ -749,6 +753,8 @@ void MakeBackgroundThread(const char* avoid_cpus) {
 	(void)setpriority(PRIO_PROCESS, static_cast<id_t>(ThreadId()), 10);
 	AvoidCpuList(avoid_cpus);
 }
+
+void MakeCriticalThread() {}
 
 // Handles are the file descriptor + 1 (0: none).
 uint64_t OpenScratchFile() {
