@@ -743,7 +743,11 @@ bool BufferCache::TryReadCopyFeedback(Buffer& buffer, uint64_t vaddr, uint64_t s
 			--it;
 			const auto& slot = feedback.slots[it->second];
 			if (cursor >= slot.address + slot.size) return false;
-			if (slot.owner != buffer.Handle() || slot.mapping_epoch != mapping_epoch ||
+			// A snapshot of memory unmapped since (every remap unmaps first) is another mapping's. Mappings elsewhere
+			// change nothing in it: the global mapping epoch, which the game's streaming moves every frame or two,
+			// dropped every snapshot then (half of the 1-1 walk's frames read their ~60 snapshotted result pages back
+			// on the copy engine, ~80 us each, on the thread that submits the main batch).
+			if (slot.owner != buffer.Handle() || m_resources->UnmappedSince(slot.mapping_epoch, slot.address, slot.size) ||
 			    !m_resources->IsMapped(slot.address, slot.size) ||
 			    !LibKernel::Memory::IsUniqueGuestBackingRange(slot.address, slot.size)) {
 				return false;
