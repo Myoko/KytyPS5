@@ -348,6 +348,17 @@ inline void Run(uint64_t id, const std::string& line) {
 		std::printf("LIVE_PEEK id=%" PRIu64 " va=%s bytes=%s\n", id, arg1, hex.c_str());
 	} else if (cmd == "measure" && n >= 2) {
 		Measure(id, std::strtod(arg1, nullptr), n == 3 ? arg2 : "-");
+	} else if (cmd == "flips" && n == 3) {
+		// flips <count> <path>: the last flips' intervals (us), oldest first, one a line (periodic slow frames).
+		const auto last  = g_flips.load();
+		const auto count = std::min<uint64_t>({std::strtoull(arg1, nullptr, 10), FlipTimes - 1, last ? last - 1 : 0});
+		if (auto* out = std::fopen(arg2, "w")) {
+			for (auto flip = last - count; flip < last; ++flip)
+				std::fprintf(out, "%lld\n", static_cast<long long>((g_flip_times[flip % FlipTimes].load() -
+				                                                    g_flip_times[(flip - 1) % FlipTimes].load()) / 1000));
+			std::fclose(out);
+		}
+		std::printf("LIVE_FLIPS id=%" PRIu64 " count=%llu path=%s\n", id, static_cast<unsigned long long>(count), arg2);
 	} else if ((cmd == "prof" || cmd == "profp" || cmd == "profw") && n == 3) {
 		Profile(id, std::strtod(arg1, nullptr), arg2, cmd == "profp", cmd == "profw");
 #if defined(_WIN32)
