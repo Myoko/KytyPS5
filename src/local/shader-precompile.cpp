@@ -35,6 +35,7 @@
 #include "common/threads.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "loader/systemContent.h"
 #include "static-seeds.h"
 
@@ -65,6 +66,8 @@ int main(int argc, char* argv[]) {
 	PipelineCache::PrecompileOptions options;
 	StaticSeeds::Options             make_seeds;          // --make-seeds and its options
 	bool                             seed_option = false; // --states, --stages or --limit
+	bool                             amd         = false; // --amd
+	bool                             validate    = false; // --validate: SPIR-V validation of every module
 	options.threads = std::max(1u, std::thread::hardware_concurrency());
 	for (int i = 1; i < argc; i++) {
 		const std::string_view arg   = argv[i];
@@ -77,6 +80,13 @@ int main(int argc, char* argv[]) {
 			status = true;
 		} else if (arg == "--no-pipelines") {
 			options.pipelines = false;
+		} else if (arg == "--amd") {
+			// What a GPU running wave64 compute natively with 4-byte robust storage alignment (AMD RDNA) gets:
+			// 64-lane host subgroups and shader-side storage buffer bounds (with --no-pipelines on another GPU).
+			options.host_subgroup_size = 64;
+			amd = true;
+		} else if (arg == "--validate") {
+			validate = true;
 		} else if (arg == "--static-inputs") {
 			options.static_inputs = true;
 		} else if (value == nullptr) {
@@ -127,6 +137,7 @@ int main(int argc, char* argv[]) {
 	subsystems.Initialize<Config::Lifecycle>();
 	Config::ConfigOptions config;
 	config.printf_direction = Config::OutputDirection::Silent;
+	config.shader_validation_enabled = validate;
 	Config::Load(config);
 	subsystems.Initialize<Log::Lifecycle>();
 	// The title the caches are named after.
@@ -142,6 +153,7 @@ int main(int argc, char* argv[]) {
 		std::fprintf(stderr, "no Vulkan device\n");
 		return 1;
 	}
+	if (amd) Libs::Graphics::ShaderRecompiler::SetDeviceStorageBufferBounds(false);
 	if (status) {
 		std::printf("inputs %s\nstatic cache %s\n",
 		            PipelineCache::StaticInputsCurrent(graphics, options.seeds) ? "current" : "stale",
