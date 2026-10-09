@@ -14,6 +14,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <dxgi1_4.h>
 #include <psapi.h>
 #include <tlhelp32.h>
 #include <atomic>
@@ -426,9 +427,47 @@ MemoryUse ProcessMemory() {
 }
 
 uint64_t PhysicalMemory() {
+	if (const char* simulate = std::getenv("KYTY_SIMULATE_RAM_MB"); simulate != nullptr && *simulate != '\0')
+		return std::strtoull(simulate, nullptr, 10) << 20u;
 	MEMORYSTATUSEX status {};
 	status.dwLength = sizeof(status);
 	return GlobalMemoryStatusEx(&status) != 0 ? status.ullTotalPhys : 0;
+}
+
+static IDXGIAdapter3* g_video_memory_adapter = nullptr;
+
+bool OpenVideoMemoryAdapter(const uint8_t* luid) {
+	HMODULE dxgi = LoadLibraryA("dxgi.dll");
+	if (dxgi == nullptr || g_video_memory_adapter != nullptr) return g_video_memory_adapter != nullptr;
+	using CreateFactory = HRESULT(WINAPI*)(REFIID, void**);
+	const auto     create  = reinterpret_cast<CreateFactory>(GetProcAddress(dxgi, "CreateDXGIFactory1"));
+	IDXGIFactory4* factory = nullptr;
+	if (create == nullptr || FAILED(create(__uuidof(IDXGIFactory4), reinterpret_cast<void**>(&factory)))) return false;
+	LUID id {};
+	std::memcpy(&id, luid, sizeof(id));
+	if (FAILED(factory->EnumAdapterByLuid(id, __uuidof(IDXGIAdapter3), reinterpret_cast<void**>(&g_video_memory_adapter))))
+		g_video_memory_adapter = nullptr;
+	factory->Release();
+	return g_video_memory_adapter != nullptr;
+}
+
+bool QueryVideoMemory(uint64_t* usage, uint64_t* budget) {
+	DXGI_QUERY_VIDEO_MEMORY_INFO info {};
+	if (g_video_memory_adapter == nullptr ||
+	    FAILED(g_video_memory_adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)))
+		return false;
+	*usage  = info.CurrentUsage;
+	*budget = info.Budget;
+	return true;
+}
+
+bool QuerySharedGpuMemory(uint64_t* usage) {
+	DXGI_QUERY_VIDEO_MEMORY_INFO info {};
+	if (g_video_memory_adapter == nullptr ||
+	    FAILED(g_video_memory_adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &info)))
+		return false;
+	*usage = info.CurrentUsage;
+	return true;
 }
 
 #else
@@ -601,9 +640,23 @@ MemoryUse ProcessMemory() {
 }
 
 uint64_t PhysicalMemory() {
+	if (const char* simulate = std::getenv("KYTY_SIMULATE_RAM_MB"); simulate != nullptr && *simulate != '\0')
+		return std::strtoull(simulate, nullptr, 10) << 20u;
 	const long pages = sysconf(_SC_PHYS_PAGES);
 	const long size  = sysconf(_SC_PAGESIZE);
 	return pages > 0 && size > 0 ? static_cast<uint64_t>(pages) * static_cast<uint64_t>(size) : 0;
+}
+
+bool OpenVideoMemoryAdapter(const uint8_t* /*luid*/) {
+	return false;
+}
+
+bool QueryVideoMemory(uint64_t* /*usage*/, uint64_t* /*budget*/) {
+	return false;
+}
+
+bool QuerySharedGpuMemory(uint64_t* /*usage*/) {
+	return false;
 }
 
 #endif

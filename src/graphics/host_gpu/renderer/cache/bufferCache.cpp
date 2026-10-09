@@ -1210,6 +1210,8 @@ void BufferCache::ReportLodStats(void* dst, uint32_t size, bool reset) {
 	if (reset) m_lod_stats_buffer.Flush(0, 256 * 16);
 }
 
+static BufferCache* g_sync_cache = nullptr;
+
 BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
                          PageManager& page_manager, TextureCache& texture_cache,
                          GpuResourceManager* resources)
@@ -1232,6 +1234,10 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
       m_texture_cache(texture_cache), m_resources(resources) {
 	m_scheduler.SetPrologueHook([this](vk::CommandBuffer command) { FlushPrologueCopies(command); });
 	m_gpu_modified_ranges.AllowFastPath();
+	g_sync_cache = this;
+	LiveCounters::g_sync_report = [] {
+		if (g_sync_cache != nullptr) g_sync_cache->PrintSyncState();
+	};
 	std::memset(m_gds_buffer.Mapped().data(), 0, static_cast<size_t>(m_gds_buffer.Size()));
 	m_gds_buffer.Flush(0, m_gds_buffer.Size());
 	std::memset(m_lod_stats_buffer.Mapped().data(), 0, 256 * 16);
@@ -1260,6 +1266,8 @@ BufferCache::BufferCache(GraphicContext& graphics, CommandScheduler& scheduler,
 }
 
 BufferCache::~BufferCache() {
+	LiveCounters::g_sync_report = nullptr;
+	g_sync_cache                = nullptr;
 	DrainGuestReadback();
 	m_readback_queue.reset();
     m_graphics.device.destroyPipeline(m_lod_pack_pipeline, nullptr);
@@ -1276,6 +1284,32 @@ BufferCache::~BufferCache() {
 		}
 	}
 	m_buffers.clear();
+}
+
+void BufferCache::PrintSyncState() {
+	auto&    master = m_scheduler.GetMasterSemaphore();
+	uint64_t gpu    = 0;
+	(void)m_graphics.device.getSemaphoreCounterValue(master.Handle(), &gpu);
+	uint64_t queued = 0, done = 0;
+#ifdef KYTY_LOCAL_VULKAN_RECORDING
+	queued = LocalVulkanRecording::DeferredSubmitsQueued();
+	done   = LocalVulkanRecording::DeferredSubmitsDone();
+#endif
+	std::printf("SYNC master gpu=%" PRIu64 " known=%" PRIu64 " current=%" PRIu64 " deferred queued=%" PRIu64 " done=%" PRIu64
+	            " upload pushed=%" PRIu64 "\n",
+	            gpu, master.KnownGpuTick(), m_scheduler.CurrentTick(), queued, done, AsyncUpload::SubmitSequence());
+	if (m_readback_queue)
+		std::printf("SYNC readback queue submitted=%" PRIu64 " counter=%" PRIu64 "\n", m_readback_queue->Submitted(),
+		            m_readback_queue->Counter());
+	for (size_t slot = 0; slot < GuestReadbackSlots; ++slot) {
+		const auto request = m_guest_readbacks[slot];
+		if (!request) continue;
+		std::printf("SYNC readback slot=%zu begin=0x%" PRIx64 " size=0x%" PRIx64 " tick=%" PRIu64 " producer=%" PRIu64
+		            " queue_value=%" PRIu64 " copying=%d copied=%d state=%u\n",
+		            slot, request->begin, request->size, request->tick, request->producer_tick, request->queue_value,
+		            request->copying.load() ? 1 : 0, request->copied.load() ? 1 : 0, request->state.load());
+	}
+	std::fflush(stdout);
 }
 
 void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size) {

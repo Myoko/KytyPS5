@@ -155,8 +155,14 @@ Buffer::Buffer(GraphicContext& graphics, CommandScheduler& scheduler, MemoryUsag
 	// ~100 us a buffer (2.4 us placed), 8400 buffers while a save loads and 100-400 in a frame where the game streams
 	// a new area.
 	const bool              with_bda = bool(flags & vk::BufferUsageFlagBits::eShaderDeviceAddress);
+	// On a GPU short of video memory a GPU buffer asks for video memory whatever VMA's budget says, and goes elsewhere
+	// only when the driver has none: NVIDIA counts what its system memory type holds, the textures put there
+	// (GraphicContext::CreateImage), under the video memory heap's usage, so the budget sent buffers to system memory
+	// while there was room (Shrine of Storms with 8 GB: 2 buffers, 140 MB).
+	const bool ignore_budget = usage == MemoryUsage::DeviceLocal && graphics.small_video_memory;
 	VmaAllocationCreateInfo allocation_info {};
-	allocation_info.flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | AllocationFlags(usage);
+	allocation_info.flags = (ignore_budget ? VmaAllocationCreateFlags {} : VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT) |
+	                        AllocationFlags(usage);
 	allocation_info.usage = AllocationUsage(usage);
 	allocation_info.preferredFlags = usage == MemoryUsage::DeviceLocal
 	                                     ? VkMemoryPropertyFlags {}

@@ -24,8 +24,8 @@ game's `sce_sys\param.json` and warns when the version is not one of these.
 | --- | --- | --- |
 | OS | Windows 10 (1803 or later) or Windows 11, 64-bit | |
 | CPU | AVX2 required (Intel Core 4th generation / AMD Ryzen or later) | 8 cores or more recommended; the test PC has an i9-14900K |
-| RAM | **32 GB or more** | The game process keeps about 18–20 GB in RAM and needs about 34 GB of RAM plus page file: keep the page file "system managed" (the launcher warns when Windows cannot provide it) |
-| GPU | NVIDIA RTX with **12 GB of VRAM or more** | About 11 GB of VRAM in use; the test PC has an RTX 5090; AMD/Intel GPUs are untested |
+| RAM | **32 GB recommended, 16 GB works** | The game process takes about 20 GB while a save loads but uses only about 4 GB of it in play, so with 16 GB Windows moves the rest to the page file and loading takes longer. It needs about 34 GB of RAM plus page file: keep the page file "system managed" (the launcher warns when Windows cannot provide it) |
+| GPU | NVIDIA RTX with **12 GB of VRAM recommended, 8 GB works** | About 11 GB of VRAM in use in the heaviest areas. With less than 12 GB, render targets and buffers keep the video memory and the textures that do not fit are read from system memory. The test PC with its video memory limited to 8 GB: Boletaria's gate 45–52 fps, most areas 40–60, the heaviest (Shrine of Storms, Stonefang 2-1, Boletaria 1-2 and 1-3) 10–35, changing from run to run with the textures the driver keeps in video memory; a slower GPU or PCIe link gives less. The test PC has an RTX 5090; AMD/Intel GPUs are untested |
 | GPU driver | The latest | The emulator uses Vulkan, which comes with the driver |
 | Disk | About 83 GB for the game, an SSD recommended | The emulator takes about 270 MB, the shader caches up to about 2.5 GB, and while playing the system temp folder needs another 4–5 GB |
 

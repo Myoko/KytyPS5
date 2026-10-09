@@ -212,7 +212,7 @@ static TextureCache* g_report_cache = nullptr;
 void TextureCache::WriteReport(const char* path) {
 	FILE* file = std::fopen(path, "wb");
 	if (file == nullptr) return;
-	std::fputs("id\taddress\tguest_size\tbytes\tformat\tguest_format\ttype\twidth\theight\tdepth\tlevels\tlayers\tsamples\ttile\tusage\tregistered\tgpu_modified\tlru_tick\tgc_tick\n", file);
+	std::fputs("id\taddress\tguest_size\tbytes\tformat\tguest_format\ttype\twidth\theight\tdepth\tlevels\tlayers\tsamples\ttile\tusage\tregistered\tgpu_modified\tlru_tick\tgc_tick\tmemory_type\n", file);
 	std::scoped_lock lock {m_lock};
 	m_slot_images.ForEach([&](ImageId id, Image& image) {
 		VmaAllocationInfo allocation {};
@@ -226,13 +226,14 @@ void TextureCache::WriteReport(const char* path) {
 		if (usage.depth_target) kinds[k++] = 'd';
 		if (usage.video_out) kinds[k++] = 'v';
 		if (k == 0) kinds[k++] = '-';
-		std::fprintf(file, "%u\t0x%" PRIx64 "\t%" PRIu64 "\t%" PRIu64 "\t%s\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%s\t%d\t%d\t%" PRIu64 "\t%" PRIu64 "\n",
+		std::fprintf(file, "%u\t0x%" PRIx64 "\t%" PRIu64 "\t%" PRIu64 "\t%s\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%s\t%d\t%d\t%" PRIu64 "\t%" PRIu64 "\t%d\n",
 		             id.index, image.info.data.address, image.info.data.size, static_cast<uint64_t>(allocation.size),
 		             vk::to_string(image.backing.format).c_str(), static_cast<uint32_t>(image.info.guest_format),
 		             static_cast<uint32_t>(image.info.type), image.info.extent.width, image.info.extent.height,
 		             image.info.extent.depth, image.info.resources.levels, image.info.resources.layers, image.info.samples,
 		             static_cast<uint32_t>(image.info.tile_mode), kinds, image.registered ? 1 : 0, image.IsGpuModified() ? 1 : 0,
-		             image.registered ? m_lru_cache.TickOf(image.lru_id) : uint64_t {0}, m_gc_tick);
+		             image.registered ? m_lru_cache.TickOf(image.lru_id) : uint64_t {0}, m_gc_tick,
+		             image.backing.allocation != nullptr ? static_cast<int>(allocation.memoryType) : -1);
 	});
 	std::fclose(file);
 }
@@ -3401,6 +3402,16 @@ void TextureCache::RunGarbageCollector() {
 	const uint64_t   tick = m_gc_tick++;
 	if (m_graphics.CanReportMemoryUsage()) {
 		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();
+	}
+	// A GPU short of video memory: a log line on where it goes when its use moved by 256 MiB (checked every 60 flips).
+	if (uint64_t video = 0, budget = 0; m_graphics.small_video_memory && tick % 60 == 0 &&
+	                                    m_graphics.QueryLocalVideoMemory(&video, &budget) &&
+	                                    (video > m_logged_video_memory + (uint64_t {256} << 20u) ||
+	                                     video + (uint64_t {256} << 20u) < m_logged_video_memory)) {
+		m_logged_video_memory = video;
+		char label[32];
+		std::snprintf(label, sizeof(label), "flip %llu", static_cast<unsigned long long>(tick));
+		m_graphics.LogVideoMemory(label);
 	}
 	// Over the budget: the images no draw or dispatch used for StaleTicks flips (~10 s), least recently used first, at
 	// most MaxDeletions a flip. What the game stops drawing it stops binding: 1-1 standing, 3.2 GiB of images were used

@@ -53,13 +53,21 @@ void     CloseScratchFile(uint64_t file);
 uint64_t OpenFileForReading(const char* path);
 
 // The process's committed private memory and resident working set, and the machine's physical memory, in
-// bytes (0 where the host cannot tell).
+// bytes (0 where the host cannot tell; KYTY_SIMULATE_RAM_MB=<n> reports n MiB of physical memory, for tests).
 struct MemoryUse {
 	uint64_t private_bytes = 0;
 	uint64_t working_set   = 0;
 };
 MemoryUse ProcessMemory();
 uint64_t  PhysicalMemory();
+
+// Windows' own figures for this process's video memory on the GPU with this LUID (Vulkan's deviceLUID, 8 bytes): in
+// use (what Task Manager shows as its dedicated GPU memory) and the budget Windows gives the process (DXGI). NVIDIA's
+// Vulkan heap usage counts what its system memory type holds as well. false where there are none (other systems).
+bool OpenVideoMemoryAdapter(const uint8_t* luid);
+bool QueryVideoMemory(uint64_t* usage, uint64_t* budget);
+// The process's system memory the GPU uses (Task Manager's shared GPU memory).
+bool QuerySharedGpuMemory(uint64_t* usage);
 
 #if defined(_WIN32)
 // With its output in files (run-windows.ps1's logs), the console window a launcher gave the process

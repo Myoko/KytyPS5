@@ -504,6 +504,10 @@ inline void Run(uint64_t id, const std::string& line) {
 		// images <path>: the texture cache's images, one tab-separated row each (what the video memory holds).
 		if (LiveCounters::g_image_report != nullptr) LiveCounters::g_image_report(arg1);
 		std::printf("LIVE_IMAGES id=%" PRIu64 " path=%s written=%d\n", id, arg1, LiveCounters::g_image_report != nullptr ? 1 : 0);
+	} else if (cmd == "sync") {
+		// sync: GPU timelines, deferred submissions and pending guest readbacks (a stalled GPU thread).
+		if (LiveCounters::g_sync_report != nullptr) LiveCounters::g_sync_report();
+		std::printf("LIVE_SYNC id=%" PRIu64 "\n", id);
 	} else if (cmd == "warp" && n >= 2) {
 		// warp <map> <spawn> | warp off: the debug warp (loader/demonsSoulsWarp.h).
 		const bool off = std::string_view(arg1) == "off";

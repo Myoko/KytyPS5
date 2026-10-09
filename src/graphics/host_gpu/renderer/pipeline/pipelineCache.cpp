@@ -1357,14 +1357,20 @@ PipelineCache::CompileWorkers& PipelineCache::OptimizeWorkers() {
 	return *m_optimize_workers;
 }
 
-// KYTY_PIPELINE_FAST_BUILD=0: a pipeline no cache holds is compiled optimized before its first use
-// (up to seconds on NVIDIA) instead of unoptimized now and optimized on a worker.
-static PipelineBuild FirstBuild() {
-	static const bool fast = [] {
+// A pipeline no cache holds: compiled unoptimized now (VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT) and optimized on a
+// worker, or optimized before its first use (up to seconds on NVIDIA). Unoptimized first only on NVIDIA, where it was
+// measured (~100x faster to compile) and tested. An AMD RX 6700 XT (RDNA2) crashed in its driver at start-up, every
+// run, while the first compute pipelines were made (10-09 report); the precompile, which builds them optimized, ran
+// on that PC without a crash, so the unoptimized build is the suspect (unconfirmed: no AMD GPU here).
+// KYTY_PIPELINE_FAST_BUILD=1 / 0 chooses either on any GPU.
+static PipelineBuild FirstBuild(const GraphicContext& graphics) {
+	static const int fast = [] {
 		const char* value = std::getenv("KYTY_PIPELINE_FAST_BUILD");
-		return value == nullptr || std::string_view(value) != "0";
+		return value == nullptr ? -1 : (std::string_view(value) != "0" ? 1 : 0);
 	}();
-	return fast ? PipelineBuild::Fast : PipelineBuild::Full;
+	constexpr uint32_t NvidiaVendor = 0x10DE;
+	const bool         nvidia       = graphics.GetPhysicalDeviceProperties().vendorID == NvidiaVendor;
+	return fast == 1 || (fast == -1 && nvidia) ? PipelineBuild::Fast : PipelineBuild::Full;
 }
 
 // An unoptimized pipeline (PipelineBuild::Fast): `build` compiles the optimized one on a worker, into
@@ -1496,10 +1502,21 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 			}
 		}
 		const auto memory_before = LocalPlatform::ProcessMemory();
-		const auto video_before  = m_graphics.GetDeviceMemoryUsage();
+		m_graphics.RefreshMemoryBudget();
+		const auto video_before = m_graphics.GetDeviceMemoryUsage();
 		m_program_cache->Warm(path, title + device, std::string_view(warmup) == "1", adopt_from);
 		const auto memory_shaders = LocalPlatform::ProcessMemory();
-		if (std::string_view(warmup) == "1") {
+		// The recorded pipelines (15K, most of other areas) cost ~1 GiB of video memory and ~3 GiB of RAM (5 GiB
+		// committed): a GPU that cannot also hold the game's working set (small_video_memory), or a PC with less RAM
+		// than the ~20 GB the game takes while it loads, makes them when they are first used (~0.75 ms each from the
+		// static precompile's binaries).
+		constexpr uint64_t PipelineWarmupMinRam = uint64_t {24} << 30u;
+		const uint64_t     ram                  = LocalPlatform::PhysicalMemory();
+		const bool warm_pipelines = !m_graphics.small_video_memory && (ram == 0 || ram >= PipelineWarmupMinRam);
+		if (!warm_pipelines && std::string_view(warmup) == "1")
+			PipelineCacheLog("Pipeline warmup: skipped (video memory budget {} MiB, RAM {} MiB)",
+			                 m_graphics.GetTotalMemoryBudget() >> 20u, ram >> 20u);
+		if (std::string_view(warmup) == "1" && warm_pipelines) {
 			const auto begin = std::chrono::steady_clock::now();
 			WarmPipelines();
 			// What the driver had to compile is kept at once: the cache is otherwise written only
@@ -1507,6 +1524,7 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 			if (std::chrono::steady_clock::now() - begin > std::chrono::seconds(5)) (void)Save();
 		}
 		const auto memory_after = LocalPlatform::ProcessMemory();
+		m_graphics.RefreshMemoryBudget();
 		const auto mib = [](uint64_t to, uint64_t from) { return (static_cast<int64_t>(to) - static_cast<int64_t>(from)) >> 20; };
 		PipelineCacheLog("Warmup memory: shaders {:+} MiB committed {:+} MiB resident, pipelines {:+} MiB committed {:+} MiB "
 		                 "resident, video memory {:+} MiB",
@@ -1515,6 +1533,7 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 		    mib(memory_after.private_bytes, memory_shaders.private_bytes),
 		    mib(memory_after.working_set, memory_shaders.working_set),
 		    mib(m_graphics.GetDeviceMemoryUsage(), video_before));
+		m_graphics.LogVideoMemory("warmup");
 		m_program_cache->warmup.StartWriter();
 		if (const char* only = std::getenv("KYTY_SHADER_WARMUP_ONLY"); only && std::string_view(only) == "1") {
 			if (!Save()) {
@@ -2393,7 +2412,7 @@ PipelineCache::Pipeline* PipelineCache::CreateGraphicsPipelineImpl(
 	LogPipelineTrace("CreatePipelineInternal begin", vs_id, ps_id);
 	CreatePipelineInternal(m_graphics, *cached, rendering, key.vertex_input, vs_input_info,
 	                       vertex_program, ps_input_info, pixel_program, static_params,
-	                       m_driver_cache, native_bindings, FirstBuild());
+	                       m_driver_cache, native_bindings, FirstBuild(m_graphics));
 	MainPipelineDone();
 	LogPipelineTrace("CreatePipelineInternal done", vs_id, ps_id);
 
@@ -2459,7 +2478,7 @@ PipelineCache::CreateComputePipeline(const ShaderComputeInputInfo& input_info,
 	LiveCensus::WaitScope compiling(LiveCensus::WaitCompile);
 	auto cached = std::make_unique<Pipeline>();
 	CreatePipelineInternal(m_graphics, *cached, input_info, compute_program.module, m_driver_cache,
-	                       FirstBuild());
+	                       FirstBuild(m_graphics));
 	MainPipelineDone();
 
 	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
