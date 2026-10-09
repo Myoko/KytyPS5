@@ -209,6 +209,7 @@ struct RenderExecutor::NativeXprDrawState {
 	std::vector<Target>              targets;
 	LocalDrawRecording::DynamicState dynamic;
 	uint64_t                         dynamic_hash = 0; // of the dynamic state's bytes: two states compare it first
+	ResolvedDynamicState             resolved;         // the dynamic state's Vulkan values (once, at capture)
 	// Metadata epoch under which no target had a pending fast clear.
 	mutable uint64_t                 meta_epoch = 0;
 	// Texture cache resolution epoch under which the targets were what a lookup finds (0: not yet).
@@ -618,6 +619,11 @@ struct RenderExecutor::NativeXprCache {
 		const PipelineCache::Pipeline* pipeline   = nullptr;
 		uint64_t                       index_base = 0, index_bytes = 0;
 		vk::IndexType                  index_type = vk::IndexType::eUint16;
+		// The dynamic state the emissions recorded into `command` (valid in the same command and generation, when
+		// `dynamic_held`): another state records only the values that differ (NativeXprEmitDynamic).
+		ResolvedDynamicState           dynamic {};
+		vk::ImageAspectFlags           feedback {};
+		bool                           dynamic_held = false, feedback_held = false;
 	} emit;
 	// Programs the SRT trace cannot cover (no single linear plan): never retried.
 	std::unordered_set<const ShaderRecompiler::IR::CompiledShaderInfo*> untraceable;
@@ -1595,6 +1601,27 @@ bool RenderExecutor::NativeXprRebind(NativeXprRecord&                           
 	                                    true) == nullptr;
 }
 
+// A draw state's dynamic state into `vk_buffer`: all of it in another command buffer or generation (what any other
+// path recorded is unknown), else the values that differ from what the table and native emissions recorded there.
+// (A state change recorded all ~13 values, most unchanged: ~2% of the GPU thread on the 1-1 walk, 0.8% now.)
+void RenderExecutor::NativeXprEmitDynamic(NativeXprCache& cache, vk::CommandBuffer vk_buffer,
+                                          const NativeXprDrawState& draw_state, bool same_command) {
+	auto&      emit = cache.emit;
+	const bool diff = same_command && emit.dynamic_held;
+	if (!diff) emit.dynamic = draw_state.resolved;
+	EmitGraphicsDynamicParams(vk_buffer, draw_state.resolved, diff ? &emit.dynamic : nullptr, VULKAN_HPP_DEFAULT_DISPATCHER);
+	emit.dynamic_held = true;
+	const auto& state = draw_state.dynamic;
+	if (state.feedback_enabled) {
+		if (!diff || !emit.feedback_held || emit.feedback != state.feedback_aspects)
+			vk_buffer.setAttachmentFeedbackLoopEnableEXT(state.feedback_aspects);
+		emit.feedback      = state.feedback_aspects;
+		emit.feedback_held = true;
+	} else if (!diff) {
+		emit.feedback_held = false;
+	}
+}
+
 // The draw state under `state_key`: the render targets as this draw left them (a reopened rendering loads),
 // their layouts and the dynamic state.
 void RenderExecutor::NativeXprCaptureState(CommandBuffer& buffer, const DrawRenderState& state,
@@ -1639,6 +1666,9 @@ void RenderExecutor::NativeXprCaptureState(CommandBuffer& buffer, const DrawRend
 	        ? vk::ImageAspectFlags {vk::ImageAspectFlagBits::eDepth}
 	        : vk::ImageAspectFlags {});
 	draw_state.dynamic_hash = XXH3_64bits(&draw_state.dynamic, sizeof(draw_state.dynamic));
+	draw_state.resolved     = ResolveGraphicsDynamicParams(draw_state.dynamic.buffer, draw_state.dynamic.indexed_viewports,
+	                                                       draw_state.dynamic.colors, draw_state.dynamic.color_count,
+	                                                       draw_state.dynamic.depth);
 	// Entries stay at their address (emission tracking compares pointers); a
 	// replaced state must be emitted again.
 	const auto write = CatalogWrite();
@@ -3055,12 +3085,7 @@ bool RenderExecutor::NativeXprEmit(CommandBuffer& buffer, NativeXprRecord& recor
 		// Another draw state with the same dynamic state is bound already.
 		emit.state = &draw_state;
 	}
-	if (!same_command || emit.state != &draw_state) {
-		const auto& state = draw_state.dynamic;
-		SetGraphicsDynamicParamsImpl(state.buffer, vk_buffer, state.indexed_viewports, state.colors,
-		                             state.color_count, state.depth, VULKAN_HPP_DEFAULT_DISPATCHER);
-		if (state.feedback_enabled) vk_buffer.setAttachmentFeedbackLoopEnableEXT(state.feedback_aspects);
-	}
+	if (!same_command || emit.state != &draw_state) NativeXprEmitDynamic(cache, vk_buffer, draw_state, same_command);
 	if (!same_command || emit.pipeline != &pipeline) {
 		vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
 	}

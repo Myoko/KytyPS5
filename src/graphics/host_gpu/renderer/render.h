@@ -331,6 +331,9 @@ private:
 	                                        std::span<const std::pair<uint32_t, uint32_t>> images,
 	                                        std::span<const std::pair<uint32_t, uint32_t>> buffers);
 	void NativeXprCollect();
+	// A draw state's dynamic state, only what differs from what the emissions recorded in the command buffer.
+	static void NativeXprEmitDynamic(NativeXprCache& cache, vk::CommandBuffer vk_buffer, const NativeXprDrawState& draw_state,
+	                                 bool same_command);
 	void NativeXprLearn(const NativeXprRecord& stale, NativeXprRecord& fresh);
 	void NativeXprStore(CommandBuffer& buffer, const DrawRenderState& state,
 	                    vk::PrimitiveTopology topology, bool primitive_restart_enable,
