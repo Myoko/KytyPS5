@@ -1468,6 +1468,18 @@ void DefineGetBdaPointer(EmitterState& state) {
 	state.builder.AddFunction({OpFunctionEnd});
 }
 
+uint32_t EmitTableBlockLoad(EmitterState& state, uint32_t index) {
+	const auto address = TypeDeviceAddress(state);
+	const auto offset  = Binary(state, OpShiftLeftLogical, address, Unary(state, OpUConvert, address, index),
+	                            ConstantU32(state, 2u));
+	const auto pointer = state.builder.AllocateId();
+	state.builder.AddFunction({OpConvertUToPtr, TypePhysicalU32Pointer(state), pointer,
+	                           Binary(state, OpIAdd, address, state.table_block, offset)});
+	const auto value = state.builder.AllocateId();
+	state.builder.AddFunction({OpLoad, TypeU32(state), value, pointer, MemoryAccessAlignedMask, sizeof(uint32_t)});
+	return value;
+}
+
 // Table mode, at the function's entry: the slots the shader reads (IR::TablePlan::gpu) from its block (the block's
 // device address is two dwords of shader data, IR::BindingLayout::TableBlockDword), and each buffer's device
 // address, size in dwords, buffer word and stride (the renderer resolved the V#).
@@ -1479,6 +1491,7 @@ void EmitTableMode(ValueEmitContext& ctx) {
 	const auto  address = TypeDeviceAddress(state);
 	const auto  block   = DeviceAddressFromWords(state, EmitShaderDataDwordLoad(state, program.bindings.TableBlockDword()),
 	                                             EmitShaderDataDwordLoad(state, program.bindings.TableBlockDword() + 1));
+	state.table_block   = block;
 	const auto  load    = [&](uint32_t dword) {
 		const auto pointer = state.builder.AllocateId();
 		state.builder.AddFunction({OpConvertUToPtr, TypePhysicalU32Pointer(state), pointer,

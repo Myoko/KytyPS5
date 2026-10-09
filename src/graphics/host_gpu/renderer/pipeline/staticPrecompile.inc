@@ -327,6 +327,7 @@ bool PipelineCache::WarmSeeds(const PrecompileOptions& args, size_t& left_out) {
 						buffer.descriptor_swizzle = DstSel(4, 5, 6, 7);
 					}
 				}
+				(void)ShaderRecompiler::IR::TableIndirectForm(specialization, nullptr); // (as ProgramCache::Get's)
 			}
 			auto result = ShaderRecompiler::CompileProgram(std::move(translated), options, specialization,
 			                                               table ? push_cursor : seed.push_cursor);

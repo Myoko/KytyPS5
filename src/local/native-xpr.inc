@@ -67,6 +67,7 @@ extern "C" {
 [[gnu::used]] volatile std::atomic<uint32_t> kyty_local_table_xpr_mode {0};
 // 1: table dispatches (src/local/table-xpr.inc) for the compute shaders that allow them.
 [[gnu::used]] volatile std::atomic<uint32_t> kyty_local_table_dispatch_mode {0};
+[[gnu::used]] volatile std::atomic<uint32_t> kyty_local_table_indirect_mode {1};
 // N > 0: at most N table store requests a frame (each takes its draw to the normal path; the others draw from native
 // records meanwhile). A new area brings hundreds of pairs whose programs and pipelines compile in the background.
 [[gnu::used]] volatile std::atomic<uint32_t> kyty_local_table_store_budget {32};

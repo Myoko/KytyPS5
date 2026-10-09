@@ -153,11 +153,15 @@ void EnterTableMode(Program& program) {
 	const auto refuse = [&](const char* reason) {
 		EXIT("table mode refused: hash=0x%016" PRIx64 " %s\n", program.shader_hash, reason);
 	};
-	if (!program.srt_plan_complete || !program.resource_tracking_complete || !program.dynamic_reads.empty())
+	// Reads at offsets no slot fixes load by device address (LoadBda: the set binds the page table, and the read plan
+	// readies their ranges as the normal path's PrepareBdaBindings does): a compute shader's (the light loops' records).
+	if (!program.srt_plan_complete || !program.resource_tracking_complete ||
+	    (!program.dynamic_reads.empty() && program.stage != ShaderType::Compute))
 		refuse("no complete SRT plan");
 	if (UsesGds(program)) refuse("GDS");
 	TablePlan plan;
 	plan.global_memory = program.info.uses_dma; // (table mode reads its block by device address in any case)
+	plan.dynamic_reads = !program.dynamic_reads.empty();
 	// The flattened SRT's slots in order (a slot's address only depends on lower slots and user data).
 	for (size_t slot = 0; slot < program.srt_reads.size(); ++slot) {
 		const auto* load = program.srt_reads[slot].value.Resolve().TryInstruction();
@@ -206,9 +210,37 @@ void EnterTableMode(Program& program) {
 			refuse("an aliased, swizzled or ADD_TID buffer");
 		words_of(buffer.source, 4, plan.buffers.emplace_back());
 	}
-	for (const auto& image: program.info.images) {
-		if (image.mip_mode != ImageMipMode::None || image.indirect_root != ImageResource::NoIndirectImage ||
-		    image.indirect_search_iterations != 0)
+	for (uint32_t index = 0; index < program.info.images.size(); ++index) {
+		const auto& image = program.info.images[index];
+		// An address probe's root (a compute shader's sampled image, its only table, in the table form:
+		// TableIndirectForm) and its candidates: the renderer enumerates their words at every use (no words planned).
+		if (image.indirect_root != ImageResource::NoIndirectImage) {
+			if (image.indirect_root == index) {
+				const auto& probe = program.descriptor_sources.at(image.source).indirect_image;
+				if (program.stage != ShaderType::Compute || !probe || probe->item_bound == 0 || probe->key_bound != 0 ||
+				    probe->item_bound + 1u > TablePlan::IndirectMaxKeys || !plan.indirect.empty() ||
+				    image.mip_mode != ImageMipMode::None || image.written || image.atomic ||
+				    image.resource_class == ImageResourceClass::Storage ||
+				    image.indirect_search_iterations != ImageResource::RuntimeIndirectSearch ||
+				    image.indirect_resources.size() != TablePlan::IndirectCapacity)
+					refuse("an indirect image or one of dynamic mip levels");
+				const auto& records = program.descriptor_sources.at(probe->material_source);
+				const auto& heap    = program.descriptor_sources.at(probe->heap_source);
+				const auto  records_low = TableOperand(records.dwords[0], program.srt_reads.size()),
+				           records_high = TableOperand(records.dwords[1], program.srt_reads.size()),
+				           heap_low     = TableOperand(heap.dwords[0], program.srt_reads.size()),
+				           heap_high    = TableOperand(heap.dwords[1], program.srt_reads.size());
+				if (records.dword_count != 2 || heap.dword_count != 2 || !records_low || !records_high || !heap_low ||
+				    !heap_high)
+					refuse("an indirect image table mode cannot address");
+				plan.indirect.push_back({index, *probe, *records_low, *records_high, *heap_low, *heap_high, 0});
+			} else if (plan.indirect.empty() || image.indirect_root != plan.indirect.back().root) {
+				refuse("an indirect image or one of dynamic mip levels");
+			}
+			plan.images.emplace_back(); // (no words)
+			continue;
+		}
+		if (image.mip_mode != ImageMipMode::None || image.indirect_search_iterations != 0)
 			refuse("an indirect image or one of dynamic mip levels");
 		// Pixel and compute shaders may write storage images (TableResolveSet binds them as CommitBindings does: the
 		// deferred decals, the async culling chain's dispatches). The chain's translation is on the frame's critical
@@ -247,6 +279,15 @@ void EnterTableMode(Program& program) {
 	};
 	for (const auto& words: plan.buffers)
 		for (const auto& word: words) mark(plan.cpu, word);
+	// Each indirect image's key mapping after the buffers in the block, which its search reads (the emitter's
+	// LoadMapping in table mode), and the slots of its tables' addresses.
+	for (size_t t = 0; t < plan.indirect.size(); ++t) {
+		auto& entry   = plan.indirect[t];
+		entry.mapping = plan.BufferDword(plan.buffers.size()) + static_cast<uint32_t>(t) * TablePlan::IndirectMappingDwords;
+		program.info.images[entry.root].indirect_mapping_offset = entry.mapping;
+		for (const auto* operand: {&entry.records_low, &entry.records_high, &entry.heap_low, &entry.heap_high})
+			mark(plan.cpu, *operand);
+	}
 	for (const auto* descriptors: {&plan.images, &plan.samplers})
 		for (const auto& descriptor: *descriptors)
 			for (uint32_t i = 0; i < descriptor.count; ++i) mark(plan.cpu, descriptor.words[i]);

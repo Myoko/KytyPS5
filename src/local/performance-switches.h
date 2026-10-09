@@ -43,6 +43,7 @@ extern volatile std::atomic_uint32_t kyty_local_native_xpr_keep_frames;
 extern volatile std::atomic_uint32_t kyty_local_native_xpr_instance_mode;
 extern volatile std::atomic_uint32_t kyty_local_table_xpr_mode;
 extern volatile std::atomic_uint32_t kyty_local_table_dispatch_mode;
+extern volatile std::atomic_uint32_t kyty_local_table_indirect_mode;
 extern volatile std::atomic_uint32_t kyty_local_table_store_budget;
 #endif
 // Speculative translation of graphics command buffers (src/graphics/guest_gpu/speculation.h).
@@ -123,6 +124,9 @@ inline void InitializePerformanceSwitches() {
 	    Switch {"KYTY_TABLE_XPR", &kyty_local_table_xpr_mode, 0, 2},
 	    // Table dispatches (src/local/table-xpr.inc).
 	    Switch {"KYTY_TABLE_DISPATCH", &kyty_local_table_dispatch_mode},
+	    // Table dispatches of programs with an address probe's indirect image or reads by device address at offsets no
+	    // slot fixes (the light loops; default on, 0 for an A/B).
+	    Switch {"KYTY_TABLE_INDIRECT", &kyty_local_table_indirect_mode},
 	    // Table store requests per frame (0: no limit).
 	    Switch {"KYTY_TABLE_STORE_BUDGET", &kyty_local_table_store_budget, 0, 65536},
 #endif
