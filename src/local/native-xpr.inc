@@ -2973,10 +2973,10 @@ bool RenderExecutor::NativeXprTargetsCurrent(const NativeXprDrawState& draw_stat
 	const auto checked  = textures.ResolutionEpoch();
 	// (Every table draw asked: a slot lookup and a cold image object per target, ~28K a frame at 1-1.)
 	if (draw_state.targets_checked == checked) return true;
-	for (const auto& target: draw_state.targets) {
-		const auto* image = textures.m_slot_images.try_get(target.id);
-		if (image == nullptr || image->serial != target.serial) return false;
-	}
+	// (A live id is the same object: an erase moves its slot's generation, which the id names. The image itself, a cold
+	// line per target, is not read.)
+	for (const auto& target: draw_state.targets)
+		if (!textures.m_slot_images.is_allocated(target.id)) return false;
 	if (draw_state.targets_epoch != textures.ResolutionEpoch()) {
 		uint64_t proven = UINT64_MAX;
 		for (const auto& target: draw_state.targets) {
