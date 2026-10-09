@@ -97,11 +97,21 @@ inline void Flip() {
 		static int64_t                                   last_idle = 0;
 		static std::array<int64_t, LiveCensus::Waits>    last_waits {};
 		static std::array<uint64_t, counted.size()>      last_counts {};
+		// The render thread's run time (TSC ticks) and a TSC rate from the first flip on: busy wall time
+		// (the frame less idle) well over cpu is time the thread was ready but not running (preempted).
+		static const uint64_t                            first_tsc  = __rdtsc();
+		static const auto                                first_time = std::chrono::steady_clock::now();
+		static uint64_t                                  last_cycles = 0;
+		const uint64_t                                   cycles      = LocalPlatform::CurrentThreadCycles();
 		const auto                                       now = std::chrono::steady_clock::now();
 		const double ms = std::chrono::duration<double, std::milli>(now - last).count();
 		if (last != std::chrono::steady_clock::time_point {} && ms >= std::max(20.0, SlowLog::HitchThreshold())) {
 			std::printf("[tsc %llu] SLOW Frame %.1f ms idle=%.1f", static_cast<unsigned long long>(__rdtsc()), ms,
 			            static_cast<double>(g_render_idle_ns - last_idle) / 1e6);
+			if (const double since = std::chrono::duration<double, std::milli>(now - first_time).count();
+			    cycles != 0 && last_cycles != 0 && since > 1000.0)
+				std::printf(" cpu=%.1f", static_cast<double>(cycles - last_cycles) * since /
+				                             static_cast<double>(__rdtsc() - first_tsc));
 			for (size_t i = 0; i < LiveCensus::Waits; ++i)
 				if (const auto ns = LiveCensus::g_waits_ns[i] - last_waits[i]; ns != 0)
 					std::printf(" %s=%.1f", waits[i], static_cast<double>(ns) / 1e6);
@@ -115,8 +125,9 @@ inline void Flip() {
 			                                   .count()));
 			std::fflush(stdout);
 		}
-		last      = now;
-		last_idle = g_render_idle_ns;
+		last        = now;
+		last_idle   = g_render_idle_ns;
+		last_cycles = cycles;
 		for (size_t i = 0; i < LiveCensus::Waits; ++i) last_waits[i] = LiveCensus::g_waits_ns[i];
 		for (size_t i = 0; i < counted.size(); ++i) last_counts[i] = LiveCounters::Value(counted[i]);
 	}

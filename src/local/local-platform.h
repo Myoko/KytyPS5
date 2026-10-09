@@ -26,6 +26,9 @@ bool SetProcessDefaultCpuList(const char* list);
 // Opaque handle of the calling thread for ThreadCpuSeconds (valid while the thread runs).
 uint64_t CurrentThreadHandle();
 double   ThreadCpuSeconds(uint64_t handle);
+// The calling thread's run time in TSC ticks (Windows: QueryThreadCycleTime; exact, unlike the
+// tick-sampled ThreadCpuSeconds). Linux: 0.
+uint64_t CurrentThreadCycles();
 
 // Total CPU seconds of the threads with this name (0 where the OS cannot enumerate them).
 double NamedThreadsCpuSeconds(const char* name);

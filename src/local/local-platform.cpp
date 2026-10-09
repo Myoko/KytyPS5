@@ -477,6 +477,11 @@ double ThreadCpuSeconds(uint64_t handle) {
 	return handle != 0 ? HandleCpuSeconds(reinterpret_cast<HANDLE>(handle)) : 0;
 }
 
+uint64_t CurrentThreadCycles() {
+	ULONG64 cycles = 0;
+	return QueryThreadCycleTime(GetCurrentThread(), &cycles) != 0 ? cycles : 0;
+}
+
 double NamedThreadsCpuSeconds(const char* name) {
 	std::wstring wanted;
 	for (const char* p = name; *p != '\0'; ++p) wanted.push_back(static_cast<wchar_t>(*p));
@@ -674,6 +679,10 @@ double ThreadCpuSeconds(uint64_t handle) {
 	clockid_t clock {};
 	if (pthread_getcpuclockid(static_cast<pthread_t>(handle), &clock) != 0) return 0;
 	return ClockSeconds(clock);
+}
+
+uint64_t CurrentThreadCycles() {
+	return 0;
 }
 
 double NamedThreadsCpuSeconds(const char* name) {
