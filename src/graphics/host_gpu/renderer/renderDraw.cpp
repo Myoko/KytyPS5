@@ -2185,11 +2185,6 @@ bool RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 		ResetBindings();
 		return true;
 	}
-	if (args.gpu_args != 0 && state.vs_input_info.stage.program->stage == ShaderType::Mesh) {
-		// A mesh draw sizes its task grid from the counts.
-		ResetBindings();
-		return false;
-	}
 
 	bool programs_ok = false;
 	if (XprCapture::Enabled() && XprCapture::g_state.current_xpr &&
@@ -2212,6 +2207,12 @@ bool RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 	if (!programs_ok) {
 		ResetBindings();
 		return true;
+	}
+	// A mesh draw sizes its task grid from the counts. (The draw's own program: before RefreshShaders the state held
+	// the previous draw's, or none in a fresh state.)
+	if (args.gpu_args != 0 && state.vs_input_info.stage.program->stage == ShaderType::Mesh) {
+		ResetBindings();
+		return false;
 	}
 
 	LogDrawStateIfNeeded(buffer, draw, state, true, false, args.index_type_and_size,
