@@ -2464,6 +2464,13 @@ void CommandProcessor::WriteAtEndOfPipe64(uint32_t cache_policy, uint32_t event_
 
 void CommandProcessor::EmitGlobalBarrier() {
 	CheckBuffer();
+	// In a run of guest buffer copies (everything recorded since its barrier is its copies) the
+	// barrier waits for the run's end. The run already orders what came before it ahead of its copies, its copies
+	// among themselves where they touch the same bytes (CopyRunHandle starts a new run), and its end orders the copies
+	// ahead of what follows: through them, what came before too (one chain of dependencies). The game's linear copies
+	// (cs_memset32, ~70 at the end of a frame) each followed by a compute partial flush made a run of their own each:
+	// ~5 barriers a copy, drains in the GPU's frame tail (Latria turning in place, same process: 69.8 -> 70.8 fps).
+	if (CurrentBuffer().InCopyRun()) return;
 #ifdef KYTY_LOCAL_VULKAN_RECORDING
 	{
 		// KYTY_GLOBAL_BARRIER_DEDUPE: a barrier orders all earlier work in submission order, so

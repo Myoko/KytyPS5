@@ -231,11 +231,9 @@ std::shared_ptr<BufferCache::GuestReadback> BufferCache::BeginGuestReadback(
 	copies.clear();
 	std::vector<GuestRange> pages;
 	pages.reserve(available_pages.Count());
-	available_pages.ForEach([&](uint64_t a, uint64_t end) {
-		pages.push_back({a, end - a});
-		m_gpu_modified_ranges.ForEachIntersection(a, end - a, [&](RangeSet::Range range) {
-			copies.push_back({&buffer, buffer.Offset(range.address), range.address, range.size});
-		});
+	available_pages.ForEach([&](uint64_t a, uint64_t end) { pages.push_back({a, end - a}); });
+	m_gpu_modified_ranges.ForEachIntersection(available_pages, [&](RangeSet::Range range) {
+		copies.push_back({&buffer, buffer.Offset(range.address), range.address, range.size});
 	});
 	if (copies.empty()) {
 		if (completed) *completed = true;
@@ -746,11 +744,19 @@ void BufferCache::ScheduleCopyFeedback(uint64_t vaddr, uint64_t size) {
 		feedback.Count(slot, -1);
 	}
 	InvalidateCopyFeedback(vaddr, size);
-	feedback.download.CopyFrom(m_scheduler.Current(), *owner, owner->Offset(vaddr),
-	    selected * CopyFeedback::SlotSize, size, vk::AccessFlagBits::eMemoryWrite,
-	    vk::AccessFlagBits::eMemoryWrite | vk::AccessFlagBits::eHostRead,
-	    vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
-	    vk::AccessFlagBits::eHostRead);
+	auto& command = m_scheduler.Current();
+	if (command.InCopyRun()) {
+		// The copy just made is in the open run: the snapshot follows the run's copies (CommandBuffer::CopyAfterRun).
+		feedback.download.written_serial = m_scheduler.CommandSerial();
+		command.CopyAfterRun(owner->Handle(), owner->Offset(vaddr), feedback.download.Handle(),
+		                     selected * CopyFeedback::SlotSize, size);
+	} else {
+		feedback.download.CopyFrom(command, *owner, owner->Offset(vaddr), selected * CopyFeedback::SlotSize, size,
+		                           vk::AccessFlagBits::eMemoryWrite,
+		                           vk::AccessFlagBits::eMemoryWrite | vk::AccessFlagBits::eHostRead,
+		                           vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+		                           vk::AccessFlagBits::eHostRead);
+	}
 	slot = {vaddr, size, m_scheduler.CurrentTick(), mapping_epoch, owner->Handle()};
 	if (feedback.Insert(vaddr, selected)) feedback.Count(slot, 1);
 	feedback.cursor = (selected + 1) % CopyFeedback::SlotCount;
