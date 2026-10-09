@@ -1501,6 +1501,15 @@ static int ReadHostFileToGuest(const std::string& host_path, uint64_t file_offse
 			copying += Clock::now() - after;
 			*bytes_read += read;
 		}
+		// KYTY_APR_LOG: each read's guest range and file (texture uploads matched with the reads that wrote them).
+		static const bool log_reads = std::getenv("KYTY_APR_LOG") != nullptr;
+		if (log_reads) {
+			const auto slash = host_path.find_last_of("/\\");
+			std::printf("[tsc %llu] APRREAD addr=0x%llx size=0x%llx offset=0x%llx file=%s\n",
+			            static_cast<unsigned long long>(__rdtsc()), static_cast<unsigned long long>(destination),
+			            static_cast<unsigned long long>(*bytes_read), static_cast<unsigned long long>(file_offset),
+			            host_path.c_str() + (slash == std::string::npos ? 0 : slash + 1));
+		}
 		return OK;
 	}
 
