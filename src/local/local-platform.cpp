@@ -213,10 +213,177 @@ const RUNTIME_FUNCTION* FindUnwindEntry(uint64_t pc, uint64_t* image_base) {
 		}
 		if (lo == image.count || image.table[lo].BeginAddress > rva) return nullptr;
 		*image_base = image.base;
-		// Chained entries (UNW_FLAG_CHAININFO) are resolved by RtlVirtualUnwind.
+		// Chained entries (UNW_FLAG_CHAININFO) are resolved by UnwindFrame.
 		return &image.table[lo];
 	}
 	return nullptr;
+}
+
+// One frame of RtlVirtualUnwind's algorithm (epilogue emulation, else the unwind codes of the
+// function and its chain) with every stack read inside [low, high): a sample can catch a thread at
+// an instruction its unwind data does not describe, and RtlVirtualUnwind then reads wherever a
+// stale frame register points (a profiling run died reading 3.6 KiB above the render stack's top).
+// XMM saves are not read (they never steer the unwind). False ends the walk.
+bool UnwindFrame(uint64_t image_base, const RUNTIME_FUNCTION* entry, CONTEXT* context, uint64_t low, uint64_t high) {
+	// x64 unwind operation codes (not in the SDK headers).
+	enum : uint32_t {
+		UWOP_PUSH_NONVOL      = 0,
+		UWOP_ALLOC_LARGE      = 1,
+		UWOP_ALLOC_SMALL      = 2,
+		UWOP_SET_FPREG        = 3,
+		UWOP_SAVE_NONVOL      = 4,
+		UWOP_SAVE_NONVOL_FAR  = 5,
+		UWOP_SAVE_XMM128      = 8,
+		UWOP_SAVE_XMM128_FAR  = 9,
+		UWOP_PUSH_MACHFRAME   = 10,
+	};
+	DWORD64*   registers = &context->Rax;
+	const auto read      = [&](uint64_t address, uint64_t* value) {
+        if (address < low || high < 8 || address > high - 8) return false;
+        *value = *reinterpret_cast<const uint64_t*>(address);
+        return true;
+	};
+	const uint64_t pc    = context->Rip;
+	const auto*    info  = reinterpret_cast<const uint8_t*>(image_base + entry->UnwindData);
+	const uint32_t count = info[2], frame_register = info[3] & 0x0fu;
+	const auto*    codes = reinterpret_cast<const uint16_t*>(info + 4);
+	if ((info[0] & 7u) != 1 && (info[0] & 7u) != 2) return false;
+	const auto slots = [](uint32_t op, uint32_t op_info) -> uint32_t {
+		switch (op) {
+			case UWOP_ALLOC_LARGE: return op_info != 0 ? 3 : 2;
+			case UWOP_SAVE_NONVOL:
+			case UWOP_SAVE_XMM128: return 2;
+			case UWOP_SAVE_NONVOL_FAR:
+			case UWOP_SAVE_XMM128_FAR: return 3;
+			default: return 1; // version 2 epilogue descriptors take one slot each
+		}
+	};
+	auto prolog_offset = static_cast<uint32_t>(pc - (image_base + entry->BeginAddress));
+	uint64_t frame     = context->Rsp;
+	if (frame_register != 0) {
+		bool established = prolog_offset >= info[1] || ((info[0] >> 3) & UNW_FLAG_CHAININFO) != 0;
+		for (uint32_t i = 0; !established && i < count; i += slots((codes[i] >> 8) & 0x0fu, codes[i] >> 12)) {
+			if (((codes[i] >> 8) & 0x0fu) == UWOP_SET_FPREG) {
+				established = prolog_offset >= (codes[i] & 0xffu);
+				break;
+			}
+		}
+		if (established) frame = registers[frame_register] - (info[3] >> 4u) * 16ull;
+	}
+	// An epilogue (add rsp / lea rsp,[fp], pops, then ret or a jump out) is emulated forward.
+	const auto* next          = reinterpret_cast<const uint8_t*>(pc);
+	const auto  rex           = [](uint8_t byte) { return (byte & 0xf0u) == 0x40u; };
+	uint64_t    epilogue_rsp  = context->Rsp;
+	if (next[0] == 0x48 && next[1] == 0x83 && next[2] == 0xc4) {
+		epilogue_rsp += static_cast<int8_t>(next[3]);
+		next += 4;
+	} else if (next[0] == 0x48 && next[1] == 0x81 && next[2] == 0xc4) {
+		int32_t displacement = 0;
+		std::memcpy(&displacement, next + 3, 4);
+		epilogue_rsp += displacement;
+		next += 7;
+	} else if ((next[0] & 0xfeu) == 0x48 && next[1] == 0x8d) {
+		const uint32_t base = ((next[0] & 1u) << 3u) | (next[2] & 7u);
+		if (base != 0 && base == frame_register) {
+			if ((next[2] & 0xf8u) == 0x60) {
+				epilogue_rsp = registers[base] + static_cast<int8_t>(next[3]);
+				next += 4;
+			} else if ((next[2] & 0xf8u) == 0xa0) {
+				int32_t displacement = 0;
+				std::memcpy(&displacement, next + 3, 4);
+				epilogue_rsp = registers[base] + displacement;
+				next += 7;
+			}
+		}
+	}
+	const auto* pops = next;
+	while ((next[0] & 0xf8u) == 0x58 || (rex(next[0]) && (next[1] & 0xf8u) == 0x58)) next += (next[0] & 0xf8u) == 0x58 ? 1 : 2;
+	bool epilogue = next[0] == 0xc3 || next[0] == 0xc2 || (next[0] == 0xf3 && next[1] == 0xc3) ||
+	                (next[0] == 0xff && next[1] == 0x25) || (rex(next[0]) && next[1] == 0xff && (next[2] & 0x38u) == 0x20);
+	if (next[0] == 0xeb || next[0] == 0xe9) {
+		// A jump out of the function (or to its start) is a tail call.
+		int32_t displacement = 0;
+		if (next[0] == 0xeb) displacement = static_cast<int8_t>(next[1]);
+		else std::memcpy(&displacement, next + 1, 4);
+		const uint64_t target = reinterpret_cast<uint64_t>(next) + (next[0] == 0xeb ? 2 : 5) + displacement - image_base;
+		epilogue = target < entry->BeginAddress || target >= entry->EndAddress ||
+		           (target == entry->BeginAddress && ((info[0] >> 3) & UNW_FLAG_CHAININFO) == 0);
+	}
+	if (epilogue) {
+		uint64_t rsp = epilogue_rsp;
+		for (next = pops; (next[0] & 0xf8u) == 0x58 || (rex(next[0]) && (next[1] & 0xf8u) == 0x58);) {
+			const bool     extended = (next[0] & 0xf8u) != 0x58;
+			const uint32_t reg      = (extended ? ((next[0] & 1u) << 3u) | (next[1] & 7u) : (next[0] & 7u));
+			uint64_t       value    = 0;
+			if (!read(rsp, &value)) return false;
+			registers[reg] = value;
+			rsp += 8;
+			next += extended ? 2 : 1;
+		}
+		uint64_t ret = 0;
+		if (!read(rsp, &ret)) return false;
+		context->Rip = ret;
+		context->Rsp = rsp + 8;
+		return true;
+	}
+	// The unwind codes the thread has executed, through the chain of the function's fragments.
+	bool machine_frame = false;
+	for (int chain = 0; chain < 32; ++chain) {
+		info                 = reinterpret_cast<const uint8_t*>(image_base + entry->UnwindData);
+		codes                = reinterpret_cast<const uint16_t*>(info + 4);
+		const uint32_t total = info[2];
+		prolog_offset        = static_cast<uint32_t>(pc - (image_base + entry->BeginAddress));
+		for (uint32_t i = 0; i < total;) {
+			const uint32_t op = (codes[i] >> 8) & 0x0fu, op_info = codes[i] >> 12;
+			if (prolog_offset < (codes[i] & 0xffu) || op == UWOP_SAVE_XMM128 || op == UWOP_SAVE_XMM128_FAR ||
+			    op == 6 /* version 2 epilogue descriptor */) {
+				i += slots(op, op_info);
+				continue;
+			}
+			uint64_t value = 0;
+			switch (op) {
+				case UWOP_PUSH_NONVOL:
+					if (!read(context->Rsp, &value)) return false;
+					registers[op_info] = value;
+					context->Rsp += 8;
+					break;
+				case UWOP_ALLOC_LARGE:
+					if (i + slots(op, op_info) > total) return false;
+					context->Rsp += op_info != 0 ? codes[i + 1] | (uint64_t(codes[i + 2]) << 16u) : codes[i + 1] * 8ull;
+					break;
+				case UWOP_ALLOC_SMALL: context->Rsp += op_info * 8ull + 8; break;
+				case UWOP_SET_FPREG: context->Rsp = registers[info[3] & 0x0fu] - (info[3] >> 4u) * 16ull; break;
+				case UWOP_SAVE_NONVOL:
+				case UWOP_SAVE_NONVOL_FAR: {
+					if (i + slots(op, op_info) > total) return false;
+					const uint64_t offset = op == UWOP_SAVE_NONVOL ? codes[i + 1] * 8ull
+					                                               : codes[i + 1] | (uint64_t(codes[i + 2]) << 16u);
+					if (!read(frame + offset, &value)) return false;
+					registers[op_info] = value;
+					break;
+				}
+				case UWOP_PUSH_MACHFRAME: {
+					const uint64_t base = context->Rsp + (op_info != 0 ? 8 : 0);
+					uint64_t       rsp  = 0;
+					if (!read(base, &value) || !read(base + 24, &rsp)) return false;
+					context->Rip  = value;
+					context->Rsp  = rsp;
+					machine_frame = true;
+					break;
+				}
+				default: return false;
+			}
+			i += slots(op, op_info);
+		}
+		if (((info[0] >> 3) & UNW_FLAG_CHAININFO) == 0) break;
+		entry = reinterpret_cast<const RUNTIME_FUNCTION*>(codes + ((total + 1) & ~1u));
+	}
+	if (machine_frame) return true;
+	uint64_t ret = 0;
+	if (!read(context->Rsp, &ret)) return false;
+	context->Rip = ret;
+	context->Rsp += 8;
+	return true;
 }
 } // namespace
 
@@ -261,9 +428,11 @@ bool SampleThread(uint64_t handle, uint64_t stack_low, uint64_t stack_high, uint
 	}
 	if (got) {
 		// Layout of the Linux SIGPROF sampler: pc, then callers. With unwind tables
-		// (PrepareSampling) the callers come from RtlVirtualUnwind, so frames without a
-		// frame pointer (ntdll, the driver, leaf code) are walked too; code without unwind
-		// data (guest code) ends the walk with the word at rsp and the frame-pointer chain.
+		// (PrepareSampling) the callers come from the unwind codes (UnwindFrame), so frames
+		// without a frame pointer (ntdll, the driver, leaf code) are walked too; code without
+		// unwind data (guest code) ends the walk with the word at rsp and the frame-pointer chain.
+		// Only [rsp, stack top) is read: the pages below rsp may be uncommitted.
+		stack_low = std::max(stack_low, static_cast<uint64_t>(context.Rsp));
 		for (size_t i = 0; i < words; ++i) out[i] = 0;
 		out[0]      = context.Rip;
 		size_t next = 1;
@@ -284,20 +453,9 @@ bool SampleThread(uint64_t handle, uint64_t stack_low, uint64_t stack_high, uint
 				}
 				break;
 			}
-			// A function with a frame register unwinds from that register: one caught before
-			// its prologue set it (or mid exception dispatch) holds anything, and
-			// RtlVirtualUnwind would read through it (a profiling run died at address 0x48).
-			const auto* unwind = reinterpret_cast<const uint8_t*>(image_base + entry->UnwindData);
-			if (const uint32_t frame_register = unwind[3] & 0x0fu; frame_register != 0) {
-				const DWORD64* registers = &context.Rax;
-				const uint64_t frame     = registers[frame_register] - (unwind[3] >> 4u) * 16ull;
-				if (frame < stack_low || frame >= stack_high) break;
-			}
-			void*   handler_data = nullptr;
-			DWORD64 establisher  = 0;
-			RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, context.Rip, const_cast<RUNTIME_FUNCTION*>(entry), &context,
-			                 &handler_data, &establisher, nullptr);
-			if (context.Rip == 0 || context.Rsp <= rsp) break;
+			if (!UnwindFrame(image_base, entry, &context, stack_low, stack_high) || context.Rip == 0 ||
+			    context.Rsp <= rsp)
+				break;
 			out[next++] = context.Rip;
 		}
 	}
