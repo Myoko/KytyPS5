@@ -1,14 +1,14 @@
-param([switch]$DryRun)
+﻿param([switch]$DryRun)
 # A small settings window in front of run-windows.ps1 and precompile-windows.ps1 (launcher.cmd opens it). The
 # settings and the console language names follow the KytyPS5 launcher (src/launcher, by the KytyPS5 developers);
 # they are kept in launcher-settings.json next to this script. -DryRun prints the commands without a window.
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $settingsPath = Join-Path $root 'launcher-settings.json'
-$languages = 'Japanese', 'English (United States)', 'French (France)', 'Spanish (Spain)', 'German', 'Italian', 'Dutch',
-	'Portuguese (Portugal)', 'Russian', 'Korean', 'Chinese (Traditional)', 'Chinese (Simplified)', 'Finnish', 'Swedish',
-	'Danish', 'Norwegian', 'Polish', 'Portuguese (Brazil)', 'English (United Kingdom)', 'Turkish', 'Spanish (Latin America)',
-	'Arabic', 'French (Canada)', 'Czech', 'Hungarian', 'Greek', 'Romanian', 'Thai', 'Vietnamese', 'Indonesian'
+$languages = '日语', '英语（美国）', '法语（法国）', '西班牙语（西班牙）', '德语', '意大利语', '荷兰语',
+	'葡萄牙语（葡萄牙）', '俄语', '韩语', '中文（繁体）', '中文（简体）', '芬兰语', '瑞典语',
+	'丹麦语', '挪威语', '波兰语', '葡萄牙语（巴西）', '英语（英国）', '土耳其语', '西班牙语（拉丁美洲）',
+	'阿拉伯语', '法语（加拿大）', '捷克语', '匈牙利语', '希腊语', '罗马尼亚语', '泰语', '越南语', '印尼语'
 $resolutions = '1280x720', '1920x1080', '2560x1440', '3840x2160'
 
 $settings = [ordered]@{ game = ''; resolution = '2560x1440'; fullscreen = $false; aspect = $true; language = 1; redzone = $true;
@@ -106,7 +106,7 @@ Add-Type -Namespace KytyLauncher -Name Dpi -MemberDefinition '[DllImport("user32
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $form = New-Object System.Windows.Forms.Form -Property @{
-	Text = 'KytyPS5 launcher'; FormBorderStyle = 'FixedDialog'; MaximizeBox = $false; StartPosition = 'CenterScreen'
+	Text = 'KytyPS5 启动器'; FormBorderStyle = 'FixedDialog'; MaximizeBox = $false; StartPosition = 'CenterScreen'
 	AutoSize = $true; AutoSizeMode = 'GrowAndShrink'; Font = New-Object System.Drawing.Font('Segoe UI', 9); Padding = '12,12,12,8'
 }
 $grid = New-Object System.Windows.Forms.TableLayoutPanel -Property @{ ColumnCount = 2; AutoSize = $true; Dock = 'Fill' }
@@ -120,12 +120,12 @@ function Add-Row($label, [object[]]$controls) {
 }
 
 $game = New-Object System.Windows.Forms.TextBox -Property @{ Text = $settings.game; Width = 440 }
-$browse = New-Object System.Windows.Forms.Button -Property @{ Text = 'Browse...'; AutoSize = $true }
-Add-Row 'Game folder' @($game, $browse)
+$browse = New-Object System.Windows.Forms.Button -Property @{ Text = '浏览…'; AutoSize = $true }
+Add-Row '游戏目录' @($game, $browse)
 $title = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray' }
 Add-Row '' @($title)
 function Update-Title {
-	$title.Text = 'Choose the folder with eboot.bin and sce_sys (the game dump).'
+	$title.Text = '请选择含 eboot.bin 与 sce_sys 的游戏目录（游戏转储）'
 	try {
 		$param = Join-Path $game.Text 'sce_sys\param.json'
 		if (Test-Path $param) {
@@ -137,11 +137,11 @@ function Update-Title {
 	# The cheat line is about the folder as it is being typed, not about the last saved setting.
 	if ($cheatNote) {
 		$patch = Get-CheatFile $game.Text
-		$cheatNote.Text = if ($patch) { 'applies ' + [System.IO.Path]::GetFileName($patch) } else { 'no _Patches\<title id>.json in this folder' }
+		$cheatNote.Text = if ($patch) { '套用 ' + [System.IO.Path]::GetFileName($patch) } else { '此目录下没有 _Patches\<title id>.json' }
 	}
 }
 $browse.Add_Click({
-	$dialog = New-Object System.Windows.Forms.FolderBrowserDialog -Property @{ Description = 'The game folder (eboot.bin, sce_sys)' }
+	$dialog = New-Object System.Windows.Forms.FolderBrowserDialog -Property @{ Description = '游戏目录（含 eboot.bin、sce_sys）' }
 	if ($game.Text -and (Test-Path $game.Text)) { $dialog.SelectedPath = $game.Text }
 	if ($dialog.ShowDialog($form) -eq 'OK') { $game.Text = $dialog.SelectedPath }
 })
@@ -151,24 +151,24 @@ Update-Title
 $resolution = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 160 }
 $resolution.Items.AddRange($resolutions)
 $resolution.SelectedItem = if ($resolutions -contains $settings.resolution) { $settings.resolution } else { '2560x1440' }
-Add-Row 'Resolution' @($resolution)
-$fullscreen = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Fullscreen'; AutoSize = $true; Checked = [bool]$settings.fullscreen }
-$aspect = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Keep 16:9 (black bars)'; AutoSize = $true; Checked = [bool]$settings.aspect }
+Add-Row '分辨率' @($resolution)
+$fullscreen = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '全屏'; AutoSize = $true; Checked = [bool]$settings.fullscreen }
+$aspect = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '保持 16:9（黑边）'; AutoSize = $true; Checked = [bool]$settings.aspect }
 $aspect.Enabled = $fullscreen.Checked
 $fullscreen.Add_CheckedChanged({ $aspect.Enabled = $fullscreen.Checked })
 Add-Row '' @($fullscreen, $aspect)
 $language = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 320 }
 $language.Items.AddRange($languages)
 $language.SelectedIndex = [Math]::Max(0, [Math]::Min($languages.Count - 1, [int]$settings.language))
-Add-Row 'Console language' @($language)
-$redzone = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Red-zone protection (recommended)'; AutoSize = $true; Checked = [bool]$settings.redzone }
+Add-Row '主机语言' @($language)
+$redzone = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '红区保护（推荐）'; AutoSize = $true; Checked = [bool]$settings.redzone }
 Add-Row '' @($redzone)
-$fps120 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Up to 120 fps (the game''s own frames; movies play faster)'; AutoSize = $true; Checked = [bool]$settings.fps120 }
+$fps120 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '最高 120 fps（用游戏自身的帧；过场动画会放快）'; AutoSize = $true; Checked = [bool]$settings.fps120 }
 Add-Row '' @($fps120)
-$ecores = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Precompile on the efficiency cores only (slower, the PC stays responsive)'; AutoSize = $true
+$ecores = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '只用能效核预编译（更慢，但电脑保持流畅）'; AutoSize = $true
 	Checked = ([bool]$settings.ecores -and $efficiencyMask -ne 0); Enabled = ($efficiencyMask -ne 0) }
 Add-Row '' @($ecores)
-$cheats = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Cheats (_Patches\<title id>.json)'; AutoSize = $true
+$cheats = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '金手指 (_Patches\<title id>.json)'; AutoSize = $true
 	Checked = [bool]$settings.cheats }
 Add-Row '' @($cheats)
 $cheatNote = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray' }
@@ -176,15 +176,15 @@ Add-Row '' @($cheatNote)
 Update-Title
 
 $buttons = New-Object System.Windows.Forms.FlowLayoutPanel -Property @{ AutoSize = $true; Margin = '0,10,0,0' }
-$play = New-Object System.Windows.Forms.Button -Property @{ Text = 'Play'; AutoSize = $true; Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold) }
-$precompile = New-Object System.Windows.Forms.Button -Property @{ Text = 'Precompile shaders'; AutoSize = $true }
-$logs = New-Object System.Windows.Forms.Button -Property @{ Text = 'Logs folder'; AutoSize = $true }
-$readme = New-Object System.Windows.Forms.Button -Property @{ Text = 'README'; AutoSize = $true }
+$play = New-Object System.Windows.Forms.Button -Property @{ Text = '开始游戏'; AutoSize = $true; Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold) }
+$precompile = New-Object System.Windows.Forms.Button -Property @{ Text = '预编译着色器'; AutoSize = $true }
+$logs = New-Object System.Windows.Forms.Button -Property @{ Text = '日志目录'; AutoSize = $true }
+$readme = New-Object System.Windows.Forms.Button -Property @{ Text = '说明 (README)'; AutoSize = $true }
 $buttons.Controls.AddRange(@($play, $precompile, $logs, $readme))
 $grid.Controls.Add($buttons)
 $grid.SetColumnSpan($buttons, 2)
 $credit = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray'; Margin = '0,8,0,0'
-	Text = 'Settings follow the KytyPS5 launcher (src/launcher) by the KytyPS5 developers.' }
+	Text = '设置项沿用 KytyPS5 开发者的原版启动器（src/launcher）。' }
 $grid.Controls.Add($credit)
 $grid.SetColumnSpan($credit, 2)
 $form.AcceptButton = $play
