@@ -653,6 +653,18 @@ bool RenderExecutor::TableValidateSet(TableImageSet& set) {
 	return true;
 }
 
+// An operand of the stage's code address (a V# of constants the code embeds), and its word: the low or high dword of
+// the pair's code address (the stage's registers named it) plus the operand's offset.
+static bool TableCodeOperand(const ShaderRecompiler::IR::TablePlan::Operand& operand) {
+	using Kind = ShaderRecompiler::IR::TablePlan::Operand::Kind;
+	return operand.kind == Kind::ShaderBaseLow || operand.kind == Kind::ShaderBaseHigh;
+}
+static uint32_t TableCodeWord(const ShaderRecompiler::IR::TablePlan::Operand& operand, uint64_t code) {
+	const auto address = code + operand.value;
+	return operand.kind == ShaderRecompiler::IR::TablePlan::Operand::Kind::ShaderBaseLow ? static_cast<uint32_t>(address)
+	                                                                                    : static_cast<uint32_t>(address >> 32u);
+}
+
 // The slots of the pair's stages, read into their blocks where the plans address them from the user data and lower
 // slots (a pointer read from memory may hold anything: what is read through it must be mapped), and the T#/S# words
 // they make (TableXpr::words, the set's key) and the pixel stage's LOD statistics words. False: something unmapped.
@@ -704,6 +716,7 @@ bool RenderExecutor::TableEvaluate(TablePair& pair, std::array<std::span<const u
 		const auto  value   = [&](const ShaderRecompiler::IR::TablePlan::Operand& operand) -> uint32_t {
 			if (operand.kind == Kind::Immediate) return operand.value;
 			if (operand.kind == Kind::Slot) return slots[operand.value];
+			if (TableCodeOperand(operand)) return TableCodeWord(operand, st == 0 ? pair.vs : pair.ps);
 			const auto index = operand.value - program.user_data_base;
 			return index < user_data[st].size() ? user_data[st][index] : 0;
 		};
@@ -856,6 +869,7 @@ void RenderExecutor::TableGather(const TablePair& pair, std::array<std::span<con
 					const auto& operand = plan.buffers[i][w];
 					words4[w] = operand.kind == Kind::Immediate ? operand.value
 					            : operand.kind == Kind::Slot    ? block[operand.value]
+					            : TableCodeOperand(operand)     ? TableCodeWord(operand, st == 0 ? pair.vs : pair.ps)
 					            : operand.value - program.user_data_base < user_data[st].size()
 					                ? user_data[st][operand.value - program.user_data_base]
 					                : 0;
@@ -1436,6 +1450,10 @@ void RenderExecutor::TableRuns(TablePair& pair) {
 		flat.constants.push_back(0);
 		const auto flat_of = [&](const ShaderRecompiler::IR::TablePlan::Operand& operand) -> TablePair::FlatOperand {
 			if (operand.kind == Kind::Slot) return {operand.value, 1};
+			if (TableCodeOperand(operand)) {
+				flat.constants.push_back(TableCodeWord(operand, st == 0 ? pair.vs : pair.ps));
+				return {static_cast<uint32_t>(flat.constants.size() - 1), 2};
+			}
 			if (operand.kind == Kind::UserData) {
 				const auto index = operand.value - program.user_data_base;
 				if (index >= 64) return {0, 2};
