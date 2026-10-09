@@ -32,6 +32,9 @@ namespace {
 thread_local std::vector<PageManager::DeferredRange>* g_deferred_write_protect = nullptr;
 thread_local uint64_t g_unmapping_begin = 0;
 thread_local uint64_t g_unmapping_end   = 0;
+// PageManager::DeferReadProtection: the GPU thread's pending no-access range [begin, end) (end 0: none).
+thread_local bool     g_defer_read_protect = false;
+thread_local uint64_t g_read_protect_begin = 0, g_read_protect_end = 0;
 
 constexpr uint64_t PAGE_SIZE    = TRACKER_PAGE_SIZE;
 constexpr uint64_t REGION_SIZE  = TRACKER_REGION_SIZE;
@@ -249,7 +252,29 @@ struct PageManager::Impl {
 		}
 	}
 
+	static void FlushReadProtect() noexcept {
+		if (g_read_protect_end == 0) return;
+		const auto begin = g_read_protect_begin, end = g_read_protect_end;
+		g_read_protect_end = 0;
+		ProtectHost(begin, end - begin, NO_ACCESS_PROTECTION);
+	}
+
 	void Protect(uint64_t vaddr, uint64_t size, uint32_t protection) noexcept {
+		if (protection == NO_ACCESS_PROTECTION && g_defer_read_protect) {
+			if (g_read_protect_end != 0 && vaddr == g_read_protect_end) {
+				g_read_protect_end = vaddr + size;
+				return;
+			}
+			if (g_read_protect_end != 0 && vaddr + size == g_read_protect_begin) {
+				g_read_protect_begin = vaddr;
+				return;
+			}
+			FlushReadProtect();
+			g_read_protect_begin = vaddr;
+			g_read_protect_end   = vaddr + size;
+			return;
+		}
+		FlushReadProtect(); // (an earlier protection first)
 		const auto end = vaddr + size;
 		if (protection == READ_WRITE_PROTECTION && g_unmapping_end > g_unmapping_begin &&
 		    vaddr < g_unmapping_end && end > g_unmapping_begin) {
@@ -450,6 +475,15 @@ void PageManager::UpdatePageWatchers(uint64_t vaddr, uint64_t size) {
 
 template void PageManager::UpdatePageWatchers<true>(uint64_t, uint64_t);
 template void PageManager::UpdatePageWatchers<false>(uint64_t, uint64_t);
+
+void PageManager::DeferReadProtection(bool on) noexcept {
+	if (!on) Impl::FlushReadProtect();
+	g_defer_read_protect = on;
+}
+
+void PageManager::FlushDeferredProtection() noexcept {
+	Impl::FlushReadProtect();
+}
 
 template <bool track, bool is_read>
 void PageManager::UpdatePageWatchersForRegion(uint64_t base_addr, RegionBits& mask) {
