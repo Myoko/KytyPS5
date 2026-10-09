@@ -1501,18 +1501,25 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 				}
 			}
 		}
-		const auto memory_before = LocalPlatform::ProcessMemory();
-		m_graphics.RefreshMemoryBudget();
-		const auto video_before = m_graphics.GetDeviceMemoryUsage();
-		m_program_cache->Warm(path, title + device, std::string_view(warmup) == "1", adopt_from);
-		const auto memory_shaders = LocalPlatform::ProcessMemory();
 		// The recorded pipelines (15K, most of other areas) cost ~1 GiB of video memory and ~3 GiB of RAM (5 GiB
 		// committed): a GPU that cannot also hold the game's working set (small_video_memory), or a PC with less RAM
 		// than the ~20 GB the game takes while it loads, makes them when they are first used (~0.75 ms each from the
-		// static precompile's binaries).
+		// static precompile's binaries). Such a PC records the shaders but translates none at start-up either: their
+		// SPIR-V and modules took 3.1 GiB of RAM, and the shader prefetch translates every shader of the game in the
+		// background anyway (16 GB reported at 1-1: +76 MiB instead of +3181, the HUD 10 s sooner, the same 59-60 fps
+		// and one slow shader translation).
 		constexpr uint64_t PipelineWarmupMinRam = uint64_t {24} << 30u;
 		const uint64_t     ram                  = LocalPlatform::PhysicalMemory();
-		const bool warm_pipelines = !m_graphics.small_video_memory && (ram == 0 || ram >= PipelineWarmupMinRam);
+		const bool         low_ram              = ram != 0 && ram < PipelineWarmupMinRam;
+		const bool         compile_shaders      = std::string_view(warmup) == "1" && !low_ram;
+		if (low_ram && std::string_view(warmup) == "1")
+			PipelineCacheLog("Shader warmup: recording only (RAM {} MiB)", ram >> 20u);
+		const auto memory_before = LocalPlatform::ProcessMemory();
+		m_graphics.RefreshMemoryBudget();
+		const auto video_before = m_graphics.GetDeviceMemoryUsage();
+		m_program_cache->Warm(path, title + device, compile_shaders, adopt_from);
+		const auto memory_shaders = LocalPlatform::ProcessMemory();
+		const bool warm_pipelines = !m_graphics.small_video_memory && !low_ram;
 		if (!warm_pipelines && std::string_view(warmup) == "1")
 			PipelineCacheLog("Pipeline warmup: skipped (video memory budget {} MiB, RAM {} MiB)",
 			                 m_graphics.GetTotalMemoryBudget() >> 20u, ram >> 20u);
