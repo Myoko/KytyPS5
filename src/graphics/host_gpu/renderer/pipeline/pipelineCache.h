@@ -429,6 +429,9 @@ void CreatePipelineInternal(GraphicContext& graphics, PipelineCache::Pipeline& p
                             const ShaderComputeInputInfo& input_info,
                             vk::ShaderModule compute_module, vk::PipelineCache driver_cache,
                             PipelineBuild build = PipelineBuild::Full, bool native_bindings = false);
+// The guest memory readers resource materialization reads through (clean reads: what the GPU wrote is synchronized
+// first), for the table path's address probes (TablePlan::IndirectImage).
+void MaterializationReaders(ShaderRecompiler::IR::SrtRuntime& runtime);
 // KYTY_PIPELINE_KEY_LOG (diagnostic): a PIPEKEY line with the driver key of each pipeline the static store did not
 // hold (the precompile: of each it makes) and its modules' shader and SPIR-V hashes.
 bool PipelineKeyLog();

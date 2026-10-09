@@ -217,6 +217,10 @@ struct RenderExecutor::TableXpr {
 	std::array<WrittenRange, WrittenEntries> written;
 	// The draw's blocks (per stage): its slots (IR::TablePlan::BlockDwords), then its buffers.
 	std::array<std::vector<uint32_t>, 2> blocks;
+	// An indirect image's candidates for the draw or dispatch being made (per stage), in the order its set binds them
+	// (TableEvaluate: the set's key; TableResolveSet), and the enumeration's scratch.
+	std::array<std::vector<ShaderRecompiler::IR::DescriptorValue>, 2> indirect;
+	ShaderRecompiler::IR::AddressProbeCandidates                      probe;
 };
 
 // The pair's programs and what was made for them leave (its shaders changed, or a V#'s format did:
@@ -487,6 +491,28 @@ RenderExecutor::TableImageSet* RenderExecutor::TableResolveSet(CommandBuffer& bu
 	std::array<PreparedBindings, 2>                prepared;
 	for (uint32_t st = 0; st < stages; ++st) PrepareBindingsInto(*runtimes[st], prepared[st]);
 	for (uint32_t st = 0; st < stages; ++st) RebindImages(prepared[st]);
+	// An address probe's indirect image (a dispatch's): its root's elements in the order of the candidates the set's
+	// key holds (TableEvaluate's), each found among the dispatch's own (the normal path's materialization: the same
+	// enumeration, in the order the records name them); past them the null images it was padded with.
+	if (variant == nullptr) {
+		const auto& program = set->program != nullptr ? *set->program : *pair.programs[0];
+		for (const auto& entry: program.table_plan.indirect) {
+			const auto& elements = program.info.images.at(entry.root).indirect_resources;
+			const auto& own      = compute_info.stage.resources.images;
+			const auto& wanted   = OwnTable().indirect[0];
+			auto&       images   = prepared[0].images;
+			if (wanted.size() > elements.size()) return refuse("indirect candidates differ");
+			const auto original = images;
+			for (size_t j = 0; j < wanted.size(); ++j) {
+				const auto found = std::ranges::find_if(elements, [&](uint32_t resource) {
+					return resource < own.size() && own[resource] == wanted[j];
+				});
+				if (found == elements.end() || elements[j] >= images.size() || *found >= original.size())
+					return refuse("indirect candidates differ");
+				images[elements[j]] = original[*found];
+			}
+		}
+	}
 	// Each image's layout and access as the normal path's CommitBindings gives them: a null image (a texture not
 	// streamed in yet) as it is bound (not held); a target of the draw state in its attachment layout and access
 	// (NativeXprEmitTargets moves it there); one bound both as a texture and as storage (force_general: the deferred
@@ -743,6 +769,65 @@ bool RenderExecutor::TableEvaluate(TablePair& pair, std::array<std::span<const u
 			for (uint32_t w = 0; w < descriptor.count; ++w) words.push_back(value(descriptor.words[w]));
 		return true;
 	};
+	// An address probe's indirect image (IR::TablePlan::IndirectImage): its candidates as resource materialization
+	// enumerates them (the same code and readers), in an order of their own (key 0's first, the rest by their words:
+	// one set whatever order the records name them in), their count and words in the set's key, the key mapping (by
+	// key) in the block. False: the normal path takes it (a table not readable, more candidates or keys than room).
+	const auto indirect = [&](uint32_t st) {
+		const auto& program = *pair.programs[st];
+		auto&       out     = table.indirect[st];
+		out.clear();
+		if (program.table_plan.indirect.empty()) return true;
+		thread_local const auto runtime = [] {
+			ShaderRecompiler::IR::SrtRuntime value;
+			MaterializationReaders(value);
+			return value;
+		}();
+		const auto& slots   = table.blocks[st];
+		const auto  operand = [&](const ShaderRecompiler::IR::TablePlan::Operand& value) -> uint32_t {
+			if (value.kind == Kind::Immediate) return value.value;
+			if (value.kind == Kind::Slot) return slots[value.value];
+			if (TableCodeOperand(value)) return TableCodeWord(value, st == 0 ? pair.vs : pair.ps);
+			const auto index = value.value - program.user_data_base;
+			return index < user_data[st].size() ? user_data[st][index] : 0;
+		};
+		const auto address = [&](const ShaderRecompiler::IR::TablePlan::Operand& low,
+		                         const ShaderRecompiler::IR::TablePlan::Operand& high) {
+			return (uint64_t {operand(low)} | uint64_t {operand(high)} << 32u) & 0x0000ffffffffffffull;
+		};
+		using Plan = ShaderRecompiler::IR::TablePlan;
+		for (const auto& entry: program.table_plan.indirect) {
+			auto& found = table.probe;
+			if (!ShaderRecompiler::IR::EnumerateAddressProbe(entry.probe, program.info.images[entry.root],
+			                                                 address(entry.records_low, entry.records_high),
+			                                                 address(entry.heap_low, entry.heap_high), runtime, found))
+				return false;
+			const auto count = static_cast<uint32_t>(found.descriptors.size());
+			if (count == 0 || count > Plan::IndirectCapacity || found.keys.size() > Plan::IndirectMaxKeys ||
+			    found.candidates.size() != found.keys.size())
+				return false;
+			std::array<uint32_t, Plan::IndirectCapacity> order {}, position {};
+			for (uint32_t j = 0; j < count; ++j) order[j] = j;
+			std::sort(order.begin() + 1, order.begin() + count,
+			          [&](uint32_t a, uint32_t b) { return found.descriptors[a].dwords < found.descriptors[b].dwords; });
+			for (uint32_t j = 0; j < count; ++j) position[order[j]] = j;
+			for (uint32_t j = 0; j < count; ++j) out.push_back(found.descriptors[order[j]]);
+			std::array<uint32_t, Plan::IndirectMaxKeys> by_key {};
+			const auto keys = static_cast<uint32_t>(found.keys.size());
+			for (uint32_t k = 0; k < keys; ++k) by_key[k] = k;
+			std::sort(by_key.begin(), by_key.begin() + keys,
+			          [&](uint32_t a, uint32_t b) { return found.keys[a] < found.keys[b]; });
+			auto* mapping = table.blocks[st].data() + entry.mapping;
+			mapping[0]    = keys;
+			for (uint32_t k = 0; k < keys; ++k) {
+				mapping[1 + 2 * k] = found.keys[by_key[k]];
+				mapping[2 + 2 * k] = position[found.candidates[by_key[k]]];
+			}
+			words.push_back(count);
+			for (const auto& candidate: out) words.insert(words.end(), candidate.dwords.begin(), candidate.dwords.end());
+		}
+		return true;
+	};
 	for (uint32_t st = 0; st < stages; ++st) {
 		const auto& program = *pair.programs[st];
 		const auto& form    = pair.flat[st];
@@ -751,7 +836,7 @@ bool RenderExecutor::TableEvaluate(TablePair& pair, std::array<std::span<const u
 		slots.resize(program.table_plan.BlockDwords());
 		if (table.addresses.size() < pair.runs[st].size()) table.addresses.resize(pair.runs[st].size());
 		if (form.runs.size() != pair.runs[st].size() || user_data[st].size() < form.user_words || user_data[st].size() > 64) {
-			if (!by_operands(st)) return false;
+			if (!by_operands(st) || !indirect(st)) return false;
 			continue;
 		}
 		// The flat form (TablePair::flat): every operand one load from one of three arrays. A level's addresses are
@@ -784,6 +869,7 @@ bool RenderExecutor::TableEvaluate(TablePair& pair, std::array<std::span<const u
 			if (i < program.bindings.lod_stats_count) lod_stats(image);
 		}
 		for (; at < form.image_words.size(); ++at) out[at] = get(form.image_words[at]);
+		if (!indirect(st)) return false;
 	}
 	return true;
 }
@@ -1706,6 +1792,9 @@ bool RenderExecutor::TableDispatch(CommandBuffer& buffer, uint32_t groups_x, uin
 	                                                          std::span<const uint32_t> {}};
 	std::optional<LiveCensus::Scope> phase;
 	phase.emplace(LiveCensus::DrawPhase, 0x7ab1f, 1);
+	if (kyty_local_table_indirect_mode.load(std::memory_order_relaxed) == 0 &&
+	    (!pair.programs[0]->table_plan.indirect.empty() || pair.programs[0]->table_plan.dynamic_reads))
+		return m_dispatch_declined = "table: indirect off", false;
 	if (!TableEvaluate(pair, user_data)) return m_dispatch_declined = "table: tables unmapped", false;
 	TableGather(pair, user_data);
 	phase.reset();

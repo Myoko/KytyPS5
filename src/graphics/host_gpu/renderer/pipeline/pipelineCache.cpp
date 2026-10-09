@@ -187,12 +187,28 @@ bool ReadShaderRawGuestMemory(void*, uint64_t address, uint32_t* value) {
 	return true;
 }
 
+uint64_t ShaderMappingEnd(void*, uint64_t address) {
+	return Libs::LibKernel::Memory::MappingEnd(address);
+}
+
 bool ReadShaderMemorySpan(void*, uint64_t address, uint32_t* values, uint32_t count, bool clean) {
 	// Clean spans also read whole tables (resource materialization); raw spans are SRT groups. The
 	// null page goes word by word (the readers above).
 	return count >= 2 && count <= (clean ? 1024u : 16u) && address >= NullPageEnd &&
 	       Libs::LibKernel::Memory::TryReadGpuShaderSpan(address, values, count * 4u, clean);
 }
+
+} // namespace
+
+void MaterializationReaders(ShaderRecompiler::IR::SrtRuntime& runtime) {
+	runtime.read_memory                = ReadShaderRawGuestMemory;
+	runtime.read_specialization_memory = ReadShaderGuestMemory;
+	runtime.sync_memory                = SyncShaderGuestMemory;
+	runtime.try_read_memory_span       = ReadShaderMemorySpan;
+	runtime.mapping_end                = ShaderMappingEnd;
+}
+
+namespace {
 
 // Native XPR records evaluate their SRT again over memory the guest may have reused since: a stale
 // pointer on the way fails the evaluation instead of faulting.
@@ -772,6 +788,7 @@ struct PipelineCache::ProgramCache {
 		    .read_specialization_memory = ReadShaderGuestMemory,
 		    .sync_memory                = SyncShaderGuestMemory,
 		    .try_read_memory_span       = ReadShaderMemorySpan,
+		    .mapping_end                = ShaderMappingEnd,
 		};
 		ShaderReadObserver::Runtime observed_runtime(input_runtime);
 		const auto& runtime = observed_runtime.Get();
@@ -793,6 +810,9 @@ struct PipelineCache::ProgramCache {
 					buffer.descriptor_swizzle = DstSel(4, 5, 6, 7);
 				}
 			}
+			// An indirect image with the table program's elements (its candidates' count is the draw's or dispatch's:
+			// one program takes any), the snapshot it binds from padded alike (TableResolveSet).
+			(void)ShaderRecompiler::IR::TableIndirectForm(table_specialization, &resources.images);
 		};
 		if (entry != programs.end()) {
 			const ShaderRecompiler::IR::ResourceSpecialization* borrowed_specialization = nullptr;
