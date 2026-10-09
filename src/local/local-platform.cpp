@@ -1,5 +1,6 @@
 #include "local-platform.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <iterator>
@@ -13,6 +14,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <psapi.h>
 #include <tlhelp32.h>
 #include <atomic>
 #include <cstdio>
@@ -414,6 +416,21 @@ uint64_t OpenFileForReading(const char* path) {
 	return file == INVALID_HANDLE_VALUE ? 0 : reinterpret_cast<uint64_t>(file);
 }
 
+MemoryUse ProcessMemory() {
+	PROCESS_MEMORY_COUNTERS_EX counters {};
+	counters.cb = sizeof(counters);
+	if (K32GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
+	                            sizeof(counters)) == 0)
+		return {};
+	return {counters.PrivateUsage, counters.WorkingSetSize};
+}
+
+uint64_t PhysicalMemory() {
+	MEMORYSTATUSEX status {};
+	status.dwLength = sizeof(status);
+	return GlobalMemoryStatusEx(&status) != 0 ? status.ullTotalPhys : 0;
+}
+
 #else
 
 void SetThreadName(const char* name) {
@@ -566,6 +583,27 @@ void CloseScratchFile(uint64_t file) {
 uint64_t OpenFileForReading(const char* path) {
 	const int fd = open(path, O_RDONLY | O_CLOEXEC);
 	return fd < 0 ? 0 : static_cast<uint64_t>(fd) + 1;
+}
+
+MemoryUse ProcessMemory() {
+	// statm: total, resident, shared pages; private resident = resident - shared.
+	MemoryUse use;
+	if (FILE* file = std::fopen("/proc/self/statm", "r"); file != nullptr) {
+		unsigned long long total = 0, resident = 0, shared = 0;
+		if (std::fscanf(file, "%llu %llu %llu", &total, &resident, &shared) == 3) {
+			const auto page   = static_cast<uint64_t>(sysconf(_SC_PAGESIZE));
+			use.working_set   = resident * page;
+			use.private_bytes = (resident - std::min(resident, shared)) * page;
+		}
+		std::fclose(file);
+	}
+	return use;
+}
+
+uint64_t PhysicalMemory() {
+	const long pages = sysconf(_SC_PHYS_PAGES);
+	const long size  = sysconf(_SC_PAGESIZE);
+	return pages > 0 && size > 0 ? static_cast<uint64_t>(pages) * static_cast<uint64_t>(size) : 0;
 }
 
 #endif

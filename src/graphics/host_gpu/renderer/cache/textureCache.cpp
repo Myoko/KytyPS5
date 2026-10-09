@@ -207,6 +207,36 @@ constexpr uint32_t ImageGranuleBits  = 16;
 constexpr uint64_t ImageGranuleSpace = uint64_t {1} << 40; // the image page table's address space
 } // namespace
 
+static TextureCache* g_report_cache = nullptr;
+
+void TextureCache::WriteReport(const char* path) {
+	FILE* file = std::fopen(path, "wb");
+	if (file == nullptr) return;
+	std::fputs("id\taddress\tguest_size\tbytes\tformat\tguest_format\ttype\twidth\theight\tdepth\tlevels\tlayers\tsamples\ttile\tusage\tregistered\tgpu_modified\tlru_tick\tgc_tick\n", file);
+	std::scoped_lock lock {m_lock};
+	m_slot_images.ForEach([&](ImageId id, Image& image) {
+		VmaAllocationInfo allocation {};
+		if (image.backing.allocation != nullptr) vmaGetAllocationInfo(m_graphics.allocator, image.backing.allocation, &allocation);
+		const auto& usage = image.usage;
+		char        kinds[8] {};
+		size_t      k = 0;
+		if (usage.texture) kinds[k++] = 't';
+		if (usage.storage) kinds[k++] = 's';
+		if (usage.render_target) kinds[k++] = 'r';
+		if (usage.depth_target) kinds[k++] = 'd';
+		if (usage.video_out) kinds[k++] = 'v';
+		if (k == 0) kinds[k++] = '-';
+		std::fprintf(file, "%u\t0x%" PRIx64 "\t%" PRIu64 "\t%" PRIu64 "\t%s\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%s\t%d\t%d\t%" PRIu64 "\t%" PRIu64 "\n",
+		             id.index, image.info.data.address, image.info.data.size, static_cast<uint64_t>(allocation.size),
+		             vk::to_string(image.backing.format).c_str(), static_cast<uint32_t>(image.info.guest_format),
+		             static_cast<uint32_t>(image.info.type), image.info.extent.width, image.info.extent.height,
+		             image.info.extent.depth, image.info.resources.levels, image.info.resources.layers, image.info.samples,
+		             static_cast<uint32_t>(image.info.tile_mode), kinds, image.registered ? 1 : 0, image.IsGpuModified() ? 1 : 0,
+		             image.registered ? m_lru_cache.TickOf(image.lru_id) : uint64_t {0}, m_gc_tick);
+	});
+	std::fclose(file);
+}
+
 TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler,
                            PageManager& page_manager, BufferCache& buffer_cache)
     : m_graphics(graphics), m_scheduler(scheduler), m_page_manager(page_manager),
@@ -215,12 +245,18 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
       m_buffer_cache(buffer_cache),
       m_readback_linear_images(Config::ReadbackLinearImagesEnabled()) {
 	m_image_granules.assign((ImageGranuleSpace >> ImageGranuleBits) / 64, 0);
+	g_report_cache               = this;
+	LiveCounters::g_image_report = [](const char* path) {
+		if (g_report_cache != nullptr) g_report_cache->WriteReport(path);
+	};
 	// Collection starts where the video memory use reaches the budget less its headroom (GetTotalMemoryBudget):
 	// below it a kept image costs nothing, a deleted one an upload when the game uses it again.
 	m_trigger_gc_memory = m_graphics.GetTotalMemoryBudget();
 }
 
 TextureCache::~TextureCache() {
+	LiveCounters::g_image_report = nullptr;
+	g_report_cache               = nullptr;
 	m_slot_images.ForEach([&](ImageId id, const Image& image) {
 		if (image.registered) {
 			UnregisterImage(id);

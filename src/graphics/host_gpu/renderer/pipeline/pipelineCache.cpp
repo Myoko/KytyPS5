@@ -1495,7 +1495,10 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 				}
 			}
 		}
+		const auto memory_before = LocalPlatform::ProcessMemory();
+		const auto video_before  = m_graphics.GetDeviceMemoryUsage();
 		m_program_cache->Warm(path, title + device, std::string_view(warmup) == "1", adopt_from);
+		const auto memory_shaders = LocalPlatform::ProcessMemory();
 		if (std::string_view(warmup) == "1") {
 			const auto begin = std::chrono::steady_clock::now();
 			WarmPipelines();
@@ -1503,6 +1506,15 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 			// at a normal exit, so after a crash the next launch compiled it all again (2+ minutes).
 			if (std::chrono::steady_clock::now() - begin > std::chrono::seconds(5)) (void)Save();
 		}
+		const auto memory_after = LocalPlatform::ProcessMemory();
+		const auto mib = [](uint64_t to, uint64_t from) { return (static_cast<int64_t>(to) - static_cast<int64_t>(from)) >> 20; };
+		PipelineCacheLog("Warmup memory: shaders {:+} MiB committed {:+} MiB resident, pipelines {:+} MiB committed {:+} MiB "
+		                 "resident, video memory {:+} MiB",
+		    mib(memory_shaders.private_bytes, memory_before.private_bytes),
+		    mib(memory_shaders.working_set, memory_before.working_set),
+		    mib(memory_after.private_bytes, memory_shaders.private_bytes),
+		    mib(memory_after.working_set, memory_shaders.working_set),
+		    mib(m_graphics.GetDeviceMemoryUsage(), video_before));
 		m_program_cache->warmup.StartWriter();
 		if (const char* only = std::getenv("KYTY_SHADER_WARMUP_ONLY"); only && std::string_view(only) == "1") {
 			if (!Save()) {

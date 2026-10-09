@@ -33,6 +33,9 @@ struct TextureCacheTestAccess;
 
 class TextureCache {
 public:
+	// Every image as a tab-separated row (live "images <path>").
+	void WriteReport(const char* path);
+
 	enum class BindingType : uint8_t { Texture, Storage, RenderTarget, DepthTarget, VideoOut };
 
 	struct ImageDesc {

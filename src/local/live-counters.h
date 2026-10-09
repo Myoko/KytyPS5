@@ -144,6 +144,8 @@ inline thread_local bool     g_single_writer = false; // set on the render threa
 inline std::atomic_bool g_dispatch_keys_on {std::getenv("KYTY_DISPATCH_KEYS") != nullptr};
 // Live `vma <path>`: writes the GPU allocator's detailed statistics (set by vma.cpp).
 inline void (*g_vma_report)(const char* path) = nullptr;
+// Live "images <path>": the texture cache's images as a tab-separated table (TextureCache::WriteReport).
+inline void (*g_image_report)(const char* path) = nullptr;
 // Render thread: the last draw (0) or dispatch shader address.
 inline thread_local uint64_t g_last_dispatch_shader = 0;
 
