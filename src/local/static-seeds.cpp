@@ -7,6 +7,10 @@
 // catches) this skips it too (Refused). The Python tools stay the reference and do the analyses.
 #include "static-seeds.h"
 
+#include "common/archive.h"
+#include "common/file.h"
+#include "common/stringUtils.h"
+
 #include <nlohmann/json.hpp>
 #include <xxhash.h>
 
@@ -156,6 +160,15 @@ std::string Utf8(const fs::path& path) {
 
 // Path.read_bytes(): a file it cannot read stops precompile.py.
 std::vector<uint8_t> ReadAll(const fs::path& path) {
+	if (Common::IsArchivePath(path)) { // a game packed into a ZArchive ("game.zar!/dir/file")
+		Common::File file;
+		if (!file.Open(path, Common::File::Mode::Read) || file.Size() > UINT32_MAX) throw Fatal("cannot read " + Utf8(path));
+		std::vector<uint8_t> data(static_cast<size_t>(file.Size()));
+		uint32_t             read = 0;
+		if (!data.empty()) file.Read(data.data(), static_cast<uint32_t>(data.size()), &read);
+		if (read != data.size()) throw Fatal("cannot read " + Utf8(path));
+		return data;
+	}
 	std::ifstream file(path, std::ios::binary | std::ios::ate);
 	if (!file) throw Fatal("cannot read " + Utf8(path));
 	const auto size = static_cast<std::streamoff>(file.tellg());
@@ -206,21 +219,27 @@ std::vector<GameFile> FindGameFiles(const fs::path& game, std::string_view suffi
 	while (!directories.empty()) {
 		const auto directory = std::move(directories.back());
 		directories.pop_back();
-		std::vector<fs::directory_entry> entries;
-		std::error_code                  error;
-		for (fs::directory_iterator it(directory.path, error), end; !error && it != end; it.increment(error)) {
-			entries.push_back(*it);
+		// (path, name, a directory): a game packed into a ZArchive lists its directories itself (no links there).
+		std::vector<std::tuple<fs::path, std::string, bool>> entries;
+		if (Common::IsArchivePath(directory.path)) {
+			for (const auto& entry: Common::File::GetDirEntries(directory.path)) {
+				entries.emplace_back(directory.path / Common::PathFromUtf8(entry.name), entry.name, !entry.is_file);
+			}
+		} else {
+			std::error_code error;
+			for (fs::directory_iterator it(directory.path, error), end; !error && it != end; it.increment(error)) {
+				std::error_code status;
+				entries.emplace_back(it->path(), Utf8(it->path().filename()), !it->is_symlink(status) && it->is_directory(status));
+			}
+			if (error) continue;
 		}
-		if (error) continue;
-		for (const auto& entry: entries) {
-			GameFile   file {entry.path(), directory.parts, directory.compared};
-			const auto name = Utf8(entry.path().filename());
+		for (const auto& [path, name, is_directory]: entries) {
+			GameFile file {path, directory.parts, directory.compared};
 			file.parts.push_back(name);
 			file.compared.push_back(Compared(name));
 			const auto ending = std::string_view(name).substr(name.size() - std::min(name.size(), suffix.size()));
 			if (name.size() >= suffix.size() && Compared(ending) == suffix) found.push_back(file);
-			std::error_code status;
-			if (!entry.is_symlink(status) && entry.is_directory(status)) directories.push_back(std::move(file));
+			if (is_directory) directories.push_back(std::move(file));
 		}
 	}
 	std::stable_sort(found.begin(), found.end(),
@@ -524,10 +543,9 @@ Relocations RelativeRelocations(Bytes elf, const std::vector<ElfLoad>& loads) {
 // the game has one, else the eboot.bin the emulator runs), none without either. `image` keeps the ELF image the
 // code views.
 std::vector<Shader> EmbeddedShaders(const fs::path& game, std::vector<uint8_t>& image) {
-	std::error_code error;
-	auto            path = game / "decrypted" / "eboot.bin";
-	if (!fs::is_regular_file(path, error)) path = game / "eboot.bin";
-	if (!fs::is_regular_file(path, error)) return {};
+	auto path = game / "decrypted" / "eboot.bin";
+	if (!Common::File::IsFileExisting(path)) path = game / "eboot.bin";
+	if (!Common::File::IsFileExisting(path)) return {};
 	image             = PlainElf(ReadAll(path));
 	const Bytes elf   = image;
 	const auto  loads = ElfLoads(elf);

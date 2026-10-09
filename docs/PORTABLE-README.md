@@ -54,6 +54,10 @@ folder (usually named `PPSA01341-app0`).
   so you only choose it once.
 - To use another location: delete `game-path.txt` and launch again, or run
   `run.cmd -Game "D:\Games\PPSA01341-app0"`.
+- Optional: the folder packed into one ZArchive file (`.zar`, about two thirds of its size) works
+  too, read without extracting it: choose it with the launcher's `.zar...` button, or run
+  `run.cmd -Game "D:\Games\PPSA01341-app0.zar"`. Pack it with `zarchive.exe <folder> <file.zar>`
+  (ZArchive, https://github.com/Exzap/ZArchive/releases). The folder stays the main way.
 
 ## Starting the game
 
@@ -93,7 +97,7 @@ shortcut):
 | `-Fullscreen` | Full screen (F11 or Alt+Enter also toggle it in the game) |
 | `-Fullscreen -AspectFit` | Full screen keeping 16:9, with black bars instead of stretching |
 | `-Width 1920 -Height 1080` | The window size (default 2560×1440, shrunk when the screen is smaller) |
-| `-Game <folder>` | The game folder |
+| `-Game <folder>` | The game folder (or a `.zar` archive of it) |
 | `-Language 11` | The console language, as the PS5 numbers them (0 Japanese, 1 English (US), 11 Chinese (Simplified), ...; the launcher lists them) |
 
 ## Shader precompile (without it the game stutters)

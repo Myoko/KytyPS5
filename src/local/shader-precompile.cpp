@@ -6,7 +6,10 @@
 //   kyty_shader_precompile --game <dir> --seeds <file> --status
 //   kyty_shader_precompile --game <dir> --make-seeds <file> [--states <pass-states.json>]
 //                          [--stages cs,gfx] [--limit <n>]
+//   kyty_shader_precompile --game <dir> --param <file>
 //
+// The game <dir> can also be the game packed into a ZArchive (a .zar file, read without extracting it); --param
+// copies its sce_sys/param.json to <file> (the scripts read the title and version of a .zar so).
 // compiles the shaders and pipelines of a seed file on a headless Vulkan device (the one the emulator
 // creates, without a window) into the static pipeline cache _PipelineCache/static/<title>_<version>.bin, which
 // the emulator looks up before compiling. With --shard, the i-th of n shares goes into a cache file of
@@ -29,7 +32,9 @@
 // which it finds in tools/local/static-precompile by the program or the working directory): what
 // tools/local/static-precompile/precompile.py seeds writes, byte for byte, without Python and without a
 // Vulkan device.
+#include "common/archive.h"
 #include "common/emulatorConfig.h"
+#include "common/file.h"
 #include "common/logging/log.h"
 #include "common/subsystems.h"
 #include "common/threads.h"
@@ -54,7 +59,9 @@ static int Usage() {
 	                     "       kyty_shader_precompile --game <dir> --merge [--prune]\n"
 	                     "       kyty_shader_precompile --game <dir> --seeds <file> --status\n"
 	                     "       kyty_shader_precompile --game <dir> --make-seeds <file> [--states <pass-states.json>] "
-	                     "[--stages cs,gfx] [--limit <n>]\n");
+	                     "[--stages cs,gfx] [--limit <n>]\n"
+	                     "       kyty_shader_precompile --game <dir> --param <file>\n"
+	                     "(<dir>: the game folder, or the game packed into a ZArchive: a .zar file)\n");
 	return 2;
 }
 
@@ -68,6 +75,7 @@ int main(int argc, char* argv[]) {
 	bool                             seed_option = false; // --states, --stages or --limit
 	bool                             amd         = false; // --amd
 	bool                             validate    = false; // --validate: SPIR-V validation of every module
+	std::filesystem::path            param_copy;          // --param
 	options.threads = std::max(1u, std::thread::hardware_concurrency());
 	for (int i = 1; i < argc; i++) {
 		const std::string_view arg   = argv[i];
@@ -105,6 +113,8 @@ int main(int argc, char* argv[]) {
 			if (std::sscanf(argv[++i], "%u/%u", &options.shard, &options.shards) != 2) return Usage();
 		} else if (arg == "--make-seeds") {
 			make_seeds.out = argv[++i];
+		} else if (arg == "--param") {
+			param_copy = argv[++i];
 		} else if (arg == "--states") {
 			make_seeds.states = argv[++i];
 			seed_option       = true;
@@ -119,6 +129,31 @@ int main(int argc, char* argv[]) {
 		} else {
 			return Usage();
 		}
+	}
+	// A game packed into a ZArchive: its files are read inside it ("game.zar!/..."), the archive kept open.
+	std::shared_ptr<Common::ArchiveReader> archive;
+	if (Common::IsSupportedArchive(game) && Common::File::IsFileExisting(game)) {
+		archive = Common::OpenArchive(game);
+		game    = Common::MakeArchivePath(game);
+	}
+	// The game's param.json copied (no Vulkan device, none of the emulator's subsystems).
+	if (!param_copy.empty()) {
+		if (game.empty()) return Usage();
+		Common::File in;
+		if (!Common::File::IsFileExisting(game / "eboot.bin") ||
+		    !in.Open(game / "sce_sys" / "param.json", Common::File::Mode::Read)) {
+			std::fprintf(stderr, "no game (eboot.bin and sce_sys/param.json) in %s\n", game.string().c_str());
+			return 1;
+		}
+		const auto text = in.ReadWholeBuffer();
+		Common::File out;
+		if (!out.Create(param_copy)) {
+			std::fprintf(stderr, "cannot write %s\n", param_copy.string().c_str());
+			return 1;
+		}
+		uint32_t written = 0;
+		out.Write(text, &written);
+		return written == text.Size() ? 0 : 1;
 	}
 	// The seed file from the game's files: no Vulkan device, none of the emulator's subsystems.
 	if (!make_seeds.out.empty()) {
@@ -142,7 +177,7 @@ int main(int argc, char* argv[]) {
 	subsystems.Initialize<Log::Lifecycle>();
 	// The title the caches are named after.
 	const auto param_json = game / "sce_sys" / "param.json";
-	if (!std::filesystem::is_regular_file(param_json)) {
+	if (!Common::File::IsFileExisting(param_json)) {
 		std::fprintf(stderr, "no %s\n", param_json.string().c_str());
 		return 1;
 	}
