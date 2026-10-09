@@ -1502,10 +1502,21 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 			}
 		}
 		const auto memory_before = LocalPlatform::ProcessMemory();
-		const auto video_before  = m_graphics.GetDeviceMemoryUsage();
+		m_graphics.RefreshMemoryBudget();
+		const auto video_before = m_graphics.GetDeviceMemoryUsage();
 		m_program_cache->Warm(path, title + device, std::string_view(warmup) == "1", adopt_from);
 		const auto memory_shaders = LocalPlatform::ProcessMemory();
-		if (std::string_view(warmup) == "1") {
+		// The recorded pipelines (15K, most of other areas) cost ~1 GiB of video memory and ~3 GiB of RAM (5 GiB
+		// committed): a GPU that cannot also hold the game's working set (small_video_memory), or a PC with less RAM
+		// than the ~20 GB the game takes while it loads, makes them when they are first used (~0.75 ms each from the
+		// static precompile's binaries).
+		constexpr uint64_t PipelineWarmupMinRam = uint64_t {24} << 30u;
+		const uint64_t     ram                  = LocalPlatform::PhysicalMemory();
+		const bool warm_pipelines = !m_graphics.small_video_memory && (ram == 0 || ram >= PipelineWarmupMinRam);
+		if (!warm_pipelines && std::string_view(warmup) == "1")
+			PipelineCacheLog("Pipeline warmup: skipped (video memory budget {} MiB, RAM {} MiB)",
+			                 m_graphics.GetTotalMemoryBudget() >> 20u, ram >> 20u);
+		if (std::string_view(warmup) == "1" && warm_pipelines) {
 			const auto begin = std::chrono::steady_clock::now();
 			WarmPipelines();
 			// What the driver had to compile is kept at once: the cache is otherwise written only
@@ -1513,6 +1524,7 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 			if (std::chrono::steady_clock::now() - begin > std::chrono::seconds(5)) (void)Save();
 		}
 		const auto memory_after = LocalPlatform::ProcessMemory();
+		m_graphics.RefreshMemoryBudget();
 		const auto mib = [](uint64_t to, uint64_t from) { return (static_cast<int64_t>(to) - static_cast<int64_t>(from)) >> 20; };
 		PipelineCacheLog("Warmup memory: shaders {:+} MiB committed {:+} MiB resident, pipelines {:+} MiB committed {:+} MiB "
 		                 "resident, video memory {:+} MiB",
@@ -1521,6 +1533,7 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 		    mib(memory_after.private_bytes, memory_shaders.private_bytes),
 		    mib(memory_after.working_set, memory_shaders.working_set),
 		    mib(m_graphics.GetDeviceMemoryUsage(), video_before));
+		m_graphics.LogVideoMemory("warmup");
 		m_program_cache->warmup.StartWriter();
 		if (const char* only = std::getenv("KYTY_SHADER_WARMUP_ONLY"); only && std::string_view(only) == "1") {
 			if (!Save()) {
