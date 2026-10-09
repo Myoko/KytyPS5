@@ -202,6 +202,11 @@ void NameImageBinding(GraphicContext& graphics, Image& image, vk::ImageView view
 
 } // namespace
 
+namespace {
+constexpr uint32_t ImageGranuleBits  = 16;
+constexpr uint64_t ImageGranuleSpace = uint64_t {1} << 40; // the image page table's address space
+} // namespace
+
 TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler,
                            PageManager& page_manager, BufferCache& buffer_cache)
     : m_graphics(graphics), m_scheduler(scheduler), m_page_manager(page_manager),
@@ -209,6 +214,7 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
       m_tiler(graphics, scheduler, buffer_cache.GetUtilityBuffer(MemoryUsage::Stream)),
       m_buffer_cache(buffer_cache),
       m_readback_linear_images(Config::ReadbackLinearImagesEnabled()) {
+	m_image_granules.assign((ImageGranuleSpace >> ImageGranuleBits) / 64, 0);
 	if (m_graphics.CanReportMemoryUsage()) {
 		constexpr int64_t GiB = 1024ll * 1024 * 1024;
 		const auto        budget =
@@ -329,6 +335,8 @@ void TextureCache::RegisterImage(ImageId id) {
 	}
 	MarkImageGranules(image.info.data.address, image.info.data.size);
 	if (m_image_starts[image.info.data.address]++ == 0) {
+		if (const auto bucket = StartBucket(image.info.data.address); m_start_buckets[bucket]++ == 0)
+			m_start_bucket_bits[bucket / 64u] |= uint64_t {1} << (bucket % 64u);
 		const auto epoch = m_start_epoch.load(std::memory_order_relaxed) + 1;
 		if (m_start_log.size() >= 8192) m_start_log.erase(m_start_log.begin(), m_start_log.begin() + 4096);
 		m_start_log.emplace_back(epoch, image.info.data.address);
@@ -363,6 +371,8 @@ void TextureCache::UnregisterImage(ImageId id) {
 		EXIT("TextureCache: image missing from start index\n");
 	} else if (--start->second == 0) {
 		m_image_starts.erase(start);
+		if (const auto bucket = StartBucket(image.info.data.address); --m_start_buckets[bucket] == 0)
+			m_start_bucket_bits[bucket / 64u] &= ~(uint64_t {1} << (bucket % 64u));
 	}
 	m_lru_cache.Free(image.lru_id);
 	const auto accounted = image.AccountedSize();
@@ -731,11 +741,6 @@ void TextureCache::TrackImageDownload(ImageId id, Image& image) {
 	}
 }
 
-namespace {
-constexpr uint32_t ImageGranuleBits  = 16;
-constexpr uint64_t ImageGranuleSpace = uint64_t {1} << 40; // the image page table's address space
-} // namespace
-
 void TextureCache::MarkImageGranules(uint64_t address, uint64_t size) const {
 	if (size == 0 || address >= ImageGranuleSpace) return;
 	if (m_image_granules.empty()) m_image_granules.assign((ImageGranuleSpace >> ImageGranuleBits) / 64, 0);
@@ -744,10 +749,7 @@ void TextureCache::MarkImageGranules(uint64_t address, uint64_t size) const {
 }
 
 bool TextureCache::MayHaveImages(uint64_t address, uint64_t size) const {
-	if (kyty_local_image_granules_mode.load(std::memory_order_relaxed) == 0 || m_image_granules.empty() ||
-	    size == 0 || address >= ImageGranuleSpace || size > ImageGranuleSpace - address)
-		return true;
-	if (m_image_granule_releases > 4096) {
+	if (m_image_granule_releases > 4096 && kyty_local_image_granules_mode.load(std::memory_order_relaxed) != 0) {
 		// Released images leave their bits; rebuild from the registered ones.
 		std::fill(m_image_granules.begin(), m_image_granules.end(), 0);
 		m_slot_images.ForEach([&](ImageId, const Image& image) {
@@ -755,6 +757,13 @@ bool TextureCache::MayHaveImages(uint64_t address, uint64_t size) const {
 		});
 		m_image_granule_releases = 0;
 	}
+	return MayHaveImagesRead(address, size);
+}
+
+bool TextureCache::MayHaveImagesRead(uint64_t address, uint64_t size) const {
+	if (kyty_local_image_granules_mode.load(std::memory_order_relaxed) == 0 || m_image_granule_releases > 4096 ||
+	    size == 0 || address >= ImageGranuleSpace || size > ImageGranuleSpace - address)
+		return true;
 	const uint64_t last = (address + size - 1) >> ImageGranuleBits;
 	for (uint64_t g = address >> ImageGranuleBits; g <= last;) {
 		const uint64_t bit  = g & 63;
@@ -2407,8 +2416,10 @@ void TextureCache::UpdateImage(ImageId id) {
 }
 
 bool TextureCache::HasImageStartingAt(uint64_t address) {
+	// (The bucket bits are written under m_lock: a clear one needs neither the lock nor the map.)
+	if (!m_lock.ReadShared([&] { return MayStartAt(address); })) return false;
 	std::scoped_lock lock {m_lock};
-	return m_image_starts.contains(address);
+	return MayStartAt(address) && m_image_starts.contains(address);
 }
 
 bool TextureCache::NewImageStartsSince(uint64_t epoch, std::vector<std::pair<uint64_t, uint64_t>>& out) {
@@ -2429,7 +2440,7 @@ ImageId TextureCache::FindImageFromRange(uint64_t address, uint64_t size, bool e
 		return {};
 	}
 	// Only registered images starting at `address` qualify.
-	if (!m_image_starts.contains(address)) {
+	if (!MayStartAt(address) || !m_image_starts.contains(address)) {
 		return {};
 	}
 	ImageIds matches;
@@ -3068,6 +3079,10 @@ bool TextureCache::IsRegionGpuModified(uint64_t address, uint64_t size) {
 	if (!GuestRange {address, size}.Valid()) {
 		return false;
 	}
+	// No image over the range: neither the lock nor the page walk. (The command processor asks for every indirect
+	// register table, ~11K a frame at 1-1, in memory the CPU writes; the locked instruction alone was 0.7% of the GPU
+	// thread.) A registration racing a reader without the lock makes no image the GPU wrote.
+	if (!m_lock.ReadShared([&] { return MayHaveImagesRead(address, size); })) return false;
 	std::scoped_lock lock {m_lock};
 	for (const auto id: FindImagesInRegion(address, size, false)) {
 		const auto& image = m_slot_images[id];

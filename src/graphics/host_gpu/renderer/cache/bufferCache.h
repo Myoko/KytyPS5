@@ -290,6 +290,17 @@ private:
 	std::vector<SyncStamp> m_sync_stamps;
 	std::vector<SyncBuffer> m_old_sync_buffers; // rebuild scratch
 	std::vector<SyncStamp>  m_old_sync_stamps;
+	// The registration changes since the index was current, applied to it in order (ApplySyncChanges) instead of a
+	// rebuild from every registered buffer (a walk of m_buffers' nodes and slots: ~5 a frame at 1-1, 2% of the GPU
+	// thread). Lost: too many, or the index was never built; the next use rebuilds it.
+	struct SyncChange {
+		BufferId id;
+		uint64_t address = 0, size = 0;
+		bool     insert  = false;
+	};
+	std::vector<SyncChange> m_sync_changes;
+	bool                    m_sync_changes_lost = true;
+	[[nodiscard]] bool      ApplySyncChanges();
 	PageTable                                         m_page_table;
 	RangeSet                                          m_gpu_modified_ranges;
 	std::shared_mutex                                 m_gpu_modified_mutex; // (its changes: HasGpuDirtyBytes)
@@ -321,11 +332,17 @@ private:
 
 	// KYTY_READBACK_QUEUE: GPU writes that may still be in flight, oldest first. An entry's
 	// tick is set at the next point between commands (every write noted by then is recorded
-	// at or before the current tick); entries the GPU completed are dropped from the front.
+	// at or before the current tick: m_gpu_write_stamps); entries the GPU completed are dropped
+	// from the front.
 	struct GpuWrite {
-		uint64_t begin, end, tick;
+		uint64_t begin, end;
 		bool     big = false; // spans more granules than GpuWriteSpan: in m_gpu_big_writes, not m_gpu_write_last
 	};
+	// The ticks of the stamped writes, oldest first: (end, tick) dates the writes numbered from the previous entry's end
+	// (the head's number for the first) up to `end`. (A tick in every entry: each was written once and read once more,
+	// a pass over thousands of cold entries a frame.)
+	std::deque<std::pair<uint64_t, uint64_t>> m_gpu_write_stamps;
+	[[nodiscard]] uint64_t                    GpuWriteTick(size_t index) const;
 	// Per 64 KiB granule (hashed into the counters), 1 + the number (m_gpu_writes_base + index) of the last small write
 	// there; a write over more than GpuWriteSpan granules is in m_gpu_big_writes instead. The in-flight writes are the
 	// log's tail: a range whose granules' last write completed overlaps no in-flight small write, and the walk for one

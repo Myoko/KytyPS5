@@ -209,10 +209,14 @@ struct RenderExecutor::NativeXprDrawState {
 	std::vector<Target>              targets;
 	LocalDrawRecording::DynamicState dynamic;
 	uint64_t                         dynamic_hash = 0; // of the dynamic state's bytes: two states compare it first
+	ResolvedDynamicState             resolved;         // the dynamic state's Vulkan values (once, at capture)
 	// Metadata epoch under which no target had a pending fast clear.
 	mutable uint64_t                 meta_epoch = 0;
 	// Texture cache resolution epoch under which the targets were what a lookup finds (0: not yet).
 	mutable uint64_t                 targets_epoch = 0;
+	// The resolution epoch NativeXprTargetsCurrent last found the targets current at (0: not yet): images are made and
+	// deleted (a slot reused) only with a registration change, which moves it.
+	mutable uint64_t                 targets_checked = 0;
 };
 
 // One object: its resources under the compiled programs it was translated with.
@@ -618,6 +622,11 @@ struct RenderExecutor::NativeXprCache {
 		const PipelineCache::Pipeline* pipeline   = nullptr;
 		uint64_t                       index_base = 0, index_bytes = 0;
 		vk::IndexType                  index_type = vk::IndexType::eUint16;
+		// The dynamic state the emissions recorded into `command` (valid in the same command and generation, when
+		// `dynamic_held`): another state records only the values that differ (NativeXprEmitDynamic).
+		ResolvedDynamicState           dynamic {};
+		vk::ImageAspectFlags           feedback {};
+		bool                           dynamic_held = false, feedback_held = false;
 	} emit;
 	// Programs the SRT trace cannot cover (no single linear plan): never retried.
 	std::unordered_set<const ShaderRecompiler::IR::CompiledShaderInfo*> untraceable;
@@ -1595,6 +1604,27 @@ bool RenderExecutor::NativeXprRebind(NativeXprRecord&                           
 	                                    true) == nullptr;
 }
 
+// A draw state's dynamic state into `vk_buffer`: all of it in another command buffer or generation (what any other
+// path recorded is unknown), else the values that differ from what the table and native emissions recorded there.
+// (A state change recorded all ~13 values, most unchanged: ~2% of the GPU thread on the 1-1 walk, 0.8% now.)
+void RenderExecutor::NativeXprEmitDynamic(NativeXprCache& cache, vk::CommandBuffer vk_buffer,
+                                          const NativeXprDrawState& draw_state, bool same_command) {
+	auto&      emit = cache.emit;
+	const bool diff = same_command && emit.dynamic_held;
+	if (!diff) emit.dynamic = draw_state.resolved;
+	EmitGraphicsDynamicParams(vk_buffer, draw_state.resolved, diff ? &emit.dynamic : nullptr, VULKAN_HPP_DEFAULT_DISPATCHER);
+	emit.dynamic_held = true;
+	const auto& state = draw_state.dynamic;
+	if (state.feedback_enabled) {
+		if (!diff || !emit.feedback_held || emit.feedback != state.feedback_aspects)
+			vk_buffer.setAttachmentFeedbackLoopEnableEXT(state.feedback_aspects);
+		emit.feedback      = state.feedback_aspects;
+		emit.feedback_held = true;
+	} else if (!diff) {
+		emit.feedback_held = false;
+	}
+}
+
 // The draw state under `state_key`: the render targets as this draw left them (a reopened rendering loads),
 // their layouts and the dynamic state.
 void RenderExecutor::NativeXprCaptureState(CommandBuffer& buffer, const DrawRenderState& state,
@@ -1639,6 +1669,9 @@ void RenderExecutor::NativeXprCaptureState(CommandBuffer& buffer, const DrawRend
 	        ? vk::ImageAspectFlags {vk::ImageAspectFlagBits::eDepth}
 	        : vk::ImageAspectFlags {});
 	draw_state.dynamic_hash = XXH3_64bits(&draw_state.dynamic, sizeof(draw_state.dynamic));
+	draw_state.resolved     = ResolveGraphicsDynamicParams(draw_state.dynamic.buffer, draw_state.dynamic.indexed_viewports,
+	                                                       draw_state.dynamic.colors, draw_state.dynamic.color_count,
+	                                                       draw_state.dynamic.depth);
 	// Entries stay at their address (emission tracking compares pointers); a
 	// replaced state must be emitted again.
 	const auto write = CatalogWrite();
@@ -2404,14 +2437,19 @@ RenderExecutor::NativeXprPatch RenderExecutor::NativeXprPatchDescriptors(NativeX
 // evaluation's readers. The page answer is kept for one validation.
 class NativeXprReader {
 public:
-	explicit NativeXprReader(GpuResourceManager& resources): m_resources(resources) {}
+	explicit NativeXprReader(GpuResourceManager& resources)
+	    : m_resources(resources), m_granules(resources.ReadGranules()) {}
 	void Read(uint64_t address, uint32_t count, uint32_t* out) {
 		const uint64_t bytes = uint64_t {count} * 4u;
 		const uint64_t first = address >> 12u, last = (address + bytes - 1u) >> 12u;
 		if (first == last) {
 			if (first != m_page) {
-				m_page   = first;
-				m_direct = !m_resources.HasReadWatchers(first << 12u, 4096);
+				m_page = first;
+				// (The page's granule bit first, here: a call per page was ~1% of the GPU thread at 1-1.)
+				const auto granule = first >> (PageManager::READ_GRANULE_BITS - 12u);
+				m_direct           = (address < TRACKER_ADDRESS_SIZE &&
+				            ((m_granules[granule / 64u].load(std::memory_order_acquire) >> (granule % 64u)) & 1u) == 0) ||
+				           !m_resources.HasReadWatchers(first << 12u, 4096);
 			}
 			if (m_direct) {
 				// (A speculation's: as no GPU work wrote it, which a hole that writes it after disproves, and as its
@@ -2428,9 +2466,10 @@ public:
 	}
 
 private:
-	GpuResourceManager& m_resources;
-	uint64_t            m_page   = UINT64_MAX;
-	bool                m_direct = false;
+	GpuResourceManager&          m_resources;
+	const std::atomic<uint64_t>* m_granules;
+	uint64_t                     m_page   = UINT64_MAX;
+	bool                         m_direct = false;
 };
 
 // Traced records: false when a structural read changed (the caller evaluates
@@ -2936,11 +2975,14 @@ bool RenderExecutor::NativeXprEmitTargets(const NativeXprDrawState& draw_state, 
 // now), and a newer image with the same backing as a target is what the registers now select: the
 // normal path captures the state again.
 bool RenderExecutor::NativeXprTargetsCurrent(const NativeXprDrawState& draw_state) {
-	auto& textures = m_context.GetTextureCache();
-	for (const auto& target: draw_state.targets) {
-		const auto* image = textures.m_slot_images.try_get(target.id);
-		if (image == nullptr || image->serial != target.serial) return false;
-	}
+	auto&      textures = m_context.GetTextureCache();
+	const auto checked  = textures.ResolutionEpoch();
+	// (Every table draw asked: a slot lookup and a cold image object per target, ~28K a frame at 1-1.)
+	if (draw_state.targets_checked == checked) return true;
+	// (A live id is the same object: an erase moves its slot's generation, which the id names. The image itself, a cold
+	// line per target, is not read.)
+	for (const auto& target: draw_state.targets)
+		if (!textures.m_slot_images.is_allocated(target.id)) return false;
 	if (draw_state.targets_epoch != textures.ResolutionEpoch()) {
 		uint64_t proven = UINT64_MAX;
 		for (const auto& target: draw_state.targets) {
@@ -2950,6 +2992,7 @@ bool RenderExecutor::NativeXprTargetsCurrent(const NativeXprDrawState& draw_stat
 		}
 		draw_state.targets_epoch = proven != UINT64_MAX ? proven : textures.ResolutionEpoch();
 	}
+	draw_state.targets_checked = checked;
 	return true;
 }
 
@@ -3055,12 +3098,7 @@ bool RenderExecutor::NativeXprEmit(CommandBuffer& buffer, NativeXprRecord& recor
 		// Another draw state with the same dynamic state is bound already.
 		emit.state = &draw_state;
 	}
-	if (!same_command || emit.state != &draw_state) {
-		const auto& state = draw_state.dynamic;
-		SetGraphicsDynamicParamsImpl(state.buffer, vk_buffer, state.indexed_viewports, state.colors,
-		                             state.color_count, state.depth, VULKAN_HPP_DEFAULT_DISPATCHER);
-		if (state.feedback_enabled) vk_buffer.setAttachmentFeedbackLoopEnableEXT(state.feedback_aspects);
-	}
+	if (!same_command || emit.state != &draw_state) NativeXprEmitDynamic(cache, vk_buffer, draw_state, same_command);
 	if (!same_command || emit.pipeline != &pipeline) {
 		vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
 	}

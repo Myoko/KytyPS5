@@ -133,6 +133,13 @@ jobs:
           name: ${{ needs.windows.outputs.package }}
           path: package
 
+      - name: Release notes
+        uses: actions/checkout@v4
+        with:
+          path: notes
+          sparse-checkout: docs/RELEASE-NOTES.md
+          sparse-checkout-cone-mode: false
+
       - name: Publish
         shell: bash
         run: |
@@ -141,6 +148,8 @@ jobs:
           tag="$GITHUB_REF_NAME"
           [ "$GITHUB_REF_TYPE" = tag ] || tag="$PACKAGE"
           notes="Windows x64 build of ${GITHUB_SHA::8} for Demon's Souls (PPSA01341, versions 01.007.000 and 01.005.000). Unzip it and double-click run.cmd or launcher.cmd; the README.md inside explains the rest."
+          # The notes of this build (what changed, the per-PC shader caches, frame rates), when the commit has them.
+          if [ -s notes/docs/RELEASE-NOTES.md ]; then notes="$(printf '%s\n\n%s' "$notes" "$(cat notes/docs/RELEASE-NOTES.md)")"; fi
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             gh release upload "$tag" "$PACKAGE.zip" --clobber --repo "$GITHUB_REPOSITORY"
           else

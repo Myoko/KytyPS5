@@ -11,6 +11,7 @@
 #include "graphics/guest_gpu/hardwareContext.h"
 #include "graphics/guest_gpu/pm4.h"
 #include "graphics/guest_gpu/speculation.h"
+#include "graphics/host_gpu/pageManager.h"
 #include "graphics/host_gpu/bdaDirtyRegions.h"
 #include "graphics/host_gpu/renderer/pipeline/shaderReadObserver.h"
 #include "graphics/host_gpu/renderer/render.h"
@@ -160,6 +161,24 @@ void GuestGpu::SendCommand(Common::UniqueFunction<void>&& command) {
 	m_work_available.Signal();
 }
 
+// Packets that only change state or record draws and dispatches.
+static constexpr auto KeepsDeferredProtectionBits = [] {
+	std::array<uint64_t, 4> bits {};
+	for (const uint32_t opcode:
+	     {Pm4::IT_DISPATCH_DIRECT, Pm4::IT_DISPATCH_INDIRECT, Pm4::IT_DRAW_INDIRECT, Pm4::IT_DRAW_INDEX_INDIRECT,
+	      Pm4::IT_DRAW_INDEX_2, Pm4::IT_DRAW_INDIRECT_MULTI, Pm4::IT_DRAW_INDEX_AUTO, Pm4::IT_DRAW_INDEX_OFFSET_2,
+	      Pm4::IT_DRAW_INDEX_INDIRECT_MULTI, Pm4::IT_INDEX_BASE, Pm4::IT_INDEX_TYPE, Pm4::IT_INDEX_BUFFER_SIZE,
+	      Pm4::IT_NUM_INSTANCES, Pm4::IT_SET_BASE, Pm4::IT_SET_SH_REG, Pm4::IT_SET_CONTEXT_REG, Pm4::IT_SET_UCONFIG_REG,
+	      Pm4::IT_SET_UCONFIG_REG_INDEX, Pm4::IT_SET_SH_REG_INDIRECT, Pm4::IT_SET_CONTEXT_REG_INDIRECT,
+	      Pm4::IT_SET_UCONFIG_REG_INDIRECT})
+		bits[opcode / 64u] |= uint64_t {1} << (opcode % 64u);
+	return bits;
+}();
+// (A bit per opcode: the switch it replaces cost 0.3% of the GPU thread, once per packet.)
+static bool KeepsDeferredProtection(uint32_t opcode) {
+	return ((KeepsDeferredProtectionBits[(opcode >> 6u) & 3u] >> (opcode & 63u)) & 1u) != 0;
+}
+
 void GuestGpu::ProcessCommands() {
 	EXIT_IF(!IsGpuThread());
 	while (m_pending_commands.load(std::memory_order_acquire) != 0) {
@@ -172,6 +191,7 @@ void GuestGpu::ProcessCommands() {
 			EXIT_IF(m_pending_commands.fetch_sub(1, std::memory_order_acq_rel) == 0);
 		}
 		// Fault, readback and mapping callbacks cannot overtake a queued draw.
+		PageManager::FlushDeferredProtection();
 		LiveCounters::Add(LiveCounters::GuestCommands);
 		LiveTrace::Event(LiveTrace::GuestCommand, 1, 0);
 		command();
@@ -300,7 +320,8 @@ void CommandProcessor::Reset() {
 	m_draw_indirect_args_base_addr     = 0;
 	m_dispatch_indirect_args_base_addr = 0;
 
-	std::memset(m_const_ram, 0, sizeof(m_const_ram));
+	std::memset(m_const_ram, 0, size_t {m_const_ram_used} * sizeof(uint32_t));
+	m_const_ram_used = 0;
 	// Every register changed: the native path's clean-draw shadow no longer matches.
 	DrawStateObserver::Invalidate();
 }
@@ -423,7 +444,11 @@ void CommandProcessor::CopyStateFrom(const CommandProcessor& other, bool const_r
 	m_de_count                         = other.m_de_count;
 	m_ce_count                         = other.m_ce_count;
 	m_ce_complete                      = other.m_ce_complete;
-	if (const_ram) std::memcpy(m_const_ram, other.m_const_ram, sizeof(m_const_ram));
+	if (const_ram) {
+		std::memcpy(m_const_ram, other.m_const_ram,
+		            size_t {std::max(m_const_ram_used, other.m_const_ram_used)} * sizeof(uint32_t));
+		m_const_ram_used = other.m_const_ram_used;
+	}
 	m_flip                        = other.m_flip;
 	m_submit_id                   = other.m_submit_id;
 	m_synthetic_occlusion_counter = other.m_synthetic_occlusion_counter;
@@ -508,6 +533,7 @@ void CommandProcessor::IncrementCe() {
 
 void CommandProcessor::WriteConstRam(uint32_t offset, const uint32_t* src, uint32_t dw_num) {
 	memcpy(m_const_ram + offset / 4, src, static_cast<size_t>(dw_num) * 4);
+	m_const_ram_used = std::min(std::max(m_const_ram_used, offset / 4 + dw_num), static_cast<uint32_t>(std::size(m_const_ram)));
 }
 
 void CommandProcessor::DumpConstRam(uint32_t* dst, uint32_t offset, uint32_t dw_num) {
@@ -773,6 +799,7 @@ void GuestGpu::ThreadRun(void* data) {
 	KYTY_PROFILER_THREAD("Thread_Gpu");
 	g_gpu_thread = true;
 	g_gpu_state  = gpu;
+	PageManager::DeferReadProtection(true);
 	gpu->m_renderer.GetMutex().BecomeOwner();
 	BdaDirtyRegions::g_translating = true;
 	LiveTrace::g_mark_thread = true;
@@ -788,6 +815,7 @@ void GuestGpu::ThreadRun(void* data) {
 #endif
 
 	for (;;) {
+		PageManager::FlushDeferredProtection(); // (before a guest command, an idle wait, another queue's turn)
 		Submission                   submission;
 		Common::UniqueFunction<void> command;
 		bool                         has_submission = false;
@@ -1362,6 +1390,9 @@ void CommandProcessor::ProcessPm4(Pm4Execution& execution, size_t stop_depth) {
 			}
 		}
 
+		// Only state, draws and dispatches keep the deferred read protections pending: before a label, a memory write,
+		// a wait or anything else the pages GPU work writes are protected (PageManager::DeferReadProtection).
+		if (!KeepsDeferredProtection(opcode)) PageManager::FlushDeferredProtection();
 		auto handler = g_cp_op_func[opcode];
 		LiveCounters::AddPm4(opcode);
 		if (XprCapture::Enabled()) {
