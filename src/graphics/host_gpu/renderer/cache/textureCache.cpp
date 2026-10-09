@@ -207,6 +207,36 @@ constexpr uint32_t ImageGranuleBits  = 16;
 constexpr uint64_t ImageGranuleSpace = uint64_t {1} << 40; // the image page table's address space
 } // namespace
 
+static TextureCache* g_report_cache = nullptr;
+
+void TextureCache::WriteReport(const char* path) {
+	FILE* file = std::fopen(path, "wb");
+	if (file == nullptr) return;
+	std::fputs("id\taddress\tguest_size\tbytes\tformat\tguest_format\ttype\twidth\theight\tdepth\tlevels\tlayers\tsamples\ttile\tusage\tregistered\tgpu_modified\tlru_tick\tgc_tick\n", file);
+	std::scoped_lock lock {m_lock};
+	m_slot_images.ForEach([&](ImageId id, Image& image) {
+		VmaAllocationInfo allocation {};
+		if (image.backing.allocation != nullptr) vmaGetAllocationInfo(m_graphics.allocator, image.backing.allocation, &allocation);
+		const auto& usage = image.usage;
+		char        kinds[8] {};
+		size_t      k = 0;
+		if (usage.texture) kinds[k++] = 't';
+		if (usage.storage) kinds[k++] = 's';
+		if (usage.render_target) kinds[k++] = 'r';
+		if (usage.depth_target) kinds[k++] = 'd';
+		if (usage.video_out) kinds[k++] = 'v';
+		if (k == 0) kinds[k++] = '-';
+		std::fprintf(file, "%u\t0x%" PRIx64 "\t%" PRIu64 "\t%" PRIu64 "\t%s\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%s\t%d\t%d\t%" PRIu64 "\t%" PRIu64 "\n",
+		             id.index, image.info.data.address, image.info.data.size, static_cast<uint64_t>(allocation.size),
+		             vk::to_string(image.backing.format).c_str(), static_cast<uint32_t>(image.info.guest_format),
+		             static_cast<uint32_t>(image.info.type), image.info.extent.width, image.info.extent.height,
+		             image.info.extent.depth, image.info.resources.levels, image.info.resources.layers, image.info.samples,
+		             static_cast<uint32_t>(image.info.tile_mode), kinds, image.registered ? 1 : 0, image.IsGpuModified() ? 1 : 0,
+		             image.registered ? m_lru_cache.TickOf(image.lru_id) : uint64_t {0}, m_gc_tick);
+	});
+	std::fclose(file);
+}
+
 TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler,
                            PageManager& page_manager, BufferCache& buffer_cache)
     : m_graphics(graphics), m_scheduler(scheduler), m_page_manager(page_manager),
@@ -215,20 +245,18 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
       m_buffer_cache(buffer_cache),
       m_readback_linear_images(Config::ReadbackLinearImagesEnabled()) {
 	m_image_granules.assign((ImageGranuleSpace >> ImageGranuleBits) / 64, 0);
-	if (m_graphics.CanReportMemoryUsage()) {
-		constexpr int64_t GiB = 1024ll * 1024 * 1024;
-		const auto        budget =
-		    static_cast<int64_t>(std::min<uint64_t>(m_graphics.GetTotalMemoryBudget(), INT64_MAX));
-		const auto threshold = std::min<int64_t>(budget, 8 * GiB);
-		m_pressure_gc_memory = static_cast<uint64_t>(
-		    std::max<int64_t>(std::min(budget - 6 * threshold / 10, budget - GiB), GiB + GiB / 2));
-		m_critical_gc_memory = static_cast<uint64_t>(
-		    std::max<int64_t>(std::min(budget - 2 * threshold / 10, budget - GiB / 2), 3 * GiB));
-		m_trigger_gc_memory = static_cast<uint64_t>(std::max<int64_t>((budget - threshold) / 2, 0));
-	}
+	g_report_cache               = this;
+	LiveCounters::g_image_report = [](const char* path) {
+		if (g_report_cache != nullptr) g_report_cache->WriteReport(path);
+	};
+	// Collection starts where the video memory use reaches the budget less its headroom (GetTotalMemoryBudget):
+	// below it a kept image costs nothing, a deleted one an upload when the game uses it again.
+	m_trigger_gc_memory = m_graphics.GetTotalMemoryBudget();
 }
 
 TextureCache::~TextureCache() {
+	LiveCounters::g_image_report = nullptr;
+	g_report_cache               = nullptr;
 	m_slot_images.ForEach([&](ImageId id, const Image& image) {
 		if (image.registered) {
 			UnregisterImage(id);
@@ -3374,66 +3402,54 @@ void TextureCache::RunGarbageCollector() {
 	if (m_graphics.CanReportMemoryUsage()) {
 		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();
 	}
-	if (m_total_used_memory < m_trigger_gc_memory) {
+	// Over the budget: the images no draw or dispatch used for StaleTicks flips (~10 s), least recently used first, at
+	// most MaxDeletions a flip. What the game stops drawing it stops binding: 1-1 standing, 3.2 GiB of images were used
+	// in the last 2 flips, 3.0 GiB not for 160 and more, 0.05 GiB in between; turning the camera, images behind it
+	// come back after a few seconds (160 flips: 5-7 MB of uploads a frame instead of 0.2-1.7, 1% low 47 -> 27 fps).
+	constexpr uint64_t StaleTicks   = 600;
+	constexpr size_t   MaxDeletions = 40;
+	if (m_total_used_memory < m_trigger_gc_memory || tick < StaleTicks) {
 		return;
 	}
-	const auto collect = [&](bool allow_aggressive) {
-		bool           pressured  = m_total_used_memory >= m_pressure_gc_memory;
-		bool           aggressive = allow_aggressive && m_total_used_memory >= m_critical_gc_memory;
-		const uint64_t age       = std::min<uint64_t>(aggressive ? 160 : pressured ? 80 : 16, tick);
-		size_t         deletions = aggressive ? 40 : pressured ? 20 : 10;
-		std::vector<ImageId> candidates;
-		candidates.reserve(deletions);
-		// Deleting depth recursively deletes its stencil association, so finish LRU traversal
-		// first.
-		m_lru_cache.ForEachItemBelow(tick - age, [&](ImageId id) {
-			candidates.push_back(id);
-			return candidates.size() == deletions;
-		});
-		for (const auto id: candidates) {
-			if (deletions == 0) {
-				break;
-			}
-			--deletions;
-			auto owner = m_slot_images.try_get(id);
-			if (owner == nullptr || !owner->registered || owner->depth_id) {
+	// An image the collector keeps (a depth image with its stencil association; one the GPU wrote, tiled: no download
+	// for its data) is passed over, not counted: never used again, kept images stay at the front of the list, and the
+	// first images from the front were only those (until 10-09 no image was collected on any GPU). Deleting depth
+	// deletes its stencil association too, so the traversal ends first.
+	std::vector<ImageId> candidates;
+	candidates.reserve(MaxDeletions);
+	m_lru_cache.ForEachItemBelow(tick - StaleTicks, [&](ImageId id) {
+		const auto* owner = m_slot_images.try_get(id);
+		if (owner == nullptr || !owner->registered || owner->depth_id ||
+		    (owner->IsGpuModified() && owner->info.IsTiled() && SafeToDownload(*owner))) {
+			return false;
+		}
+		candidates.push_back(id);
+		return candidates.size() == MaxDeletions;
+	});
+	for (const auto id: candidates) {
+		auto owner = m_slot_images.try_get(id);
+		if (m_total_used_memory < m_trigger_gc_memory) {
+			break;
+		}
+		if (owner == nullptr || !owner->registered) {
+			continue;
+		}
+		if (owner->IsGpuModified()) {
+			if (SafeToDownload(*owner) && !TryDownloadImage(id)) {
 				continue;
 			}
-			if (owner->IsGpuModified()) {
-				const bool safe = SafeToDownload(*owner);
-				if (safe && owner->info.IsTiled()) {
-					continue;
-				}
-				if (safe && !pressured) {
-					continue;
-				}
-				if (safe && !TryDownloadImage(id)) {
-					continue;
-				}
-				owner->ClearGpuModified();
-			}
-			if (SlowLog::Threshold() > 0.0 && owner->info.data.size >= PartialDirtyMinSize) {
-				std::printf("[tsc %llu] GC-DELETE addr=0x%llx size=0x%llx used=%llu\n",
-				            static_cast<unsigned long long>(__rdtsc()),
-				            static_cast<unsigned long long>(owner->info.data.address),
-				            static_cast<unsigned long long>(owner->info.data.size),
-				            static_cast<unsigned long long>(m_total_used_memory));
-				std::fflush(stdout);
-			}
-			DeleteImage(id);
-			if (m_total_used_memory < m_critical_gc_memory && aggressive) {
-				deletions >>= 2;
-				aggressive = false;
-			}
-			if (m_total_used_memory < m_pressure_gc_memory && pressured) {
-				deletions >>= 1;
-				pressured = false;
-			}
+			owner->ClearGpuModified();
 		}
-	};
-	collect(false);
-	if (m_total_used_memory >= m_critical_gc_memory) {
-		collect(true);
+		if (SlowLog::Threshold() > 0.0 && owner->info.data.size >= PartialDirtyMinSize) {
+			std::printf("[tsc %llu] GC-DELETE addr=0x%llx size=0x%llx used=%llu\n",
+			            static_cast<unsigned long long>(__rdtsc()),
+			            static_cast<unsigned long long>(owner->info.data.address),
+			            static_cast<unsigned long long>(owner->info.data.size),
+			            static_cast<unsigned long long>(m_total_used_memory));
+			std::fflush(stdout);
+		}
+		DeleteImage(id);
+		LiveCounters::Add(LiveCounters::GcImageDeletes);
 	}
 }
 

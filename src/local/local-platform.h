@@ -52,6 +52,15 @@ void     CloseScratchFile(uint64_t file);
 // An existing file (a UTF-8 path) for ReadScratchFile and CloseScratchFile; 0 when it cannot be opened.
 uint64_t OpenFileForReading(const char* path);
 
+// The process's committed private memory and resident working set, and the machine's physical memory, in
+// bytes (0 where the host cannot tell).
+struct MemoryUse {
+	uint64_t private_bytes = 0;
+	uint64_t working_set   = 0;
+};
+MemoryUse ProcessMemory();
+uint64_t  PhysicalMemory();
+
 #if defined(_WIN32)
 // With its output in files (run-windows.ps1's logs), the console window a launcher gave the process
 // stays empty, and closing it would end the game: the process leaves it (it closes).

@@ -33,6 +33,9 @@ struct TextureCacheTestAccess;
 
 class TextureCache {
 public:
+	// Every image as a tab-separated row (live "images <path>").
+	void WriteReport(const char* path);
+
 	enum class BindingType : uint8_t { Texture, Storage, RenderTarget, DepthTarget, VideoOut };
 
 	struct ImageDesc {
@@ -309,8 +312,6 @@ private:
 	}
 	uint64_t                                          m_total_used_memory  = 0;
 	uint64_t                                          m_trigger_gc_memory  = 0;
-	uint64_t                                          m_pressure_gc_memory = 1536ull * 1024 * 1024;
-	uint64_t         m_critical_gc_memory     = 3ull * 1024 * 1024 * 1024;
 	uint64_t         m_gc_tick                = 0;
 	std::atomic<uint64_t> m_frame {0};
 	struct PendingDownload {

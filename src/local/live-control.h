@@ -500,6 +500,10 @@ inline void Run(uint64_t id, const std::string& line) {
 		// vma <path>: the GPU allocator's detailed statistics (JSON: every allocation's type and size).
 		if (LiveCounters::g_vma_report != nullptr) LiveCounters::g_vma_report(arg1);
 		std::printf("LIVE_VMA id=%" PRIu64 " path=%s written=%d\n", id, arg1, LiveCounters::g_vma_report != nullptr ? 1 : 0);
+	} else if (cmd == "images" && n >= 2) {
+		// images <path>: the texture cache's images, one tab-separated row each (what the video memory holds).
+		if (LiveCounters::g_image_report != nullptr) LiveCounters::g_image_report(arg1);
+		std::printf("LIVE_IMAGES id=%" PRIu64 " path=%s written=%d\n", id, arg1, LiveCounters::g_image_report != nullptr ? 1 : 0);
 	} else if (cmd == "warp" && n >= 2) {
 		// warp <map> <spawn> | warp off: the debug warp (loader/demonsSoulsWarp.h).
 		const bool off = std::string_view(arg1) == "off";
