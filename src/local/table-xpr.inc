@@ -220,6 +220,19 @@ struct RenderExecutor::TableXpr {
 	};
 	static constexpr size_t           ResolvedEntries = 65536;
 	std::unique_ptr<ResolvedBuffer[]> resolved = std::make_unique<ResolvedBuffer[]>(ResolvedEntries);
+	// A copy in the table upload ring of a small range the guest wrote (TableBlocks reads such a range from a copy,
+	// none held: the guest writes its pages unseen), direct-mapped by the range: the main executor's uses share it
+	// while no point the guest could learn that GPU work ran at passed (PageManager::ObservationEpoch: until then the
+	// guest writes nothing that work reads), in the same submission (`tick`: the ring keeps the copy for it) and with
+	// no page of the range's tracker regions made CPU-dirty since (`cpu_epoch`: one the GPU wrote and the guest read
+	// back in between is dirty again). A frame's constants are read by many draws: in the Latria spin ~2950 copies,
+	// 11.8 MB a frame, before; ~1140 and 4.6 MB with the shared ones.
+	struct RingCopy {
+		uint64_t          address = 0, size = 0, observation = 0, tick = 0, cpu_epoch = 0;
+		vk::DeviceAddress device = 0;
+	};
+	static constexpr size_t           RingCopies = 4096;
+	std::unique_ptr<RingCopy[]>       ring_copies = std::make_unique<RingCopy[]>(RingCopies);
 	uint32_t                          special_generation = 1; // moves with the image starts and the mappings
 	// Addresses no image starts at, each with the TextureCache::StartEpoch it was proven at (only an address gaining
 	// its first image moves that epoch): TableBlocks asks the texture cache (a lock and a map lookup) again only then.
@@ -1259,15 +1272,40 @@ bool RenderExecutor::TableBlocks(TablePair& pair, std::array<std::span<const uin
 					                         !buffer_cache.IsRegionGpuModified(address, size);
 					if (cpu_written && size <= BufferCache::CACHING_PAGESIZE &&
 					    (spec == nullptr || !spec->JournalIntersects(address, size))) {
-						// As ObtainBuffer: a small range the guest wrote is read from a copy in the ring (this use only,
-						// nothing held), not uploaded into its buffer.
-						auto [mapped, offset] = upload.Map(size, 16, false);
-						if (mapped != nullptr && Libs::LibKernel::Memory::TryReadBackingToHost(address, mapped, size)) {
+						// As ObtainBuffer: a small range the guest wrote is read from a copy in the ring (nothing held: the
+						// main executor's later uses share it while it holds, TableXpr::RingCopy), not uploaded into its
+						// buffer.
+						auto* const shared = spec == nullptr && Role() == 0
+						                         ? &table.ring_copies[((address ^ (size << 40u)) * 0x9e3779b97f4a7c15ull) >> 52u]
+						                         : nullptr;
+						const auto observation = PageManager::ObservationEpoch();
+						const auto tick        = m_context.GetCommandScheduler().CurrentTick();
+						const auto cpu         = buffer_cache.CpuModificationEpoch(address, size); // (before the copy)
+						vk::DeviceAddress device = 0;
+						if (shared != nullptr && cpu != 0 && shared->address == address && shared->size == size &&
+						    shared->observation == observation && shared->tick == tick && shared->cpu_epoch == cpu) {
+							device = shared->device;
+							LiveCounters::Add(LiveCounters::TableRingShared);
+							LiveCounters::Add(LiveCounters::TableRingSharedBytes, size);
+						} else if (auto [mapped, offset] = upload.Map(size, 16, false);
+						           mapped != nullptr && Libs::LibKernel::Memory::TryReadBackingToHost(address, mapped, size)) {
 							upload.Commit();
 							if (spec != nullptr) spec->NoteCleanRead(address, size);
+							device = upload.BufferDeviceAddress() + offset;
+							LiveCounters::Add(LiveCounters::TableRingCopies);
+							LiveCounters::Add(LiveCounters::TableRingBytes, size);
+							if (shared != nullptr && cpu != 0)
+								*shared = {.address     = address,
+								           .size        = size,
+								           .observation = observation,
+								           .tick        = tick,
+								           .cpu_epoch   = cpu,
+								           .device      = device};
+						}
+						if (device != 0) {
 							const auto [word, stride]      = word_of(words4);
-							block[plan.BufferDword(i)]     = static_cast<uint32_t>(upload.BufferDeviceAddress() + offset);
-							block[plan.BufferDword(i) + 1] = static_cast<uint32_t>((upload.BufferDeviceAddress() + offset) >> 32u);
+							block[plan.BufferDword(i)]     = static_cast<uint32_t>(device);
+							block[plan.BufferDword(i) + 1] = static_cast<uint32_t>(device >> 32u);
 							block[plan.BufferDword(i) + 2] = static_cast<uint32_t>(size / 4);
 							block[plan.BufferDword(i) + 3] = word;
 							block[plan.BufferDword(i) + 4] = stride;
