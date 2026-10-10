@@ -119,8 +119,8 @@ There are two levels of preparation, both specific to the graphics card and driv
    result is a store the game reads pipeline by pipeline (`<title>_<version>.binaries`, about 2 GB, nothing to
    load at launch); with other drivers a cache each launch loads (with a progress bar).
    - Choose "Precompile first" in the dialog at launch, or double-click `precompile.cmd` on its own.
-   - The time depends on the CPU threads: about 45 minutes with 22 threads, about 1 hour with 16,
-     about 2 hours with 8. The CPU is fully loaded meanwhile: running it overnight is a good idea.
+   - The time depends on the CPU threads: about 55 minutes with 22 threads, about 1 hour 15 minutes with
+     16, about 2.5 hours with 8. The CPU is fully loaded meanwhile: running it overnight is a good idea.
    - Closing the window stops it; running it again continues where it stopped.
    - Coming from an older package with a precompiled `_PipelineCache\static\<title>.bin`: the precompile
      turns it into the store in a few minutes; the `.bin` is then unused and can be deleted (about 4 GB).

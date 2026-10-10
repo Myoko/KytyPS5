@@ -375,7 +375,7 @@ if ($DryRun) { $environment.GetEnumerator() | ForEach-Object { "  $($_.Key)=$($_
 # prefetch's inputs for this GPU and driver (_PipelineCache\static\<title>_<version>.shaders; new shaders
 # are then translated in the background while playing), made when they are missing or stale (the first
 # launch, a driver update: half a minute on 22 CPUs); and the static pipeline cache, the whole game
-# compiled ahead by precompile-windows.ps1 (44 minutes on 22 CPUs), offered by -Prompt.
+# compiled ahead by precompile-windows.ps1 (about 55 minutes on 22 CPUs), offered by -Prompt.
 $tool = Join-Path (Split-Path $Exe) 'kyty_shader_precompile.exe'
 # The seed file of this game version (Rename-TitleCaches).
 $seedName = if ($param -and $titleId -and $param.contentVersion) { "seeds-$($titleId)_$($param.contentVersion).seeds" } else { 'seeds.seeds' }
@@ -384,16 +384,20 @@ $seeds = @("$PSScriptRoot\$seedName", "$PSScriptRoot\_Build\static-precompile\$s
 # precompile program, as precompile-windows.ps1 makes it (--make-seeds, with the render-pass states of
 # pass-states.json; precompile.py seeds without Python).
 $passStates = "$PSScriptRoot\tools\local\static-precompile\pass-states.json"
-# One an older program made is made again (a release unpacked over the last): what the program lists changes with it
-# (precompile-windows.ps1 has the same).
-$staleSeeds = $seeds -and (Test-Path $tool) -and (Get-Item $seeds).LastWriteTime -lt (Get-Item $tool).LastWriteTime
+# One another program made (<file>.program: its size and time) is made again (a release unpacked over the last) and
+# replaced where it lists something else (precompile-windows.ps1 has the same).
+$programStamp = if (Test-Path $tool) { "$((Get-Item $tool).Length) $((Get-Item $tool).LastWriteTimeUtc.Ticks)" }
+$staleSeeds = $seeds -and $programStamp -and (!(Test-Path "$seeds.program") -or "$(Get-Content "$seeds.program" -Raw)".Trim() -ne $programStamp)
 if ((!$seeds -or $staleSeeds) -and !$Precompile -and (Test-Path $tool) -and (Test-Path $passStates)) {
-	$made = if ($seeds) { $seeds } elseif (Test-Path "$PSScriptRoot\_Build") { "$PSScriptRoot\_Build\static-precompile\$seedName" } else { "$PSScriptRoot\$seedName" }
+	$target = if ($seeds) { $seeds } elseif (Test-Path "$PSScriptRoot\_Build") { "$PSScriptRoot\_Build\static-precompile\$seedName" } else { "$PSScriptRoot\$seedName" }
+	$made = if ($staleSeeds) { "$target.new" } else { $target }
 	New-Item -ItemType Directory -Force (Split-Path $made) | Out-Null
-	Write-Host "shaders:  listing the game's shaders from its files $(if ($staleSeeds) { 'again (a newer precompile program)' } else { '(once)' })"
+	Write-Host "shaders:  listing the game's shaders from its files $(if ($staleSeeds) { 'again (another precompile program)' } else { '(once)' })"
 	& $tool --game $Game --make-seeds $made --states $passStates | Out-Null
 	if ($LASTEXITCODE -eq 0 -and (Test-Path $made)) {
-		$seeds = $made
+		if ($staleSeeds -and (Get-FileHash $made).Hash -eq (Get-FileHash $target).Hash) { Remove-Item $made } elseif ($staleSeeds) { Move-Item -Force $made $target }
+		Set-Content "$target.program" $programStamp
+		$seeds = $target
 	} elseif (!$staleSeeds) {
 		Write-Host 'shaders:  listing failed: the game compiles its shaders when they first appear'
 	}
@@ -433,7 +437,7 @@ if ($Prompt -and ($offer -or !$tested)) {
 	$info = "Game: $(if ($titleName) { $titleName } else { 'unknown' }) ($version)"
 	$info += if ($tested) { ', a tested version.' } else { "`n⚠ This version is untested (the emulator was tested with $($testedVersions -join ' and ')): it may not run or may fail." }
 	if ($offer) {
-		$minutes = [math]::Ceiling(44 * 22 / $cpus / 10) * 10
+		$minutes = [math]::Ceiling(55 * 22 / $cpus / 10) * 10
 		$time = if ($minutes -lt 90) { "about $minutes minutes" } else { 'about {0:N1} hours' -f ($minutes / 60) }
 		$message = if ($cacheOutdated) {
 			"$info`n`nThis version of the emulator precompiles more of the game's shaders than the one that made the precompiled shaders on this PC: the new ones would stutter the first time they appear.`n" +

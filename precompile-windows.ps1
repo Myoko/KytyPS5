@@ -105,15 +105,21 @@ $defaultSeeds = !$Seeds
 if (!$Seeds) {
 	$Seeds = if ((Test-Path "$PSScriptRoot\seeds-$gameId.seeds") -or !(Test-Path "$PSScriptRoot\_Build")) { "$PSScriptRoot\seeds-$gameId.seeds" } else { "$PSScriptRoot\_Build\static-precompile\seeds-$gameId.seeds" }
 }
-# The seed file an older program made is made again (a release unpacked over the last): what the program lists
-# changes with it (the vertex shaders' indirect draws' records since 10-10).
-$staleSeeds = $defaultSeeds -and (Test-Path $Seeds) -and (Get-Item $Seeds).LastWriteTime -lt (Get-Item $Exe).LastWriteTime
-if (!(Test-Path $Seeds) -or $staleSeeds) {
+# The seed file another program made (<file>.program: its size and time) is made again (a release unpacked over the
+# last), and replaced where it lists something else (the vertex shaders' indirect draws' records since 10-10): the
+# static cache is then older than it, out of date (--status), and the precompile compiles what is new.
+$programStamp = "$((Get-Item $Exe).Length) $((Get-Item $Exe).LastWriteTimeUtc.Ticks)"
+$madeBy = "$Seeds.program"
+$remake = $defaultSeeds -and (Test-Path $Seeds) -and (!(Test-Path $madeBy) -or "$(Get-Content $madeBy -Raw)".Trim() -ne $programStamp)
+if (!(Test-Path $Seeds) -or $remake) {
 	# Every shader the game ships, with the pipelines it draws them with (from the game files, by the program:
 	# precompile.py seeds without Python).
 	New-Item -ItemType Directory -Force (Split-Path $Seeds) | Out-Null
-	& $Exe --game $Game --make-seeds $Seeds --states "$PSScriptRoot\tools\local\static-precompile\pass-states.json"
+	$made = if ($remake) { "$Seeds.new" } else { $Seeds }
+	& $Exe --game $Game --make-seeds $made --states "$PSScriptRoot\tools\local\static-precompile\pass-states.json"
 	if ($LASTEXITCODE) { throw 'making the seed file failed (kyty_shader_precompile --make-seeds)' }
+	if ($remake -and (Get-FileHash $made).Hash -eq (Get-FileHash $Seeds).Hash) { Remove-Item $made } elseif ($remake) { Move-Item -Force $made $Seeds }
+	Set-Content $madeBy $programStamp
 }
 if ($Recorded -eq '*') {
 	$Recorded = Join-Path (Split-Path $Seeds) "recorded-$gameId.seeds"
