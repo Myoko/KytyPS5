@@ -507,6 +507,34 @@ void TextureCache::MarkAsMaybeDirty(ImageId id, Image& image) {
 	UntrackImage(id, "maybe-dirty");
 }
 
+namespace {
+
+// KYTY_ASYNC_REPROTECT: the write protection of the pages TrackImage starts watching (again: the pages a refresh
+// released) goes to the upload worker ahead of the upload's copies that read them whole (BufferCache::ImageProtectSink),
+// is applied before any other read of them, and when the upload returns where nothing read them. In the frames that
+// stream textures in, those protection calls took milliseconds of the render thread.
+class DeferredImageProtects {
+public:
+	DeferredImageProtects(BufferCache& cache, PageManager& manager): m_cache(cache), m_manager(manager) {}
+	DeferredImageProtects(const DeferredImageProtects&)            = delete;
+	DeferredImageProtects& operator=(const DeferredImageProtects&) = delete;
+	~DeferredImageProtects() { m_cache.ApplyImageProtects(); }
+
+	template <class F>
+	void Track(F&& track) {
+		const bool defer = kyty_local_async_reprotect_mode.load(std::memory_order_relaxed) != 0;
+		if (defer) PageManager::SetDeferredWriteProtectSink(m_cache.ImageProtectSink(m_manager));
+		track();
+		if (defer) PageManager::SetDeferredWriteProtectSink(nullptr);
+	}
+
+private:
+	BufferCache& m_cache;
+	PageManager& m_manager;
+};
+
+} // namespace
+
 void TextureCache::TrackImage(ImageId id) {
 	auto& image = m_slot_images[id];
 	if (!image.registered) {
@@ -1634,7 +1662,8 @@ void TextureCache::InitializeImage(ImageId id) {
 	if (image.info.data.Empty()) {
 		return;
 	}
-	TrackImage(id);
+	DeferredImageProtects protects {m_buffer_cache, m_page_manager};
+	protects.Track([&] { TrackImage(id); });
 	marks[1] = Clock::now();
 	if (image.info.metadata.compression != VideoOutCompression::Uncompressed) {
 		if (image.IsCpuDirty()) {
@@ -2125,7 +2154,8 @@ void TextureCache::PrepareDccClear(ImageId id, const ImageDesc& desc) {
 }
 
 void TextureCache::RefreshImage(ImageId id) {
-	TrackImage(id);
+	DeferredImageProtects protects {m_buffer_cache, m_page_manager};
+	protects.Track([&] { TrackImage(id); });
 	auto& image = m_slot_images[id];
 	if (image.IsStencilModified()) {
 		const auto [source, source_offset] =
@@ -2137,6 +2167,7 @@ void TextureCache::RefreshImage(ImageId id) {
 		image.ClearStencilModified();
 	}
 	if (image.IsMaybeCpuDirty()) {
+		m_buffer_cache.ApplyImageProtects(); // (the hash reads the pages: a write after it has to fault)
 		const auto hash = image.HashGuestEdges();
 		if (image.NeedsMaybeCpuHash()) {
 			image.SetMaybeCpuHash(hash);

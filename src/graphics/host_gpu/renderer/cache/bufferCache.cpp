@@ -1890,6 +1890,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 		auto& buffer = m_slot_buffers[*owner];
 		if (buffer.IsInBounds(vaddr, size)) {
 			path = "buffer";
+			ApplyImageProtects();
 			TouchBuffer(buffer);
 			(void)SynchronizeBuffer(buffer, vaddr, size, false, false);
 			return {&buffer, buffer.Offset(vaddr)};
@@ -1897,6 +1898,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 	}
 	if (IsRegionGpuModified(vaddr, size)) {
 		path = "gpu";
+		ApplyImageProtects();
 		return ObtainBuffer(vaddr, size, false, false);
 	}
 	// More than the whole staging ring holds (a texture over a streamed pool expanded to 1.35 GB while
@@ -1904,6 +1906,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 	// fills a staging-sized piece at a time (a temporary buffer past that) and only where memory is mapped.
 	if (size > m_staging_buffer.Size()) {
 		path = "large";
+		ApplyImageProtects();
 		return ObtainBuffer(vaddr, size, false, false);
 	}
 	marks[2] = Clock::now();
@@ -1922,6 +1925,7 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 		return {&m_staging_buffer, stage_offset};
 	}
 	const char* prt_failure = "not-attempted";
+	ApplyImageProtects();
 	if (staging == nullptr || (!Libs::LibKernel::Memory::TryReadBacking(vaddr, staging, size) &&
 	                           !Libs::LibKernel::Memory::TryReadPrtBacking(vaddr, staging, size, &prt_failure))) {
 		EXIT("BufferCache: failed to read mapped guest image backing: "
@@ -1934,7 +1938,36 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 	return {&m_staging_buffer, stage_offset};
 }
 
+void BufferCache::ApplyImageProtects() {
+	for (const auto& range: m_image_protects) m_image_protect_manager->SyncProtection(range.address, range.size);
+	m_image_protects.clear();
+}
+
+void BufferCache::QueueImageProtects(std::span<const StagingPiece> copied, bool whole_image) {
+	if (m_image_protects.empty()) return;
+	const auto page = whole_image ? m_image_protect_manager->GetPageSize() : 1;
+	for (const auto& range: m_image_protects) {
+		const bool read_whole = std::ranges::any_of(copied, [&](const StagingPiece& piece) {
+			return range.address >= piece.vaddr / page * page &&
+			       range.address + range.size <= (piece.vaddr + piece.size + page - 1) / page * page;
+		});
+		if (!read_whole) {
+			m_image_protect_manager->SyncProtection(range.address, range.size);
+			continue;
+		}
+		// (The page manager's protection of the pages as their watchers are then: the count of this one may be gone.)
+		AsyncUpload::Get().PushProtection(
+		    [](void* manager, uint64_t address, uint64_t bytes) {
+			    static_cast<PageManager*>(manager)->SyncProtection(address, bytes);
+		    },
+		    m_image_protect_manager, range.address, range.size, range.address, range.size);
+	}
+	m_image_protects.clear();
+}
+
 bool BufferCache::PushImageStagingCopies(uint8_t* staging, uint64_t vaddr, uint64_t size) {
+	const StagingPiece whole {vaddr, size, 0};
+	QueueImageProtects({&whole, 1}, true);
 	if (const auto* source = Libs::LibKernel::Memory::TryGetBackingPointer(vaddr, size)) {
 		AsyncUpload::Get().Push(staging, source, size, vaddr);
 		return true;
@@ -1991,6 +2024,12 @@ std::pair<Buffer*, uint64_t> BufferCache::StageImagePieces(const std::vector<Sta
 	}
 	const bool async = kyty_local_async_upload_mode.load(std::memory_order_relaxed) >= 2 &&
 	                   m_staging_buffer.IsCoherent();
+	// (Parts of the image: a deferred protection goes ahead of the worker's copies only of pages one of them reads whole.)
+	if (async) {
+		QueueImageProtects(pieces, false);
+	} else {
+		ApplyImageProtects();
+	}
 	bool queued = false;
 	for (const auto& piece: pieces) {
 		auto* target = staging + piece.offset;
