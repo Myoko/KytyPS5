@@ -106,9 +106,10 @@ inline void Flip() {
 		                                     C::TableDraws, C::TableStores, C::TableStoreVariant, C::TableStoreTargets,
 		                                     C::TableRefusedSets, C::TableNoSet, C::TableDrawNative, C::TableEvaluations,
 		                                     C::TableStoreDeferred};
-		static constexpr const char* waits[] = {"gpu_wait", "readback_wait", "download_wait", "compile"};
+		static constexpr const char* waits[] = {"gpu_wait", "readback_wait", "download_wait", "compile", "record_wait"};
 		static std::chrono::steady_clock::time_point     last {};
 		static int64_t                                   last_idle = 0;
+		static int64_t                                   last_upload_wait = 0;
 		static std::array<int64_t, LiveCensus::Waits>    last_waits {};
 		static std::array<uint64_t, counted.size()>      last_counts {};
 		// The render thread's run time (TSC ticks) and a TSC rate from the first flip on: busy wall time
@@ -129,6 +130,8 @@ inline void Flip() {
 			for (size_t i = 0; i < LiveCensus::Waits; ++i)
 				if (const auto ns = LiveCensus::g_waits_ns[i] - last_waits[i]; ns != 0)
 					std::printf(" %s=%.1f", waits[i], static_cast<double>(ns) / 1e6);
+			if (const auto ns = LiveCensus::g_upload_wait_ns.load(std::memory_order_relaxed) - last_upload_wait; ns != 0)
+				std::printf(" upload_wait=%.1f", static_cast<double>(ns) / 1e6);
 			for (size_t i = 0; i < counted.size(); ++i) {
 				const auto delta = LiveCounters::Value(counted[i]) - last_counts[i];
 				if (delta != 0) std::printf(" %s=%llu", LiveCounters::Names[counted[i]], static_cast<unsigned long long>(delta));
@@ -141,6 +144,7 @@ inline void Flip() {
 		}
 		last        = now;
 		last_idle   = g_render_idle_ns;
+		last_upload_wait = LiveCensus::g_upload_wait_ns.load(std::memory_order_relaxed);
 		last_cycles = cycles;
 		for (size_t i = 0; i < LiveCensus::Waits; ++i) last_waits[i] = LiveCensus::g_waits_ns[i];
 		for (size_t i = 0; i < counted.size(); ++i) last_counts[i] = LiveCounters::Value(counted[i]);
