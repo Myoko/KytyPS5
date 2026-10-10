@@ -853,25 +853,40 @@ std::vector<uint32_t> PixelRecord(Bytes code, const Agc& agc, const Agc& vertex)
 	return RecordWords(StagePixel, code, UserDataCount(rsrc2), key, info);
 }
 
+// keys.INDIRECT_START_INSTANCE_SGPR: the SGPR the game's indirect draws have the CP write the start instance into
+// (START_INST_LOC): the third GS user SGPR, s8 + 2, of a vertex shader with three (its table pointer, then the instance
+// offset; every recorded indirect draw's).
+constexpr uint32_t IndirectStartInstanceSgpr = 8 + 2;
+
 // keys.vertex_record: this game's vertex shaders pull their vertices through the SRT (no fetch tables, no clip
-// transform, no mesh path), so the key holds header fields only; Refused with fetch tables.
-std::vector<uint32_t> VertexRecord(Bytes code, const Agc& agc) {
+// transform, no mesh path), so the key holds header fields only; Refused with fetch tables. start_instance_sgpr -1
+// for direct draws, the SGPR the start instance is written to for indirect ones.
+std::vector<uint32_t> VertexRecord(Bytes code, const Agc& agc, uint32_t start_instance_sgpr = 0xffffffffu) {
 	const auto& offsets = agc.direct_resource_offset;
 	if ((offsets.size() > 10 && offsets[10] != 0xffff) || (offsets.size() > 8 && offsets[8] != 0xffff)) {
 		throw Refused("vertex shader with fetch tables: its key needs draw-time descriptors");
 	}
 	const uint32_t scratch  = agc.scratch_size_dw_per_thread;
 	const uint32_t out_cntl = RegFirst(agc.cx_registers, PaClVsOutCntl).value_or(0);
-	// start_instance_sgpr -1: the direct draws' variant.
-	const uint32_t key[]  = {0, 0, 0, 0, scratch, out_cntl, 0xffffffffu, 0, 0};
-	const uint32_t info[] = {0, 0, 0,                         // resources_num, fetch_attrib_reg, fetch_buffer_reg
-	                         scratch, out_cntl, 0xffffffffu, // scratch, PA_CL_VS_OUT_CNTL, start_instance_sgpr
-	                         0, 0, 0,                         // fetch_external, fetch_embedded, clip enabled
-	                         0, 0, 0, 0, 0, 0,                // clip scale, offset, half extent
-	                         0, 0, 0, 0, 0, 64, 64,           // mesh: threads, LDS, scratch, subgroup, wave
-	                         0, 0, 0, 0, 0, 0};               // mesh: primitive and vertex counts, provoking vertex
+	const uint32_t key[]  = {0, 0, 0, 0, scratch, out_cntl, start_instance_sgpr, 0, 0};
+	const uint32_t info[] = {0, 0, 0,                                 // resources_num, fetch_attrib_reg, fetch_buffer_reg
+	                         scratch, out_cntl, start_instance_sgpr, // scratch, PA_CL_VS_OUT_CNTL, start_instance_sgpr
+	                         0, 0, 0,                                 // fetch_external, fetch_embedded, clip enabled
+	                         0, 0, 0, 0, 0, 0,                        // clip scale, offset, half extent
+	                         0, 0, 0, 0, 0, 64, 64,                   // mesh: threads, LDS, scratch, subgroup, wave
+	                         0, 0, 0, 0, 0, 0};                       // mesh: primitive and vertex counts, provoking vertex
 	const auto     rsrc2  = RegFirst(agc.sh_registers, SpiShaderPgmRsrc2Gs).value_or(0);
 	return RecordWords(StageVertex, code, UserDataCount(rsrc2), key, info);
+}
+
+// keys.vertex_records: the records of a vertex shader, its direct draws' and, where it has the three user SGPRs whose
+// last the CP writes the start instance into, its indirect draws' (read from Vulkan's base instance there).
+std::vector<std::vector<uint32_t>> VertexRecords(Bytes code, const Agc& agc) {
+	std::vector<std::vector<uint32_t>> records {VertexRecord(code, agc)};
+	if (UserDataCount(RegFirst(agc.sh_registers, SpiShaderPgmRsrc2Gs).value_or(0)) == 3) {
+		records.push_back(VertexRecord(code, agc, IndirectStartInstanceSgpr));
+	}
+	return records;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -1345,20 +1360,25 @@ int Make(const Options& options) {
 				counts["pairs without states (" + group + ")"]++;
 				return;
 			}
-			uint32_t vs = 0, ps = 0;
+			std::vector<uint32_t> vertex_records;
+			uint32_t              ps = 0;
 			try {
-				vs = seeds.Record(VertexRecord(vertex.code, vertex.agc));
+				for (auto& record: VertexRecords(vertex.code, vertex.agc)) {
+					vertex_records.push_back(seeds.Record(std::move(record)));
+				}
 				ps = seeds.Record(PixelRecord(pixel.code, pixel.agc, vertex.agc));
 			} catch (const Refused&) {
 				counts["pairs with unsupported inputs"]++;
 				return;
 			}
-			for (const auto& words: *palette) {
-				if (!culling) {
-					seeds.Pipeline(WithShaders(vs, ps, words));
-					continue;
+			for (const auto vs: vertex_records) {
+				for (const auto& words: *palette) {
+					if (!culling) {
+						seeds.Pipeline(WithShaders(vs, ps, words));
+						continue;
+					}
+					for (const auto& variant: CullingVariants(words)) seeds.Pipeline(WithShaders(vs, ps, variant));
 				}
-				for (const auto& variant: CullingVariants(words)) seeds.Pipeline(WithShaders(vs, ps, variant));
 			}
 		};
 
@@ -1374,13 +1394,16 @@ int Make(const Options& options) {
 			// Inventory.vertex_only: eboot.bin's vertex shaders, which the engine also draws without a pixel shader.
 			for (const auto& shader: inventory.embedded) {
 				if (shader.agc.type != TypeGs) continue;
-				uint32_t vs = 0;
+				std::vector<std::vector<uint32_t>> records;
 				try {
-					vs = seeds.Record(VertexRecord(shader.code, shader.agc));
+					records = VertexRecords(shader.code, shader.agc);
 				} catch (const Refused& error) {
 					throw Fatal(std::string("eboot.bin: ") + error.what()); // not caught there
 				}
-				for (const auto& words: states.VertexOnly()) seeds.Pipeline(WithShaders(vs, NoShader, words));
+				for (auto& record: records) {
+					const auto vs = seeds.Record(std::move(record));
+					for (const auto& words: states.VertexOnly()) seeds.Pipeline(WithShaders(vs, NoShader, words));
+				}
 			}
 		}
 

@@ -384,12 +384,19 @@ $seeds = @("$PSScriptRoot\$seedName", "$PSScriptRoot\_Build\static-precompile\$s
 # precompile program, as precompile-windows.ps1 makes it (--make-seeds, with the render-pass states of
 # pass-states.json; precompile.py seeds without Python).
 $passStates = "$PSScriptRoot\tools\local\static-precompile\pass-states.json"
-if (!$seeds -and !$Precompile -and (Test-Path $tool) -and (Test-Path $passStates)) {
-	$made = if (Test-Path "$PSScriptRoot\_Build") { "$PSScriptRoot\_Build\static-precompile\$seedName" } else { "$PSScriptRoot\$seedName" }
+# One an older program made is made again (a release unpacked over the last): what the program lists changes with it
+# (precompile-windows.ps1 has the same).
+$staleSeeds = $seeds -and (Test-Path $tool) -and (Get-Item $seeds).LastWriteTime -lt (Get-Item $tool).LastWriteTime
+if ((!$seeds -or $staleSeeds) -and !$Precompile -and (Test-Path $tool) -and (Test-Path $passStates)) {
+	$made = if ($seeds) { $seeds } elseif (Test-Path "$PSScriptRoot\_Build") { "$PSScriptRoot\_Build\static-precompile\$seedName" } else { "$PSScriptRoot\$seedName" }
 	New-Item -ItemType Directory -Force (Split-Path $made) | Out-Null
-	Write-Host "shaders:  listing the game's shaders from its files (once)"
+	Write-Host "shaders:  listing the game's shaders from its files $(if ($staleSeeds) { 'again (a newer precompile program)' } else { '(once)' })"
 	& $tool --game $Game --make-seeds $made --states $passStates | Out-Null
-	if ($LASTEXITCODE -eq 0 -and (Test-Path $made)) { $seeds = $made } else { Write-Host 'shaders:  listing failed: the game compiles its shaders when they first appear' }
+	if ($LASTEXITCODE -eq 0 -and (Test-Path $made)) {
+		$seeds = $made
+	} elseif (!$staleSeeds) {
+		Write-Host 'shaders:  listing failed: the game compiles its shaders when they first appear'
+	}
 }
 $shaders = !$Precompile -and $seeds -and (Test-Path $tool)
 # The precompile program on the launch's CPUs, its output in the console or a file: its exit code.
@@ -412,9 +419,11 @@ if ($shaders) {
 	$inputsReady = $status -match 'inputs current'
 	# A precompile that stopped before its last merge keeps its shards' checkpoints (small ones stay
 	# behind after a merge).
+	# Outdated: made from the seeds of an older precompile program, which listed fewer of the game's shaders.
+	$cacheOutdated = $status -match 'static cache outdated'
 	$cacheReady = $status -match 'static cache current' -and
 		!(Get-ChildItem "$PSScriptRoot\_PipelineCache\static\*.shard*" -ErrorAction SilentlyContinue | Where-Object Length -gt 1MB)
-	Write-Host "shaders:  prefetch inputs $(if ($inputsReady) { 'ready' } else { 'to be made' }), static pipeline cache $(if ($cacheReady) { 'ready' } else { 'not made (precompile-windows.ps1)' })"
+	Write-Host "shaders:  prefetch inputs $(if ($inputsReady) { 'ready' } else { 'to be made' }), static pipeline cache $(if ($cacheReady) { 'ready' } elseif ($cacheOutdated) { 'out of date (precompile-windows.ps1 compiles what is new)' } else { 'not made (precompile-windows.ps1)' })"
 }
 
 # -Prompt: the game version and the precompile, before anything starts.
@@ -426,9 +435,14 @@ if ($Prompt -and ($offer -or !$tested)) {
 	if ($offer) {
 		$minutes = [math]::Ceiling(44 * 22 / $cpus / 10) * 10
 		$time = if ($minutes -lt 90) { "about $minutes minutes" } else { 'about {0:N1} hours' -f ($minutes / 60) }
-		$message = "$info`n`nThe shaders are not precompiled for this graphics card yet: scenes and effects stutter the first time they appear in the game (a fraction of a second to a few seconds).`n" +
-			"The precompile compiles every shader of the game once: $time on this PC (with the CPU fully loaded; closing its window stops it, and the next run continues). " +
-			"It is needed only once, and again after a graphics driver update."
+		$message = if ($cacheOutdated) {
+			"$info`n`nThis version of the emulator precompiles more of the game's shaders than the one that made the precompiled shaders on this PC: the new ones would stutter the first time they appear.`n" +
+				"Precompiling again compiles only what is new (minutes; at most $time on this PC, with the CPU fully loaded; closing its window stops it, and the next run continues)."
+		} else {
+			"$info`n`nThe shaders are not precompiled for this graphics card yet: scenes and effects stutter the first time they appear in the game (a fraction of a second to a few seconds).`n" +
+				"The precompile compiles every shader of the game once: $time on this PC (with the CPU fully loaded; closing its window stops it, and the next run continues). " +
+				"It is needed only once, and again after a graphics driver update."
+		}
 		$choice, $never = Show-Choice $message @('Precompile first, then start the game', 'Start the game now', 'Quit') "Don't ask about precompiling again"
 		if ($never) { Set-Content $noPrompt 'run-windows.ps1 -Prompt: no precompile dialog (delete this file to get it back)' }
 		if ($choice -ne 0 -and $choice -ne 1) { Write-Host 'cancelled'; return }

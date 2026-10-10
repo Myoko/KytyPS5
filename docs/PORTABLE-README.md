@@ -125,7 +125,8 @@ There are two levels of preparation, both specific to the graphics card and driv
    - Coming from an older package with a precompiled `_PipelineCache\static\<title>.bin`: the precompile
      turns it into the store in a few minutes; the `.bin` is then unused and can be deleted (about 4 GB).
    - **After a graphics driver update or a new graphics card it has to be done again**; the launcher
-     asks again.
+     asks again. It also asks after an update of the emulator that precompiles more: running it again
+     then compiles only what is new.
    - To stop being asked: tick "Don't ask about precompiling again" (delete
      `no-precompile-prompt.txt` to be asked again).
 

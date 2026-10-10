@@ -25,8 +25,8 @@
 // writes it where the emulator's shader prefetch reads it (_PipelineCache/static/<title>_<version>.shaders);
 // --timings each pipeline's compile time (ms, SPIR-V words, the seeds' hashes). --status prints
 // whether those inputs and the static cache are this GPU's and driver's ("inputs current|stale",
-// "static cache current|stale"; run-windows.ps1 asks before every launch). Run it from the directory
-// the emulator runs in.
+// "static cache current|outdated|stale", outdated: older than the seeds; run-windows.ps1 asks before every launch).
+// Run it from the directory the emulator runs in.
 // --make-seeds writes the seed file itself, from the game's files (static-seeds.cpp: every shader the game
 // ships, paired as its materials and the engine draw them, with the render-pass states of pass-states.json,
 // which it finds in tools/local/static-precompile by the program or the working directory): what
@@ -189,10 +189,17 @@ int main(int argc, char* argv[]) {
 		return 1;
 	}
 	if (amd) Libs::Graphics::ShaderRecompiler::SetDeviceStorageBufferBounds(false);
+	// Compute seeds as the game gets this GPU's programs (PipelineCache::GetComputeProgram: 64-lane host subgroups
+	// where wave64 programs run natively, else 32), whatever host subgroups they were listed or recorded with.
+	if (options.host_subgroup_size == 0) options.host_subgroup_size = graphics.SupportsComputeWave64() ? 64u : 32u;
 	if (status) {
+		// (outdated: this GPU's and driver's, older than the seeds.)
+		const bool built = PipelineCache::StaticCacheCurrent(graphics, {});
 		std::printf("inputs %s\nstatic cache %s\n",
 		            PipelineCache::StaticInputsCurrent(graphics, options.seeds) ? "current" : "stale",
-		            PipelineCache::StaticCacheCurrent(graphics) ? "current" : "stale");
+		            !built                                                     ? "stale"
+		            : PipelineCache::StaticCacheCurrent(graphics, options.seeds) ? "current"
+		                                                                         : "outdated");
 		std::fflush(nullptr);
 		std::_Exit(0);
 	}

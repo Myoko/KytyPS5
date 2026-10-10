@@ -97,17 +97,21 @@ if (!$Game) { $Game = $lastGame }
 $info = Read-GameParam $Game
 if (!$info) { throw "no sce_sys\param.json in $Game (-Game <folder or .zar>, or start the game once to choose it)" }
 $gameId = "$($info.titleId)_$($info.contentVersion)"
+$defaultSeeds = !$Seeds
 if (!$Seeds) {
 	$Seeds = if ((Test-Path "$PSScriptRoot\seeds-$gameId.seeds") -or !(Test-Path "$PSScriptRoot\_Build")) { "$PSScriptRoot\seeds-$gameId.seeds" } else { "$PSScriptRoot\_Build\static-precompile\seeds-$gameId.seeds" }
 }
-if ($Recorded -eq '*') { $Recorded = Join-Path (Split-Path $Seeds) "recorded-$gameId.seeds" }
-if (!(Test-Path $Seeds)) {
+# The seed file an older program made is made again (a release unpacked over the last): what the program lists
+# changes with it (the vertex shaders' indirect draws' records since 10-10).
+$staleSeeds = $defaultSeeds -and (Test-Path $Seeds) -and (Get-Item $Seeds).LastWriteTime -lt (Get-Item $Exe).LastWriteTime
+if (!(Test-Path $Seeds) -or $staleSeeds) {
 	# Every shader the game ships, with the pipelines it draws them with (from the game files, by the program:
 	# precompile.py seeds without Python).
 	New-Item -ItemType Directory -Force (Split-Path $Seeds) | Out-Null
 	& $Exe --game $Game --make-seeds $Seeds --states "$PSScriptRoot\tools\local\static-precompile\pass-states.json"
 	if ($LASTEXITCODE) { throw 'making the seed file failed (kyty_shader_precompile --make-seeds)' }
 }
+if ($Recorded -eq '*') { $Recorded = Join-Path (Split-Path $Seeds) "recorded-$gameId.seeds" }
 if ($Affinity -eq 0) {
 	$config = @("$PSScriptRoot\launch.json", "$PSScriptRoot\run-windows.json") | Where-Object { Test-Path $_ } |
 		Select-Object -First 1
