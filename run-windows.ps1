@@ -18,6 +18,7 @@
 #   .\run-windows.ps1 -Vblank 240            another virtual vblank rate (default 60, the console's)
 #   .\run-windows.ps1 -Game <folder>         the game (the folder with eboot.bin); remembered in
 #                                            game-path.txt, a folder dialog when none is known
+#   .\run-windows.ps1 -Game <file.zar>       the game folder packed into a ZArchive (read without extracting it)
 #   .\run-windows.ps1 -Affinity FFFFCF       only these CPUs (hex mask; default: the config's list, else all)
 #   .\run-windows.ps1 -Prompt                a dialog first when the game version is untested or the
 #                                            shaders are not precompiled for this GPU (run.cmd)
@@ -88,12 +89,34 @@ function Show-Choice([string]$message, [string[]]$choices, [string]$checkbox = '
 	return $form.Tag, $check.Checked
 }
 
+# A game: its folder (eboot.bin and sce_sys) or the folder packed into a ZArchive (a .zar file, read by the emulator
+# without extracting it).
+function Test-Game([string]$game) {
+	$game -and ((Test-Path -LiteralPath "$game\eboot.bin") -or ($game -match '\.zar$' -and (Test-Path -LiteralPath $game -PathType Leaf)))
+}
+# The game's sce_sys\param.json (its title and version): a .zar's is copied out by the precompile program.
+function Read-GameParam([string]$game) {
+	if (!$game) { return $null }
+	if (Test-Path -LiteralPath "$game\sce_sys\param.json") { return Get-Content -LiteralPath "$game\sce_sys\param.json" -Raw -Encoding UTF8 | ConvertFrom-Json }
+	$tool = Join-Path (Split-Path $Exe) 'kyty_shader_precompile.exe'
+	if ($game -notmatch '\.zar$' -or !(Test-Path -LiteralPath $game -PathType Leaf) -or !(Test-Path $tool)) { return $null }
+	$copy = [IO.Path]::GetTempFileName()
+	try {
+		& $tool --game $game --param $copy 2>$null | Out-Null
+		if ($LASTEXITCODE -eq 0) { return Get-Content -LiteralPath $copy -Raw -Encoding UTF8 | ConvertFrom-Json }
+	} catch {
+	} finally {
+		Remove-Item -LiteralPath $copy -ErrorAction SilentlyContinue
+	}
+	return $null
+}
+
 # Caches made from the game's files are named by its title and version (seeds-<title>_<version>.seeds,
 # _PipelineCache\static\<title>_<version>.*, the warmup recordings; versions need not share shaders). Those named
 # by the title alone are from before: the game's that was played last (the remembered one), so they take its
 # name (precompile-windows.ps1 has the same).
 function Rename-TitleCaches([string]$game) {
-	$info = if (Test-Path "$game\sce_sys\param.json") { Get-Content "$game\sce_sys\param.json" -Raw -Encoding UTF8 | ConvertFrom-Json }
+	$info = Read-GameParam $game
 	if (!$info -or !$info.titleId -or !$info.contentVersion) { return }
 	$title = $info.titleId
 	$id = "$($title)_$($info.contentVersion)"
@@ -116,23 +139,24 @@ function Rename-TitleCaches([string]$game) {
 }
 
 # The game: -Game, else the last one given, else the default folder; a folder dialog when that has
-# no eboot.bin (a portable package started by double-clicking run.cmd).
+# no eboot.bin (a portable package started by double-clicking run.cmd). A .zar archive of the folder
+# is a game too (-Game, or the launcher's settings window).
 $gameFile = "$PSScriptRoot\game-path.txt"
 $remember = [bool]$Game
 $lastGame = if (Test-Path $gameFile) { "$(Get-Content $gameFile -Raw)".Trim() }
 if (!$lastGame) { $lastGame = "$env:USERPROFILE\Documents\PPSA01341-app0" }
 if (!$DryRun) { Rename-TitleCaches $lastGame }
 if (!$Game) { $Game = $lastGame }
-if ($Prompt -or (!$remember -and !(Test-Path "$Game\eboot.bin"))) { Initialize-Dialogs }
-if (!$remember -and !(Test-Path "$Game\eboot.bin")) {
+if ($Prompt -or (!$remember -and !(Test-Game $Game))) { Initialize-Dialogs }
+if (!$remember -and !(Test-Game $Game)) {
 	$dialog = New-Object System.Windows.Forms.FolderBrowserDialog -Property @{ Description = 'Choose the game folder (the one with eboot.bin and sce_sys)' }
 	if ($dialog.ShowDialog() -eq 'OK') { $Game = $dialog.SelectedPath; $remember = $true }
 }
-if (!(Test-Path "$Game\eboot.bin")) { throw "no eboot.bin in $Game" }
+if (!(Test-Game $Game)) { throw "no eboot.bin in $Game (nor a .zar archive)" }
 if ($remember) { Set-Content $gameFile $Game -Encoding UTF8 }
 # Its title and version (sce_sys\param.json): the emulator is tested with one of them.
 $testedVersions = @('PPSA01341 01.007.000', 'PPSA01341 01.005.000')
-$param = if (Test-Path "$Game\sce_sys\param.json") { Get-Content "$Game\sce_sys\param.json" -Raw -Encoding UTF8 | ConvertFrom-Json }
+$param = Read-GameParam $Game
 $titleId = if ($param) { $param.titleId } else { '' }
 $version = if ($param) { "$titleId $($param.contentVersion)" } else { 'unknown' }
 $titleName = if ($param) { $param.localizedParameters.($param.localizedParameters.defaultLanguage).titleName }

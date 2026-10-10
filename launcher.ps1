@@ -56,16 +56,20 @@ $efficiencyMask = Get-EfficiencyMask
 
 # The emulator's own launcher (src/launcher) applies _Patches\<title id>.json by itself; run-windows.ps1
 # passes one only when told to, so the title id is read here the way the title label reads it and the
-# file beside it is offered. Empty when the folder has no such patch, so -Patch is then not passed.
-function Get-CheatFile([string]$folder) {
-	if (!$folder) { return '' }
+# file beside it is offered. Empty when the game has no such patch, so -Patch is then not passed.
+# The title id is remembered per path: for a .zar archive it takes one helper run (Read-GameParam).
+$cheatTitleIds = @{}
+function Get-CheatFile([string]$game) {
+	if (!$game) { return '' }
 	try {
-		$param = Join-Path $folder 'sce_sys\param.json'
-		if (!(Test-Path $param)) { return '' }
-		$id = (Get-Content $param -Raw | ConvertFrom-Json).titleId
+		if (!$cheatTitleIds.ContainsKey($game)) {
+			$param = Read-GameParam $game
+			$cheatTitleIds[$game] = if ($param -and $param.titleId) { [string]$param.titleId } else { '' }
+		}
+		$id = $cheatTitleIds[$game]
 		if (!$id) { return '' }
 		$file = Join-Path $root "_Patches\$id.json"
-		if (Test-Path $file) { return $file }
+		if (Test-Path -LiteralPath $file) { return $file }
 	} catch {}
 	return ''
 }
@@ -121,29 +125,51 @@ function Add-Row($label, [object[]]$controls) {
 
 $game = New-Object System.Windows.Forms.TextBox -Property @{ Text = $settings.game; Width = 440 }
 $browse = New-Object System.Windows.Forms.Button -Property @{ Text = '浏览…'; AutoSize = $true }
-Add-Row '游戏目录' @($game, $browse)
+$browseZar = New-Object System.Windows.Forms.Button -Property @{ Text = '选 .zar…'; AutoSize = $true }
+Add-Row '游戏目录' @($game, $browse, $browseZar)
 $title = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray' }
 Add-Row '' @($title)
-function Update-Title {
-	$title.Text = '请选择含 eboot.bin 与 sce_sys 的游戏目录（游戏转储）'
+# A game: its folder (eboot.bin and sce_sys) or the folder packed into a ZArchive (a .zar file).
+function Read-GameParam([string]$game) {
+	if (!$game) { return $null }
+	if (Test-Path -LiteralPath "$game\sce_sys\param.json") { return Get-Content -LiteralPath "$game\sce_sys\param.json" -Raw -Encoding UTF8 | ConvertFrom-Json }
+	$tool = @("$root\kyty_shader_precompile.exe", "$root\_Build\windows\kyty_shader_precompile.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+	if ($game -notmatch '\.zar$' -or !(Test-Path -LiteralPath $game -PathType Leaf) -or !$tool) { return $null }
+	$copy = [IO.Path]::GetTempFileName()
 	try {
-		$param = Join-Path $game.Text 'sce_sys\param.json'
-		if (Test-Path $param) {
-			$json = Get-Content $param -Raw | ConvertFrom-Json
+		& $tool --game $game --param $copy 2>$null | Out-Null
+		if ($LASTEXITCODE -eq 0) { return Get-Content -LiteralPath $copy -Raw -Encoding UTF8 | ConvertFrom-Json }
+	} catch {
+	} finally {
+		Remove-Item -LiteralPath $copy -ErrorAction SilentlyContinue
+	}
+	return $null
+}
+function Update-Title {
+	$title.Text = '请选择含 eboot.bin 与 sce_sys 的游戏目录（游戏转储），或它的 .zar 打包档'
+	try {
+		$json = Read-GameParam $game.Text.Trim()
+		if ($json) {
 			$title.Text = '{0} ({1} {2})' -f $json.localizedParameters.($json.localizedParameters.defaultLanguage).titleName,
 				$json.titleId, $json.contentVersion
 		}
 	} catch {}
 	# The cheat line is about the folder as it is being typed, not about the last saved setting.
 	if ($cheatNote) {
-		$patch = Get-CheatFile $game.Text
-		$cheatNote.Text = if ($patch) { '套用 ' + [System.IO.Path]::GetFileName($patch) } else { '此目录下没有 _Patches\<title id>.json' }
+		$patch = Get-CheatFile $game.Text.Trim()
+		$cheatNote.Text = if ($patch) { '套用 ' + [System.IO.Path]::GetFileName($patch) } else { '此处没有 _Patches\<title id>.json' }
 	}
 }
 $browse.Add_Click({
 	$dialog = New-Object System.Windows.Forms.FolderBrowserDialog -Property @{ Description = '游戏目录（含 eboot.bin、sce_sys）' }
-	if ($game.Text -and (Test-Path $game.Text)) { $dialog.SelectedPath = $game.Text }
+	if ($game.Text -and (Test-Path -LiteralPath $game.Text -PathType Container)) { $dialog.SelectedPath = $game.Text }
 	if ($dialog.ShowDialog($form) -eq 'OK') { $game.Text = $dialog.SelectedPath }
+})
+# The game folder packed into a ZArchive (zarchive.exe <folder> <file.zar>): read without extracting it.
+$browseZar.Add_Click({
+	$dialog = New-Object System.Windows.Forms.OpenFileDialog -Property @{ Title = '选择打包成 ZArchive 的游戏目录'; Filter = 'ZArchive (*.zar)|*.zar' }
+	if ($game.Text -and (Test-Path -LiteralPath $game.Text -PathType Leaf)) { $dialog.InitialDirectory = Split-Path $game.Text }
+	if ($dialog.ShowDialog($form) -eq 'OK') { $game.Text = $dialog.FileName }
 })
 $game.Add_TextChanged({ Update-Title })
 Update-Title

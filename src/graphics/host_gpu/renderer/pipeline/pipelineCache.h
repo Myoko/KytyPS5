@@ -137,6 +137,9 @@ public:
 		uint32_t              shards  = 1;
 		uint32_t              threads = 1;
 		bool                  pipelines = true;
+		// Compute seeds translated for this host subgroup size instead of the one they were recorded with (0: as
+		// recorded): --amd translates what a GPU running wave64 programs natively (AMD) gets.
+		uint32_t              host_subgroup_size = 0;
 	};
 	// left_out: pipelines whose binaries were left out (PipelineBinaryWriter), for a smaller shard.
 	static bool Precompile(GraphicContext& graphics, const PrecompileOptions& options, size_t& left_out);

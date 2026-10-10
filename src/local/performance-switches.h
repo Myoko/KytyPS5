@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 extern "C" {
@@ -91,6 +92,8 @@ inline void InitializePerformanceSwitches() {
 	    Switch {"KYTY_TEXTURE_RESOLVE_PAGES", &kyty_local_texture_resolve_pages_mode},
 	    Switch {"KYTY_PARTIAL_IMAGE_DIRTY", &kyty_local_partial_image_dirty_mode, 0, 2},
 	    Switch {"KYTY_PARTIAL_ROW_BANDS", &kyty_local_partial_row_bands_mode},
+	    // Sampled views refresh only their levels of a streamed texture (default on; 0 for an A/B).
+	    Switch {"KYTY_TEXTURE_LEVELS", &kyty_local_texture_levels_mode},
 	    Switch {"KYTY_ASYNC_REPROTECT", &kyty_local_async_reprotect_mode},
 	    Switch {"KYTY_READBACK_NARROW", &kyty_local_readback_narrow_mode},
 	    // Also creates the transfer queue at device creation (vulkanWindow.cpp).
@@ -158,6 +161,13 @@ inline void InitializePerformanceSwitches() {
 		LocalPlatform::PinThreadToCpuList(cpus);
 		enabled += std::string(enabled.empty() ? "" : " ") + "KYTY_RENDER_CPUS=" + cpus;
 	}
+	// Above the game's threads (KYTY_RENDER_PRIORITY=0: normal). Walking into a new area, the game's threads
+	// streaming it in held the render CPUs for whole time slices: frames of 35-50 ms where the render thread
+	// ran 10-14 ms, its samples parked for 20-26 ms at one instruction.
+	if (const char* priority = std::getenv("KYTY_RENDER_PRIORITY"); priority == nullptr || std::strcmp(priority, "0") != 0)
+		LocalPlatform::MakeCriticalThread();
+	else
+		enabled += std::string(enabled.empty() ? "" : " ") + "KYTY_RENDER_PRIORITY=0";
 	if (!enabled.empty()) {
 		std::printf("Performance switches: %s\n", enabled.c_str());
 		std::fflush(stdout);

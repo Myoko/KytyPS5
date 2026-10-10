@@ -157,7 +157,10 @@ bool PipelineCache::WarmSeeds(const PrecompileOptions& args, size_t& left_out) {
 	auto&      programs = *m_program_cache;
 	const auto decode   = [&](uint32_t index, LocalShaderWarmup::Record& record) {
 		LocalShaderWarmup::Reader reader {seed_words[index]};
-		return LocalShaderWarmup::Visit(reader, record);
+		if (!LocalShaderWarmup::Visit(reader, record)) return false;
+		if (args.host_subgroup_size != 0 && record.stage == ShaderType::Compute)
+			record.compute.host_subgroup_size = args.host_subgroup_size;
+		return true;
 	};
 	const auto stage_of = [&](size_t index) { return ShaderType(seed_words[index][0]); };
 	// Graphics recipes; every compute seed gets its pipelines anyway.

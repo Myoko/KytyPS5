@@ -519,6 +519,7 @@ RenderExecutor::TableImageSet* RenderExecutor::TableResolveSet(CommandBuffer& bu
 	// decals' G-buffer) wholly in General; storage in General; else read-only.
 	std::array<std::vector<TableImageSet::Image>, 2> deps;
 	bool                                             ok = true;
+	for (uint32_t st = 0; st < stages; ++st) deps[st].reserve(prepared[st].images.size()); // (no regrowth: new sets come in bursts)
 	for (uint32_t st = 0; st < stages && ok; ++st)
 		for (auto& binding: prepared[st].images) {
 			auto&       image   = textures.GetImage(binding.image_id);
@@ -606,6 +607,7 @@ RenderExecutor::TableImageSet* RenderExecutor::TableResolveSet(CommandBuffer& bu
 			}
 			pending.push_back(item);
 		}
+		if (st == 0) set->images.reserve(deps[0].size() + deps[1].size());
 		for (const auto& dep: deps[st])
 			if (dep.layout != vk::ImageLayout::eUndefined) set->images.push_back(dep);
 	}
@@ -635,10 +637,10 @@ RenderExecutor::TableImageSet* RenderExecutor::TableResolveSet(CommandBuffer& bu
 	return publish();
 }
 
-// What FindTexture's RefreshImage uploads before an image is used: guest bytes the CPU wrote, a GPU buffer write over
-// them, or one over its stencil plane.
-static bool TableRefreshPending(const Image& image) {
-	return image.IsCpuDirty() || image.IsBufferModified() || image.IsStencilModified();
+// What FindTexture uploads before an image is used with `desc`: guest bytes the CPU wrote, a GPU buffer write over them,
+// or one over its stencil plane (of a sampled view, only into its levels: TextureCache::RefreshPending).
+static bool TableRefreshPending(const Image& image, const TextureCache::ImageDesc& desc) {
+	return TextureCache::RefreshPending(image, desc);
 }
 
 // A set's images are the same objects, registered and current (as NativeXprValidateResources proves a record's):
@@ -653,12 +655,12 @@ bool RenderExecutor::TableValidateSet(TableImageSet& set) {
 		if (image == nullptr || image->serial != dep.serial) return false;
 		// The guest rewrote it (a texture streaming in), or a GPU buffer write its bytes or its stencil plane: upload it
 		// as the normal path's FindTexture does.
-		if (TableRefreshPending(*image)) {
+		if (TableRefreshPending(*image, dep.desc)) {
 			if (Spec::Current() != nullptr) return Spec::Refuse("texture upload"), false;
 			if (!image->registered || image->depth_id || image->binding.needs_rebind) return false;
 			(void)textures.FindTexture(dep.id, dep.desc);
 			image = textures.m_slot_images.try_get(dep.id);
-			if (image == nullptr || image->serial != dep.serial || TableRefreshPending(*image)) return false;
+			if (image == nullptr || image->serial != dep.serial || TableRefreshPending(*image, dep.desc)) return false;
 		}
 		if (dep.target) {
 			if (!image->registered || image->binding.needs_rebind) return false;
@@ -1246,7 +1248,7 @@ bool RenderExecutor::TableTransit(const TableImageSet& set, vk::CommandBuffer vk
 		// An image the shader writes is GPU-modified, CPU-clean and current with buffer writes (as the normal path's
 		// FindTexture leaves a storage image: it acquires it again otherwise). One written since the set was proven this
 		// frame (by the CPU, a GPU buffer write, or into its stencil plane) is uploaded by the normal path's FindTexture.
-		if ((dep.storage && !image->SafeToDownload()) || TableRefreshPending(*image)) return false;
+		if ((dep.storage && !image->SafeToDownload()) || TableRefreshPending(*image, dep.desc)) return false;
 		if (dep.desc.info.metadata.kind == ImageMetadataKind::Dcc) {
 			if (image->info.IsVolume()) return false;
 			const auto address = dep.desc.info.metadata.range.address;

@@ -44,12 +44,30 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if (!(Test-Path $Exe)) { throw "missing $Exe; build it with build-windows.cmd kyty_shader_precompile" }
+# The game's sce_sys\param.json (its title and version). The game is its folder (eboot.bin and sce_sys) or the
+# folder packed into a ZArchive (a .zar file, read without extracting it): a .zar's is copied out by the program.
+function Read-GameParam([string]$game) {
+	if (!$game) { return $null }
+	if (Test-Path -LiteralPath "$game\sce_sys\param.json") { return Get-Content -LiteralPath "$game\sce_sys\param.json" -Raw -Encoding UTF8 | ConvertFrom-Json }
+	$tool = $Exe
+	if ($game -notmatch '\.zar$' -or !(Test-Path -LiteralPath $game -PathType Leaf) -or !(Test-Path $tool)) { return $null }
+	$copy = [IO.Path]::GetTempFileName()
+	try {
+		& $tool --game $game --param $copy 2>$null | Out-Null
+		if ($LASTEXITCODE -eq 0) { return Get-Content -LiteralPath $copy -Raw -Encoding UTF8 | ConvertFrom-Json }
+	} catch {
+	} finally {
+		Remove-Item -LiteralPath $copy -ErrorAction SilentlyContinue
+	}
+	return $null
+}
+
 # Caches made from the game's files are named by its title and version (seeds-<title>_<version>.seeds,
 # _PipelineCache\static\<title>_<version>.*, the warmup recordings; versions need not share shaders). Those named
 # by the title alone are from before: the game's that was played last (the remembered one), so they take its
 # name (run-windows.ps1 has the same).
 function Rename-TitleCaches([string]$game) {
-	$info = if (Test-Path "$game\sce_sys\param.json") { Get-Content "$game\sce_sys\param.json" -Raw -Encoding UTF8 | ConvertFrom-Json }
+	$info = Read-GameParam $game
 	if (!$info -or !$info.titleId -or !$info.contentVersion) { return }
 	$title = $info.titleId
 	$id = "$($title)_$($info.contentVersion)"
@@ -76,8 +94,8 @@ $lastGame = if (Test-Path "$PSScriptRoot\game-path.txt") { "$(Get-Content "$PSSc
 if (!$lastGame) { $lastGame = "$env:USERPROFILE\Documents\PPSA01341-app0" }
 Rename-TitleCaches $lastGame
 if (!$Game) { $Game = $lastGame }
-if (!(Test-Path "$Game\sce_sys\param.json")) { throw "no sce_sys\param.json in $Game (-Game <folder>, or start the game once to choose it)" }
-$info = Get-Content "$Game\sce_sys\param.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+$info = Read-GameParam $Game
+if (!$info) { throw "no sce_sys\param.json in $Game (-Game <folder or .zar>, or start the game once to choose it)" }
 $gameId = "$($info.titleId)_$($info.contentVersion)"
 if (!$Seeds) {
 	$Seeds = if ((Test-Path "$PSScriptRoot\seeds-$gameId.seeds") -or !(Test-Path "$PSScriptRoot\_Build")) { "$PSScriptRoot\seeds-$gameId.seeds" } else { "$PSScriptRoot\_Build\static-precompile\seeds-$gameId.seeds" }
