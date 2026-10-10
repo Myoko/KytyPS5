@@ -69,8 +69,12 @@ extern "C" {
 [[gnu::used]] volatile std::atomic<uint32_t> kyty_local_table_dispatch_mode {0};
 [[gnu::used]] volatile std::atomic<uint32_t> kyty_local_table_indirect_mode {1};
 // N > 0: at most N table store requests a frame (each takes its draw to the normal path; the others draw from native
-// records meanwhile). A new area brings hundreds of pairs whose programs and pipelines compile in the background.
-[[gnu::used]] volatile std::atomic<uint32_t> kyty_local_table_store_budget {32};
+// records meanwhile); 0: no limit. A new area brings hundreds of pairs whose programs and pipelines compile in the
+// background. A limit (32 until 10-10) made the draws past it store native records instead: walking into new parts of
+// Boletarian Palace 1-3, ~500 table store requests a slow frame, 32 taken, the others normal draws storing ~150-250
+// native records (each traced and sorted). Without one, three boots each: 1% low walking 33.3 -> 37.7, p99 20.7 ->
+// 19.6 ms, the slowest frame 44 -> 40 ms; the slow frames' render-thread time 118 -> 86 ms, native stores 699 -> 214.
+[[gnu::used]] volatile std::atomic<uint32_t> kyty_local_table_store_budget {0};
 }
 // Keys that are XXH3 hashes already: their own bucket index (std::hash<uint64_t> is FNV-1a over the bytes on MSVC).
 struct HashedKey {
