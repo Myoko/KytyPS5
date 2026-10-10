@@ -70,6 +70,10 @@ struct RenderExecutor::TableImageSet {
 	// The memory its images' views span (from the lowest to the highest byte): registrations elsewhere reach none of
 	// its proofs (TableValidateSet). 0, 0: not known yet.
 	uint64_t                  span_begin = 0, span_end = 0;
+	// TextureCache::ImagesEpoch after the main executor last transited its images (TableTransit) for a draw under
+	// transit_state (null: a dispatch): they stay in place while it does not move (UINT64_MAX: not yet).
+	uint64_t                  transit_epoch = UINT64_MAX;
+	const NativeXprDrawState* transit_state = nullptr;
 	// The words select another specialization, or an image no set can hold: the draws take the native path
 	// (TableResolveSet tries again after TableImageSet::RetryFrames).
 	bool                  refused = false;
@@ -1387,7 +1391,7 @@ RenderExecutor::TableResult RenderExecutor::TableDraw(CommandBuffer& buffer, Tab
 	TableGather(pair, user_data);
 	phase.reset();
 	phase.emplace(LiveCensus::DrawPhase, 0x7ab1e, 2);
-	const auto* set = TableSet(buffer, pair, &variant, &draw_state);
+	auto* set = TableSet(buffer, pair, &variant, &draw_state);
 	if (auto* spec = Spec::Current(); spec != nullptr && set != nullptr)
 		spec->NoteSet(reinterpret_cast<uint64_t>(static_cast<VkDescriptorSet>(set->set)));
 	if (set == nullptr) return LiveCounters::Add(LiveCounters::TableNoSet), Spec::Refuse("table: no set"), TableResult::Native;
@@ -1495,15 +1499,25 @@ RenderExecutor::TableResult RenderExecutor::TableDraw(CommandBuffer& buffer, Tab
 	// The targets and the set's images as the last table draw in this command buffer left them (the same state and
 	// set), no image's state, registration, metadata or bytes changed since: in place, nothing to check or transit.
 	auto&      texture_cache = m_context.GetTextureCache();
+	const auto images_epoch  = texture_cache.ImagesEpoch();
+	const bool own           = Spec::Current() == nullptr;
 	const bool in_place      = same_command && emit.state == &draw_state && table.last_set == set &&
-	                      table.images_epoch == texture_cache.ImagesEpoch() && Spec::Current() == nullptr;
+	                      table.images_epoch == images_epoch && own;
 	if (!in_place) {
-		if (!NativeXprEmitTargets(draw_state, vk_buffer))
+		// The same for the targets apart, as this draw state's last emission left them, and the set's images, as its
+		// last transit under this state did (the passes alternate materials: another set or state in between).
+		if ((!own || draw_state.emitted_epoch != images_epoch) && !NativeXprEmitTargets(draw_state, vk_buffer))
 			return LiveCounters::Add(LiveCounters::TableDrawNative), Spec::Refuse("table: targets"), TableResult::Native;
 		// The set's images in their layouts (a DCC image with a fast clear pending takes the normal path, whose
 		// FindTexture applies it first).
-		if (!TableTransit(*set, vk_buffer, &draw_state))
+		if ((!own || set->transit_epoch != images_epoch || set->transit_state != &draw_state) &&
+		    !TableTransit(*set, vk_buffer, &draw_state))
 			return LiveCounters::Add(LiveCounters::TableDrawNative), Spec::Refuse("table: transit"), TableResult::Native;
+		// (Neither moves what the other placed: a target is no image the set holds as a texture.)
+		if (own) {
+			draw_state.emitted_epoch = set->transit_epoch = texture_cache.ImagesEpoch();
+			set->transit_state       = &draw_state;
+		}
 	}
 	m_context.GetCommandScheduler().BeginRendering(draw_state.rendering);
 	if (same_command && emit.state != &draw_state && emit.state != nullptr &&
@@ -1905,7 +1919,7 @@ bool RenderExecutor::TableDispatch(CommandBuffer& buffer, uint32_t groups_x, uin
 	TableGather(pair, user_data);
 	phase.reset();
 	phase.emplace(LiveCensus::DrawPhase, 0x7ab1f, 2);
-	const auto* set = TableSet(buffer, pair, nullptr, nullptr);
+	auto* set = TableSet(buffer, pair, nullptr, nullptr);
 	if (set == nullptr) return false;
 	if (auto* spec = Spec::Current()) spec->NoteSet(reinterpret_cast<uint64_t>(static_cast<VkDescriptorSet>(set->set)));
 	phase.reset();
@@ -1937,7 +1951,16 @@ bool RenderExecutor::TableDispatch(CommandBuffer& buffer, uint32_t groups_x, uin
 	buffer.EndRendering();
 	const bool chain     = DemonsSouls::IsSupportedGame();
 	const auto vk_buffer = chain ? buffer.ChainHandle() : buffer.Handle();
-	if (!TableTransit(*set, vk_buffer, nullptr)) return m_dispatch_declined = "table: transit", false;
+	// (As a draw's: the set's images as its last dispatch's transit left them, while no image changed since.)
+	auto&      dispatch_textures = m_context.GetTextureCache();
+	const bool own_transit       = Role() == 0 && Spec::Current() == nullptr;
+	if ((!own_transit || set->transit_epoch != dispatch_textures.ImagesEpoch() || set->transit_state != nullptr) &&
+	    !TableTransit(*set, vk_buffer, nullptr))
+		return m_dispatch_declined = "table: transit", false;
+	if (own_transit) {
+		set->transit_epoch = dispatch_textures.ImagesEpoch();
+		set->transit_state = nullptr;
+	}
 	// (A set made for another specialization: its program's pipeline and shader data.)
 	const auto& pipeline = set->pipeline != nullptr ? *set->pipeline : *pair.pipeline;
 	const auto& program  = set->program != nullptr ? *set->program : *pair.programs[0];

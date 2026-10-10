@@ -224,6 +224,9 @@ struct RenderExecutor::NativeXprDrawState {
 	// The resolution epoch NativeXprTargetsCurrent last found the targets current at (0: not yet): images are made and
 	// deleted (a slot reused) only with a registration change, which moves it.
 	mutable uint64_t                 targets_checked = 0;
+	// TextureCache::ImagesEpoch after the main executor's last table draw emitted the targets (UINT64_MAX: none): they
+	// stay in place while it does not move (RenderExecutor::TableDraw).
+	mutable uint64_t                 emitted_epoch = UINT64_MAX;
 };
 
 // One object: its resources under the compiled programs it was translated with.
