@@ -149,6 +149,13 @@ struct RenderExecutor::TableXpr {
 	// The pairs found last, direct-mapped by key (pairs are never erased and do not move: a pointer stays valid).
 	static constexpr size_t PairCacheEntries = 256;
 	std::array<std::pair<uint64_t, Pair*>, PairCacheEntries> pair_cache {};
+	// The pair TableTry found last, by its key (consecutive draws mostly keep their shaders: no hash of the key, ~0.6% of
+	// the render thread at 1-1 standing, nor lookup then).
+	std::array<uint64_t, 3> found_key {};
+	Pair*                   found_pair = nullptr;
+	// The same for TableDispatch's dispatches (the main executor's own: its catalog), by TableDispatchWords.
+	std::array<uint64_t, 4> found_dispatch_key {};
+	Pair*                   found_dispatch = nullptr;
 	uint64_t collected  = 0;                           // the frame unused image sets were last dropped
 	// Moves when a pair is reset or a set leaves (sets are replaced): an executor reading this catalog drops its last
 	// pair, state and set (RenderExecutor::m_catalog) when it moved since it saw it (seen_epoch, its own table's).
@@ -307,25 +314,32 @@ RenderExecutor::TableResult RenderExecutor::TableTry(CommandBuffer& buffer, std:
 	const auto frame      = m_context.FrameNumber();
 	const auto vs_address = vs.es_regs.data_addr, ps_address = sh.GetPs().ps_regs.data_addr;
 	const std::array<uint64_t, 3> pair_key {vs_address, ps_address, static_cast<uint32_t>(vs.start_instance_user_sgpr)};
-	const auto                    pair_hash = XXH3_64bits(pair_key.data(), sizeof(pair_key));
-	// (Another executor's catalog: what it learned, none of it made here.)
-	const auto found = catalog == nullptr || Role() == 0 ? decltype(catalog->pairs.end()) {} : catalog->pairs.find(pair_hash);
-	if (Role() != 0 && (catalog == nullptr || found == catalog->pairs.end())) return Spec::Refuse("table store"), TableResult::Native;
-	auto* own    = Role() != 0 ? nullptr : &table.pairs;
-	auto& cached = table.pair_cache[pair_hash & (TableXpr::PairCacheEntries - 1)];
-	auto* known  = own != nullptr && cached.first == pair_hash ? cached.second : nullptr;
+	auto* own   = Role() != 0 ? nullptr : &table.pairs;
+	auto* known = own != nullptr && table.found_key == pair_key ? table.found_pair : nullptr;
 	if (known == nullptr) {
-		auto it = own != nullptr ? own->find(pair_hash) : found;
-		if (own != nullptr && it == own->end()) {
-			const auto write    = CatalogWrite();
-			it                  = own->try_emplace(pair_hash).first;
-			auto& fresh         = it->second;
-			fresh.vs            = vs_address;
-			fresh.ps            = ps_address;
-			fresh.start_instance = vs.start_instance_user_sgpr;
+		const auto pair_hash = XXH3_64bits(pair_key.data(), sizeof(pair_key));
+		// (Another executor's catalog: what it learned, none of it made here.)
+		const auto found = catalog == nullptr || Role() == 0 ? decltype(catalog->pairs.end()) {} : catalog->pairs.find(pair_hash);
+		if (Role() != 0 && (catalog == nullptr || found == catalog->pairs.end())) return Spec::Refuse("table store"), TableResult::Native;
+		auto& cached = table.pair_cache[pair_hash & (TableXpr::PairCacheEntries - 1)];
+		known        = own != nullptr && cached.first == pair_hash ? cached.second : nullptr;
+		if (known == nullptr) {
+			auto it = own != nullptr ? own->find(pair_hash) : found;
+			if (own != nullptr && it == own->end()) {
+				const auto write    = CatalogWrite();
+				it                  = own->try_emplace(pair_hash).first;
+				auto& fresh         = it->second;
+				fresh.vs            = vs_address;
+				fresh.ps            = ps_address;
+				fresh.start_instance = vs.start_instance_user_sgpr;
+			}
+			known = &it->second;
+			if (own != nullptr) cached = {pair_hash, known};
 		}
-		known = &it->second;
-		if (own != nullptr) cached = {pair_hash, known};
+		if (own != nullptr) {
+			table.found_key  = pair_key;
+			table.found_pair = known;
+		}
 	}
 	auto& pair = *known;
 	TablePrefetchPair(pair);
@@ -1671,16 +1685,19 @@ void RenderExecutor::TableStore(CommandBuffer& buffer, const DrawRenderState& st
 
 // The compute stage's registers that select the program (ShaderGetStaticInputInfoCS reads them), and whether the
 // dispatch counts threads (another program: ShaderComputeInputInfo::dispatch_thread_dimensions).
-static uint64_t TableDispatchKey(const HW::ComputeShaderInfo& cs, bool thread_dimensions) {
+static std::array<uint64_t, 4> TableDispatchWords(const HW::ComputeShaderInfo& cs, bool thread_dimensions) {
 	const auto& r = cs.cs_regs;
-	const std::array<uint64_t, 4> key {r.data_addr, uint64_t {r.num_thread_x} | uint64_t {r.num_thread_y} << 32u,
-	                                   uint64_t {r.num_thread_z} | uint64_t {r.lds_size} << 32u,
-	                                   uint64_t {r.wave_size} | uint64_t {r.user_sgpr} << 8u |
-	                                       uint64_t {r.tidig_comp_cnt} << 16u | uint64_t {r.tgid_x_en} << 24u |
-	                                       uint64_t {r.tgid_y_en} << 25u | uint64_t {r.tgid_z_en} << 26u |
-	                                       uint64_t {r.tg_size_en} << 27u | uint64_t {r.scratch_en} << 28u |
-	                                       uint64_t {thread_dimensions} << 29u};
-	return XXH3_64bits(key.data(), sizeof(key));
+	return {r.data_addr, uint64_t {r.num_thread_x} | uint64_t {r.num_thread_y} << 32u,
+	        uint64_t {r.num_thread_z} | uint64_t {r.lds_size} << 32u,
+	        uint64_t {r.wave_size} | uint64_t {r.user_sgpr} << 8u | uint64_t {r.tidig_comp_cnt} << 16u |
+	            uint64_t {r.tgid_x_en} << 24u | uint64_t {r.tgid_y_en} << 25u | uint64_t {r.tgid_z_en} << 26u |
+	            uint64_t {r.tg_size_en} << 27u | uint64_t {r.scratch_en} << 28u | uint64_t {thread_dimensions} << 29u};
+}
+static uint64_t TableDispatchKey(const std::array<uint64_t, 4>& words) {
+	return XXH3_64bits(words.data(), sizeof(words));
+}
+static uint64_t TableDispatchKey(const HW::ComputeShaderInfo& cs, bool thread_dimensions) {
+	return TableDispatchKey(TableDispatchWords(cs, thread_dimensions));
 }
 
 // The normal path dispatched (`special`: one of its special paths took the dispatch).
@@ -1711,13 +1728,25 @@ bool RenderExecutor::TableDispatch(CommandBuffer& buffer, uint32_t groups_x, uin
 	DropStaleCatalog();
 	const auto& sh    = buffer.GetShaders();
 	const auto& cs    = sh.GetCs();
-	const auto  found = catalog->dispatches.find(TableDispatchKey(cs, thread_dimensions));
-	// (Another executor's: a pair with its programs and pipeline had its sightings.)
-	if (found == catalog->dispatches.end()) return m_dispatch_declined = "dispatch: not seen", false;
-	if (found->second.refused)
-		return m_dispatch_declined = found->second.special != nullptr ? found->second.special : "dispatch: refused", false;
-	if ((Role() == 0 && found->second.sightings < 2) || found->second.vs != cs.cs_regs.data_addr) return false;
-	auto& pair = found->second;
+	const auto  words = TableDispatchWords(cs, thread_dimensions);
+	// (The pair found last again without its hash or lookup: runs of dispatches keep their program. Pairs are never
+	// erased, a pointer stays valid; the main executor's own catalog only.)
+	const bool own   = Role() == 0 && catalog == m_table_xpr.get();
+	auto*      known = own && catalog->found_dispatch_key == words ? catalog->found_dispatch : nullptr;
+	if (known == nullptr) {
+		const auto found = catalog->dispatches.find(TableDispatchKey(words));
+		// (Another executor's: a pair with its programs and pipeline had its sightings.)
+		if (found == catalog->dispatches.end()) return m_dispatch_declined = "dispatch: not seen", false;
+		known = &found->second;
+		if (own) {
+			catalog->found_dispatch_key = words;
+			catalog->found_dispatch     = known;
+		}
+	}
+	if (known->refused)
+		return m_dispatch_declined = known->special != nullptr ? known->special : "dispatch: refused", false;
+	if ((Role() == 0 && known->sightings < 2) || known->vs != cs.cs_regs.data_addr) return false;
+	auto& pair = *known;
 	TablePrefetchPair(pair);
 	LiveCensus::Scope census(LiveCensus::DrawPhase, 0x7ab1f, 0); // census: the dispatches' phases (b)
 	// The dispatch executor's sets retire here too (NativeXprTry collects only the draw executor's): without it they
