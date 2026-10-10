@@ -1330,9 +1330,10 @@ void RenderExecutor::TablePrepareBda(const TablePair& pair, std::array<std::span
 	if (!bounded || !resources.PrepareBdaReadRanges(ranges)) resources.PrepareBda();
 }
 
-// A set's images in their layouts (other work may have moved them since the set was last bound), unless a DCC image
-// has a fast clear pending (the normal path, whose FindTexture applies it first, takes the draw or dispatch) or the
-// draw's targets are not those the set was made for (an image held as a texture became a target, or the reverse).
+// A set's images in their layouts (other work may have moved them since the set was last bound), a DCC image's
+// pending fast clear applied first, as the normal path's FindTexture does (a speculation's refuses: its packet is a
+// hole), unless the draw's targets are not those the set was made for (an image held as a texture became a target,
+// or the reverse).
 bool RenderExecutor::TableTransit(const TableImageSet& set, vk::CommandBuffer vk_buffer,
                                   const NativeXprDrawState* draw_state) {
 	auto& textures = m_context.GetTextureCache();
@@ -1360,10 +1361,20 @@ bool RenderExecutor::TableTransit(const TableImageSet& set, vk::CommandBuffer vk
 				if (!textures.IsMetaCleared(address, layer)) continue;
 				// The normal path's FindTexture clears its layers first. A speculation's packet is a hole that does:
 				// the work after it finds them cleared (speculation-state.h).
-				if (auto* spec = Spec::Current())
+				if (auto* spec = Spec::Current()) {
 					for (uint32_t at = layer; at < std::min(dep.range.base_layer + dep.range.layer_count, 32u); ++at)
 						if (textures.IsMetaCleared(address, at)) spec->ConsumeMeta(address, at);
-				return Spec::Refuse("table: cleared texture"), false;
+					return Spec::Refuse("table: cleared texture"), false;
+				}
+				// The main executor's: FindTexture, as the normal path's use (it clears what it can, into this command
+				// buffer, before the transitions below; what it leaves pending, the normal path binds as well).
+				if (Role() != 0 || !image->registered || image->depth_id || image->binding.needs_rebind) return false;
+				(void)textures.FindTexture(dep.id, dep.desc);
+				image = textures.m_slot_images.try_get(dep.id);
+				if (image == nullptr || image->serial != dep.serial ||
+				    m_context.GetCommandScheduler().Current().RawHandle() != vk_buffer)
+					return false;
+				break;
 			}
 		}
 	}
@@ -1517,8 +1528,7 @@ RenderExecutor::TableResult RenderExecutor::TableDraw(CommandBuffer& buffer, Tab
 		// last transit under this state did (the passes alternate materials: another set or state in between).
 		if ((!own || draw_state.emitted_epoch != images_epoch) && !NativeXprEmitTargets(draw_state, vk_buffer))
 			return LiveCounters::Add(LiveCounters::TableDrawNative), Spec::Refuse("table: targets"), TableResult::Native;
-		// The set's images in their layouts (a DCC image with a fast clear pending takes the normal path, whose
-		// FindTexture applies it first).
+		// The set's images in their layouts (a DCC image's pending fast clear applied first).
 		if ((!own || set->transit_epoch != images_epoch || set->transit_state != &draw_state) &&
 		    !TableTransit(*set, vk_buffer, &draw_state))
 			return LiveCounters::Add(LiveCounters::TableDrawNative), Spec::Refuse("table: transit"), TableResult::Native;
