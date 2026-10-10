@@ -69,7 +69,36 @@ bool UsesGds(const Program& program) {
 	return uses_gds;
 }
 
-// A value table mode evaluates at the program's entry: an immediate, user data or an SRT slot below `slots`.
+std::optional<TablePlan::Operand> TableOperand(Value value, size_t slots);
+
+// A phi whose incoming values, through the phis among them, are all one table operand (a loop's headers carrying a
+// value the loop never changes: the light loops' and other compute passes' table pointer, phi(x, phi(x, ...)) cycles
+// constant propagation does not fold): that operand.
+std::optional<TablePlan::Operand> TablePhiOperand(const Inst& phi, size_t slots) {
+	std::optional<TablePlan::Operand> common;
+	std::vector<const Inst*>          pending {&phi}, seen;
+	while (!pending.empty()) {
+		const auto* current = pending.back();
+		pending.pop_back();
+		if (std::ranges::find(seen, current) != seen.end()) continue;
+		seen.push_back(current);
+		if (seen.size() > 256) return std::nullopt;
+		for (size_t i = 0; i < current->NumArgs(); ++i) {
+			const auto incoming = current->Arg(i).Resolve();
+			if (const auto* source = incoming.TryInstruction(); source != nullptr && source->GetOpcode() == ValueOpcode::Phi) {
+				pending.push_back(source);
+				continue;
+			}
+			const auto operand = TableOperand(incoming, slots);
+			if (!operand || (common && !(*common == *operand))) return std::nullopt;
+			common = operand;
+		}
+	}
+	return common;
+}
+
+// A value table mode evaluates at the program's entry: an immediate, user data or an SRT slot below `slots` (or a phi
+// of one of them alone: TablePhiOperand).
 std::optional<TablePlan::Operand> TableOperand(Value value, size_t slots) {
 	using Kind = TablePlan::Operand::Kind;
 	value      = value.Resolve();
@@ -79,6 +108,7 @@ std::optional<TablePlan::Operand> TableOperand(Value value, size_t slots) {
 	}
 	const auto* inst = value.TryInstruction();
 	if (inst == nullptr) return std::nullopt;
+	if (inst->GetOpcode() == ValueOpcode::Phi) return TablePhiOperand(*inst, slots);
 	if (inst->GetOpcode() == ValueOpcode::GetUserData && inst->Arg(0).GetType() == Type::ScalarReg)
 		return TablePlan::Operand {Kind::UserData, static_cast<uint32_t>(RegIndex(inst->Arg(0).ScalarRegister()))};
 	if (inst->GetOpcode() != ValueOpcode::ReadConst) return std::nullopt;
