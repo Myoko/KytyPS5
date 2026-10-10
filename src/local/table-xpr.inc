@@ -47,6 +47,10 @@ struct RenderExecutor::TableImageSet {
 		bool                    target  = false; // a target of the draw state the set was made under (its access)
 		bool                    storage = false; // the shader writes it: GPU-modified at every use (TableTransit)
 		bool                    whole   = false; // bound both as a texture and as storage: the whole image's state
+		// The main executor's proof of its use (a target, or a texture without DCC found current): the image's validity
+		// then, which the proof holds with while no registration stamped the view's pages since (TableValidateSet).
+		bool                    proven   = false;
+		uint64_t                validity = 0;
 	};
 	std::vector<uint32_t> words; // without the LOD statistics fields (NativeXprLodStatsMask)
 	vk::DescriptorSet     set  = nullptr;
@@ -57,6 +61,12 @@ struct RenderExecutor::TableImageSet {
 	std::array<uint64_t, Roles> validated_frame = NoRoles();
 	std::array<uint64_t, Roles> resolution_epoch {};
 	std::atomic<uint64_t>       used_frame {0};
+	// The texture cache's flip count (TextureCache::GcTick) and frame (CurrentFrame) when the main executor last checked
+	// every image in full, which touches their uses (the LRU, the last use): again within TouchTicks of either (an image
+	// unused for 32 frames may go to an overlap, for 600 flips to the collector).
+	uint64_t                  touched_tick  = 0;
+	uint64_t                  touched_frame = 0;
+	static constexpr uint64_t TouchTicks    = 8;
 	// The words select another specialization, or an image no set can hold: the draws take the native path
 	// (TableResolveSet tries again after TableImageSet::RetryFrames).
 	bool                  refused = false;
@@ -663,18 +673,48 @@ static bool TableRefreshPending(const Image& image, const TextureCache::ImageDes
 }
 
 // A set's images are the same objects, registered and current (as NativeXprValidateResources proves a record's):
-// once a frame, and again when registrations moved.
+// once a frame, and again when registrations moved. The main executor checks a use it proved again only when its
+// image's validity moved or a registration stamped the view's pages since (1-1: ~1500 sets a frame, ~0.5 ms, nearly
+// none changed; the registrations, every frame, one depth surface's memory taken as a color target and back), and
+// every use in full once in TouchTicks flips or frames, which touches it (KYTY_TABLE_SET_PROOFS: 0 checks all of
+// them in full, 2 does and counts the uses a proof held for that did not pass).
 bool RenderExecutor::TableValidateSet(TableImageSet& set) {
-	auto&      textures = m_context.GetTextureCache();
-	const auto frame    = m_context.FrameNumber();
-	if (set.validated_frame[Role()] == frame && set.resolution_epoch[Role()] == textures.ResolutionEpoch()) return true;
+	auto&      textures   = m_context.GetTextureCache();
+	const auto frame      = m_context.FrameNumber();
+	const auto resolution = textures.ResolutionEpoch();
+	if (set.validated_frame[Role()] == frame && set.resolution_epoch[Role()] == resolution) return true;
 	LiveCensus::Scope census(LiveCensus::DrawPhase, 0x7ab1e, 7);
-	for (const auto& dep: set.images) {
+	const auto mode  = kyty_local_table_set_proofs.load(std::memory_order_relaxed);
+	const bool own   = Role() == 0 && Spec::Current() == nullptr && mode != 0;
+	const bool full  = !own || textures.GcTick() >= set.touched_tick + TableImageSet::TouchTicks ||
+	                  textures.CurrentFrame() >= set.touched_frame + TableImageSet::TouchTicks ||
+	                  m_context.GetCommandScheduler().Current().IsInvalid();
+	const bool moved = set.resolution_epoch[Role()] != resolution; // (registrations since: their pages say where)
+	if (!full)
+		for (const auto& dep: set.images) textures.m_slot_images.prefetch(dep.id);
+	for (auto& dep: set.images) {
 		auto* image = textures.m_slot_images.try_get(dep.id);
 		if (image == nullptr || image->serial != dep.serial) return false;
+		const bool held = !full && dep.proven && image->validity == dep.validity &&
+		                  (!moved || !textures.RegistrationsSince(dep.desc.info.data.address, dep.desc.info.data.size,
+		                                                          set.resolution_epoch[0]));
+		if (held && mode != 2) continue;
+		const auto refuse = [&] {
+			if (held) {
+				LiveCounters::Add(LiveCounters::TableProofMismatches);
+				static std::atomic<uint32_t> reports {0};
+				if (reports.fetch_add(1, std::memory_order_relaxed) < 16)
+					std::printf("Table: proven image use failed: addr=0x%llx size=0x%llx serial=%llu validity=%llu\n",
+					            static_cast<unsigned long long>(dep.desc.info.data.address),
+					            static_cast<unsigned long long>(dep.desc.info.data.size),
+					            static_cast<unsigned long long>(dep.serial), static_cast<unsigned long long>(dep.validity));
+			}
+			return false;
+		};
 		// The guest rewrote it (a texture streaming in), or a GPU buffer write its bytes or its stencil plane: upload it
 		// as the normal path's FindTexture does.
 		if (TableRefreshPending(*image, dep.desc)) {
+			if (held) (void)refuse();
 			if (Spec::Current() != nullptr) return Spec::Refuse("texture upload"), false;
 			if (!image->registered || image->depth_id || image->binding.needs_rebind) return false;
 			(void)textures.FindTexture(dep.id, dep.desc);
@@ -682,8 +722,12 @@ bool RenderExecutor::TableValidateSet(TableImageSet& set) {
 			if (image == nullptr || image->serial != dep.serial || TableRefreshPending(*image, dep.desc)) return false;
 		}
 		if (dep.target) {
-			if (!image->registered || image->binding.needs_rebind) return false;
+			if (!image->registered || image->binding.needs_rebind) return refuse();
 			(void)textures.GetImage(dep.id); // LRU
+			if (own) {
+				dep.proven   = true;
+				dep.validity = image->validity;
+			}
 			continue;
 		}
 		// (And its LRU, as FindTexture's. A DCC image written as storage, a downsampling chain's levels: TableTransit
@@ -691,12 +735,21 @@ bool RenderExecutor::TableValidateSet(TableImageSet& set) {
 		// depth and stencil read by lighting and post passes: at 1-1 their sets were made again every other frame) is
 		// found by other rules than a texture's: the proof is that nothing was registered over its view since the set
 		// was last proven (or made).
-		if (!textures.IsSampledImageCurrent(dep.id, dep.desc, true) &&
-		    !textures.IsSampledDepthCurrent(dep.id, dep.desc, set.resolution_epoch[Role()]))
-			return false;
+		const bool sampled = textures.IsSampledImageCurrent(dep.id, dep.desc, true);
+		if (!sampled && !textures.IsSampledDepthCurrent(dep.id, dep.desc, set.resolution_epoch[Role()])) return refuse();
+		// (A DCC image's surface and a depth image's view are proven otherwise: checked at every validation.)
+		if (own) {
+			dep.proven   = sampled && dep.desc.info.metadata.kind != ImageMetadataKind::Dcc;
+			dep.validity = image->validity;
+		}
 	}
+	// (The epoch before the checks: a registration they made, FindTexture's, stamps pages a later check looks at.)
 	set.validated_frame[Role()]  = frame;
-	set.resolution_epoch[Role()] = textures.ResolutionEpoch();
+	set.resolution_epoch[Role()] = resolution;
+	if (own && full) {
+		set.touched_tick  = textures.GcTick();
+		set.touched_frame = textures.CurrentFrame();
+	}
 	return true;
 }
 

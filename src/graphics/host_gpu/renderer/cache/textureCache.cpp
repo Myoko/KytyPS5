@@ -1320,7 +1320,9 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 			if (cached.binding.is_target) {
 				cached.binding.needs_rebind = true;
 				if (merged_id) {
-					m_slot_images[merged_id].binding.is_target = true;
+					auto& merged = m_slot_images[merged_id];
+					if (!merged.binding.is_target) ++merged.validity;
+					merged.binding.is_target = true;
 				}
 				FreeImage(cached_id, "overlap-target-mip");
 				return {merged_id};
@@ -2103,6 +2105,7 @@ void TextureCache::PrepareDccClear(ImageId id, const ImageDesc& desc) {
 	}
 	auto&      image       = m_slot_images[id];
 	bool       changed     = !(image.info.metadata == desc.info.metadata);
+	if (changed) ++image.validity;
 	image.info.metadata    = desc.info.metadata;
 	auto [entry, inserted] = m_surface_metas.try_emplace(
 	    desc.info.metadata.range.address, MetaDataInfo {.type = MetaDataInfo::Type::Dcc});
@@ -2356,6 +2359,7 @@ void TextureCache::AssociateStencil(ImageId depth_id, GuestRange stencil) {
 	}
 	auto& record = m_slot_images[association];
 	TouchImage(record);
+	if (record.depth_id != depth_id) ++record.validity;
 	record.depth_id = depth_id;
 	if (std::find(m_stencil_associations.begin(), m_stencil_associations.end(), association) ==
 	    m_stencil_associations.end()) {
@@ -2752,6 +2756,7 @@ vk::ImageView TextureCache::FindRenderTarget(ImageId id, const ImageDesc& desc) 
 	}
 	TouchImage(image);
 	image.MarkGpuModified();
+	if (!image.usage.render_target) ++image.validity;
 	image.usage.render_target = true;
 	PrepareDccClear(id, desc);
 	RefreshImage(id);
@@ -2773,6 +2778,7 @@ vk::ImageView TextureCache::FindDepthTarget(ImageId id, const ImageDesc& desc) {
 	}
 	TouchImage(image);
 	image.MarkGpuModified();
+	if (!image.usage.depth_target) ++image.validity;
 	image.usage.depth_target = true;
 	const bool scoped = RefreshDepthLayers(id, desc.view_info);
 	if (!scoped) {
@@ -2782,6 +2788,7 @@ vk::ImageView TextureCache::FindDepthTarget(ImageId id, const ImageDesc& desc) {
 		// The epoch moves only when metadata state changes: every depth target
 		// acquisition passes here.
 		bool changed        = !(image.info.metadata == desc.info.metadata);
+		if (changed) ++image.validity;
 		image.info.metadata = desc.info.metadata;
 		auto [metadata, inserted] =
 		    m_surface_metas.try_emplace(desc.info.metadata.range.address,

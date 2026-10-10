@@ -148,6 +148,8 @@ public:
 	// Once per guest flip (the unit of NumFramesBeforeRemoval).
 	void AdvanceFrame() noexcept { m_frame.fetch_add(1, std::memory_order_relaxed); }
 	[[nodiscard]] uint64_t CurrentFrame() const noexcept { return m_frame.load(std::memory_order_relaxed); }
+	// The collector's runs (one a flip): the LRU's clock. The GPU thread's.
+	[[nodiscard]] uint64_t GcTick() const noexcept { return m_gc_tick; }
 
 private:
 	enum class TransferDirection { Upload, Download };
