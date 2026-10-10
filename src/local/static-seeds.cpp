@@ -1450,4 +1450,16 @@ int Make(const Options& options) {
 	}
 }
 
+uint64_t Write(const fs::path& path, std::vector<std::vector<uint32_t>> records, std::vector<std::vector<uint32_t>> pipelines) {
+	SeedFile file;
+	file.records   = std::move(records);
+	file.pipelines = std::move(pipelines);
+	try {
+		return file.Write(path);
+	} catch (const Fatal& error) {
+		std::fprintf(stderr, "%s\n", error.what());
+		return 0;
+	}
+}
+
 } // namespace StaticSeeds

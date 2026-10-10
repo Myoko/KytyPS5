@@ -7,6 +7,8 @@
 //   kyty_shader_precompile --game <dir> --make-seeds <file> [--states <pass-states.json>]
 //                          [--stages cs,gfx] [--limit <n>]
 //   kyty_shader_precompile --game <dir> --param <file>
+//   kyty_shader_precompile --game <dir> --seeds <file> --make-hints <file> --recorded <file> [--recorded <file>...]
+//   kyty_shader_precompile --game <dir> --seeds <file> --apply-hints <file> --out <file>
 //
 // The game <dir> can also be the game packed into a ZArchive (a .zar file, read without extracting it); --param
 // copies its sce_sys/param.json to <file> (the scripts read the title and version of a .zar so).
@@ -32,6 +34,10 @@
 // which it finds in tools/local/static-precompile by the program or the working directory): what
 // tools/local/static-precompile/precompile.py seeds writes, byte for byte, without Python and without a
 // Vulkan device.
+// --make-hints writes the specialization hints of warmup recordings (or recorded seed files) of the game version, which
+// a release ships: their records of the programs in the seed file without the game's code (shader-hints.h);
+// --apply-hints completes a hint file with the code of the seed file into a recorded seed file (--out), the
+// specializations of recorded play for a PC that has no recording (precompile-windows.ps1 compiles both).
 #include "common/archive.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
@@ -42,6 +48,7 @@
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 #include "loader/systemContent.h"
+#include "shader-hints.h"
 #include "static-seeds.h"
 
 #include <algorithm>
@@ -61,6 +68,9 @@ static int Usage() {
 	                     "       kyty_shader_precompile --game <dir> --make-seeds <file> [--states <pass-states.json>] "
 	                     "[--stages cs,gfx] [--limit <n>]\n"
 	                     "       kyty_shader_precompile --game <dir> --param <file>\n"
+	                     "       kyty_shader_precompile --game <dir> --seeds <file> --make-hints <file> --recorded <file> "
+	                     "[--recorded <file>...]\n"
+	                     "       kyty_shader_precompile --game <dir> --seeds <file> --apply-hints <file> --out <file>\n"
 	                     "(<dir>: the game folder, or the game packed into a ZArchive: a .zar file)\n");
 	return 2;
 }
@@ -76,6 +86,8 @@ int main(int argc, char* argv[]) {
 	bool                             amd         = false; // --amd
 	bool                             validate    = false; // --validate: SPIR-V validation of every module
 	std::filesystem::path            param_copy;          // --param
+	std::filesystem::path              make_hints, apply_hints; // --make-hints, --apply-hints
+	std::vector<std::filesystem::path> recordings;              // --recorded (--make-hints)
 	options.threads = std::max(1u, std::thread::hardware_concurrency());
 	for (int i = 1; i < argc; i++) {
 		const std::string_view arg   = argv[i];
@@ -115,6 +127,12 @@ int main(int argc, char* argv[]) {
 			make_seeds.out = argv[++i];
 		} else if (arg == "--param") {
 			param_copy = argv[++i];
+		} else if (arg == "--make-hints") {
+			make_hints = argv[++i];
+		} else if (arg == "--apply-hints") {
+			apply_hints = argv[++i];
+		} else if (arg == "--recorded") {
+			recordings.emplace_back(argv[++i]);
 		} else if (arg == "--states") {
 			make_seeds.states = argv[++i];
 			seed_option       = true;
@@ -155,6 +173,24 @@ int main(int argc, char* argv[]) {
 		out.Write(text, &written);
 		return written == text.Size() ? 0 : 1;
 	}
+	// Specialization hints (shader-hints.h): no Vulkan device, none of the emulator's subsystems.
+	if (!make_hints.empty() || !apply_hints.empty()) {
+		const bool make = !make_hints.empty();
+		const bool inputs = make ? !recordings.empty() && options.out.empty() : !options.out.empty() && recordings.empty();
+		if (game.empty() || options.seeds.empty() || merge || status || !make_seeds.out.empty() || seed_option ||
+		    (make && !apply_hints.empty()) || !inputs)
+			return Usage();
+		const auto id = ShaderHints::GameId(game);
+		if (id.empty()) {
+			std::fprintf(stderr, "no title and version (sce_sys/param.json) in %s\n", game.string().c_str());
+			return 1;
+		}
+		const int code = make ? ShaderHints::Make(make_hints, options.seeds, recordings, id)
+		                      : ShaderHints::Apply(apply_hints, options.seeds, options.out, id);
+		std::fflush(nullptr);
+		std::_Exit(code);
+	}
+	if (!recordings.empty()) return Usage();
 	// The seed file from the game's files: no Vulkan device, none of the emulator's subsystems.
 	if (!make_seeds.out.empty()) {
 		if (game.empty() || merge || status || !options.seeds.empty()) return Usage();

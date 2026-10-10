@@ -124,6 +124,9 @@ There are two levels of preparation, both specific to the graphics card and driv
    - Closing the window stops it; running it again continues where it stopped.
    - Coming from an older package with a precompiled `_PipelineCache\static\<title>.bin`: the precompile
      turns it into the store in a few minutes; the `.bin` is then unused and can be deleted (about 4 GB).
+   - It compiles the shaders as the game uses them in play too: the package carries what was recorded
+     while playing every world on the test PC (`tools\local\static-precompile\hints-<title>_<version>.hints`,
+     without the game's shader code), completed with the code of your own game files.
    - **After a graphics driver update or a new graphics card it has to be done again**; the launcher
      asks again. It also asks after an update of the emulator that precompiles more: running it again
      then compiles only what is new.
@@ -172,6 +175,7 @@ can be warped too; one in the character creation cannot (it has no save yet).
 | `logs` | Run logs |
 | `game-path.txt` | The remembered game location |
 | `seeds-<title>_<version>.seeds` | The list of shaders the first launch collects from the game files (one per game version) (it contains the game's shader code: do not share it), for the precompile |
+| `hinted-<title>_<version>.seeds` | The recorded play of the package's hints with the code of your game files (made by each precompile; it contains the game's shader code: do not share it) |
 | `launch.json` | The emulator's switches; normally left alone |
 
 ## Known issues

@@ -455,6 +455,10 @@ target_compile_definitions(kyty_shader_precompile PRIVATE KYTY_STATIC_PRECOMPILE
 # seeds); in the precompile program only, the emulator does not read the game's shader bundles.
 target_sources(kyty_shader_precompile PRIVATE "${KYTY_SOURCE_DIR}/local/static-seeds.h"
 	"${KYTY_SOURCE_DIR}/local/static-seeds.cpp")
+# --make-hints and --apply-hints: the specialization hints a release ships (zstd-compressed, as .zar games are).
+target_sources(kyty_shader_precompile PRIVATE "${KYTY_SOURCE_DIR}/local/shader-hints.h"
+	"${KYTY_SOURCE_DIR}/local/shader-hints.cpp")
+target_link_libraries(kyty_shader_precompile libzstd_static)
 if (WIN32)
 	target_link_libraries(kyty_shader_precompile opengl32 setupapi ws2_32)
 endif()
