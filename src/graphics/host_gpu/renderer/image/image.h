@@ -79,6 +79,9 @@ public:
 	KYTY_CLASS_NO_COPY(Image);
 
 	[[nodiscard]] vk::ImageView FindView(const ImageViewInfo& view_info);
+	// A parked image taken back for `image_info` (TextureCache::TakeParkedImage, the same Vulkan image): the state the
+	// constructor gives a new one, but for its Vulkan image, views and barrier state (and serial: the same object).
+	void PrepareReuse(const ImageInfo& image_info);
 	using Barriers = std::vector<vk::ImageMemoryBarrier2>;
 	[[nodiscard]] const Barriers& GetBarriers(vk::ImageLayout                      destination_layout,
 	                                   vk::AccessFlags2                     destination_access,

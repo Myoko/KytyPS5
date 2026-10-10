@@ -858,6 +858,35 @@ Image::Image(GraphicContext& graphics, CommandScheduler& scheduler, const ImageI
 	}
 }
 
+void Image::PrepareReuse(const ImageInfo& image_info) {
+	info               = image_info;
+	m_cpu_dirty        = !info.data.Empty() && info.metadata.compression == VideoOutCompression::Uncompressed;
+	m_maybe_cpu_dirty  = false;
+	m_maybe_hash_valid = false;
+	m_maybe_cpu_hash   = 0;
+	m_gpu_modified     = false;
+	m_buffer_modified  = false;
+	m_stencil_modified = false;
+	m_partial_dirty    = false;
+	m_dirty_ranges.clear();
+	usage               = {};
+	binding             = {};
+	query_epoch         = 0;
+	track_addr          = 0;
+	track_addr_end      = 0;
+	untracked_holes.clear();
+	partial_hashes.clear();
+	depth_id            = {};
+	frame_accessed_last = 0;
+	staged_ring         = nullptr;
+	staged_offset       = 0;
+	staged_serial       = 0;
+	level_view          = UINT32_MAX;
+	level_begin         = 0;
+	level_end           = 0;
+	++validity;
+}
+
 uint64_t Image::HashGuestEdges() const {
 	constexpr uint64_t                         page_mask = TRACKER_PAGE_SIZE - 1;
 	std::array<uint8_t, TRACKER_PAGE_SIZE * 2> bytes {};

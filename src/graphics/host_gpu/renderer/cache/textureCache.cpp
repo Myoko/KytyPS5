@@ -331,9 +331,23 @@ ImageId TextureCache::InsertImage(const ImageInfo& info) {
 }
 
 void TextureCache::StampRegistrationPages(const Image& image, uint64_t epoch) {
+	if (m_registration_log.size() >= 8192) m_registration_log.erase(m_registration_log.begin(), m_registration_log.begin() + 4096);
+	m_registration_log.push_back({epoch, image.info.data.address, image.info.data.End()});
 	ImagePageTable::PageRange pages {};
 	if (!ImagePageTable::TryGetPageRange(image.info.data.address, image.info.data.size, pages)) return;
 	for (size_t page = pages.first; page < pages.last_exclusive; ++page) m_registration_pages[page] = epoch;
+}
+
+bool TextureCache::RegistrationsOverlapSince(uint64_t address, uint64_t size, uint64_t epoch, bool& known) const {
+	const auto& log = m_registration_log;
+	known           = log.empty() || log.front().epoch <= epoch + 1;
+	if (!known) return true;
+	// (At the stamps' page size: what RegistrationsSince would see.)
+	constexpr uint64_t page  = uint64_t {1} << ImageEpochTable::kPageBits;
+	const auto         begin = address & ~(page - 1), end = (address + size + page - 1) & ~(page - 1);
+	for (auto entry = log.rbegin(); entry != log.rend() && entry->epoch > epoch; ++entry)
+		if ((entry->begin & ~(page - 1)) < end && begin < ((entry->end + page - 1) & ~(page - 1))) return true;
+	return false;
 }
 
 bool TextureCache::StillResolved(const Image& image, uint64_t serial, uint64_t epoch) const {
@@ -415,9 +429,13 @@ void TextureCache::UnregisterImage(ImageId id) {
 }
 
 void TextureCache::DeleteImage(ImageId id) {
+	if (DetachImage(id)) RetireImage(id);
+}
+
+bool TextureCache::DetachImage(ImageId id) {
 	auto* image = m_slot_images.try_get(id);
 	if (image == nullptr || !image->registered) {
-		return;
+		return false;
 	}
 	m_partial_plans.erase(image->serial);
 	if (!image->depth_id) {
@@ -455,6 +473,10 @@ void TextureCache::DeleteImage(ImageId id) {
 		}
 	}
 	UnregisterImage(id);
+	return true;
+}
+
+void TextureCache::RetireImage(ImageId id) {
 	// (A speculation's packet may still read it: Spec::PacketNow.)
 	const auto packet = Spec::PacketNow();
 	if (m_scheduler.Active()) {
@@ -1157,9 +1179,10 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 		// importing cached mip counts would leave the requested layout invalid.
 		(void)GrowImageToLayers(info, cached.info.resources.layers);
 	}
-	info.htile_clear_mask     = 0;
-	const auto replacement_id = InsertImage(info);
-	auto&      replacement    = m_slot_images[replacement_id];
+	info.htile_clear_mask = 0;
+	auto replacement_id   = TakeParkedImage(info);
+	if (!replacement_id) replacement_id = InsertImage(info);
+	auto& replacement = m_slot_images[replacement_id];
 	replacement.usage         = cached.usage;
 	if (cached.binding.is_bound || cached.binding.is_target) {
 		cached.binding.needs_rebind = true;
@@ -1206,8 +1229,41 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested, BindingTyp
 		cached.track_addr     = 0;
 		cached.track_addr_end = 0;
 	}
-	FreeImage(cached_id, "depth-overlap");
+	ParkImage(cached_id);
 	return replacement_id;
+}
+
+// (FreeImage's, but parked: TakeParkedImage takes it back for its description; the collector retires it a flip on.)
+void TextureCache::ParkImage(ImageId id) {
+	auto& image = m_slot_images[id];
+	if (image.IsGpuModified()) {
+		image.ClearGpuModified();
+	}
+	const auto address = image.info.data.address;
+	if (!DetachImage(id)) return;
+	auto& parked = m_parked[address];
+	if (parked.id) RetireImage(parked.id);
+	parked = {id, m_gc_tick};
+}
+
+// An image a depth overlap parked at `info`'s memory made for the same Vulkan image (all of its description but the
+// metadata, which ImageInfo leaves out of the Vulkan image): as InsertImage's new one, registered again.
+ImageId TextureCache::TakeParkedImage(const ImageInfo& info) {
+	const auto parked = m_parked.find(info.data.address);
+	if (parked == m_parked.end()) return {};
+	auto*       image = m_slot_images.try_get(parked->second.id);
+	const auto& held  = image != nullptr ? image->info : info;
+	if (image == nullptr || image->registered || !(held.data == info.data) || !(held.stencil == info.stencil) ||
+	    held.pixel_format != info.pixel_format || held.guest_format != info.guest_format || held.type != info.type ||
+	    held.extent != info.extent || held.resources != info.resources || held.pitch != info.pitch ||
+	    held.bytes_per_block != info.bytes_per_block || held.samples != info.samples || held.tile_mode != info.tile_mode ||
+	    held.bgra16 != info.bgra16 || held.mip_layout != info.mip_layout || info.data.Empty())
+		return {};
+	const auto id = parked->second.id;
+	m_parked.erase(parked);
+	image->PrepareReuse(info);
+	RegisterImage(id);
+	return id;
 }
 
 TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& requested,
@@ -3594,6 +3650,12 @@ void TextureCache::RunGarbageCollector() {
 	EraseRetired();
 	std::scoped_lock lock {m_lock};
 	const uint64_t   tick = m_gc_tick++;
+	// Parked images not taken back since the flip before: the game left that use of the memory.
+	std::erase_if(m_parked, [&](const auto& item) {
+		if (item.second.tick + 1 >= tick) return false;
+		RetireImage(item.second.id);
+		return true;
+	});
 	if (m_graphics.CanReportMemoryUsage()) {
 		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();
 	}

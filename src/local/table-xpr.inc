@@ -67,6 +67,9 @@ struct RenderExecutor::TableImageSet {
 	uint64_t                  touched_tick  = 0;
 	uint64_t                  touched_frame = 0;
 	static constexpr uint64_t TouchTicks    = 8;
+	// The memory its images' views span (from the lowest to the highest byte): registrations elsewhere reach none of
+	// its proofs (TableValidateSet). 0, 0: not known yet.
+	uint64_t                  span_begin = 0, span_end = 0;
 	// The words select another specialization, or an image no set can hold: the draws take the native path
 	// (TableResolveSet tries again after TableImageSet::RetryFrames).
 	bool                  refused = false;
@@ -689,7 +692,22 @@ bool RenderExecutor::TableValidateSet(TableImageSet& set) {
 	const bool full  = !own || textures.GcTick() >= set.touched_tick + TableImageSet::TouchTicks ||
 	                  textures.CurrentFrame() >= set.touched_frame + TableImageSet::TouchTicks ||
 	                  m_context.GetCommandScheduler().Current().IsInvalid();
-	const bool moved = set.resolution_epoch[Role()] != resolution; // (registrations since: their pages say where)
+	// Registrations since: their pages say which proofs they reach (none, when the log of the latest has none over the
+	// views' span: the game moves registrations every frame somewhere).
+	bool moved = set.resolution_epoch[Role()] != resolution;
+	if (moved && own) {
+		if (set.span_end == 0) {
+			set.span_begin = UINT64_MAX;
+			for (const auto& dep: set.images) {
+				set.span_begin = std::min(set.span_begin, dep.desc.info.data.address);
+				set.span_end   = std::max(set.span_end, dep.desc.info.data.End());
+			}
+		}
+		bool known = false;
+		moved      = set.span_end <= set.span_begin ||
+		        textures.RegistrationsOverlapSince(set.span_begin, set.span_end - set.span_begin, set.resolution_epoch[0], known) ||
+		        !known;
+	}
 	if (!full)
 		for (const auto& dep: set.images) textures.m_slot_images.prefetch(dep.id);
 	for (auto& dep: set.images) {
