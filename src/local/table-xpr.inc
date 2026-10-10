@@ -126,6 +126,8 @@ struct RenderExecutor::TablePair {
 		std::array<FlatOperand, 3> address; // low, high, offset
 		int32_t                    immediate = 0;
 		uint32_t                   first = 0, count = 0;
+		FlatOperand                records; // a bounded run's (TablePlan::Slot::bounded)
+		bool                       bounded = false;
 	};
 	struct FlatStage {
 		std::vector<FlatRun>     runs;        // the runs in level order
@@ -804,8 +806,15 @@ bool RenderExecutor::TableEvaluate(TablePair& pair, std::array<std::span<const u
 	table.lod_stats.clear();
 	NativeXprReader reader(resources);
 	// A run's address, its pages proven mapped and its lines loading.
+	// (A bounded run, read through a V#: within its range, NUM_RECORDS bytes or NUM_RECORDS strides, as the normal
+	// path's evaluation, which fails past it: so does this one.)
 	const auto locate = [&](uint64_t low, uint64_t high, uint32_t offset, int32_t immediate, uint32_t count,
-	                        uint64_t& out) {
+	                        uint64_t& out, bool bounded = false, uint32_t records = 0) {
+		if (bounded) {
+			const auto stride = (static_cast<uint32_t>(high) >> 16u) & 0x3fffu;
+			const auto size   = stride == 0 ? uint64_t {records} : uint64_t {stride} * records;
+			if (immediate < 0 || static_cast<uint64_t>(immediate) + count * 4ull > size) return false;
+		}
 		const auto address = ((low | high << 32u) & 0x0000fffffffffffcull) + (offset & ~3u) +
 		                     static_cast<uint64_t>(int64_t {immediate});
 		for (auto page = address >> 14u; page <= (address + count * 4ull - 1) >> 14u; ++page) {
@@ -847,7 +856,7 @@ bool RenderExecutor::TableEvaluate(TablePair& pair, std::array<std::span<const u
 			for (end = begin; end < runs.size() && runs[end].level == runs[begin].level; ++end) {
 				const auto& run = runs[end];
 				if (!locate(value(run.read.low), value(run.read.high), value(run.read.offset), run.read.immediate, run.count,
-				            table.addresses[end]))
+				            table.addresses[end], run.read.bounded, run.read.bounded ? value(run.read.records) : 0))
 					return false;
 			}
 			for (size_t i = begin; i < end; ++i) reader.Read(table.addresses[i], runs[i].count, slots.data() + runs[i].first);
@@ -944,7 +953,7 @@ bool RenderExecutor::TableEvaluate(TablePair& pair, std::array<std::span<const u
 			for (auto i = begin; i < end; ++i) {
 				const auto& run = form.runs[i];
 				if (!locate(get(run.address[0]), get(run.address[1]), get(run.address[2]), run.immediate, run.count,
-				            table.addresses[i]))
+				            table.addresses[i], run.bounded, run.bounded ? get(run.records) : 0))
 					return false;
 			}
 			for (auto i = begin; i < end; ++i) reader.Read(table.addresses[i], form.runs[i].count, slots.data() + form.runs[i].first);
@@ -1621,10 +1630,11 @@ void RenderExecutor::TableRuns(TablePair& pair) {
 			while (first + count < plan.slots.size() && plan.cpu[first + count] != 0 &&
 			       same(plan.slots[first + count].low, slot.low) && same(plan.slots[first + count].high, slot.high) &&
 			       same(plan.slots[first + count].offset, slot.offset) &&
+			       plan.slots[first + count].bounded == slot.bounded && same(plan.slots[first + count].records, slot.records) &&
 			       plan.slots[first + count].immediate == slot.immediate + static_cast<int32_t>(4 * count))
 				++count;
 			uint32_t level = 0;
-			for (const auto* operand: {&slot.low, &slot.high, &slot.offset})
+			for (const auto* operand: {&slot.low, &slot.high, &slot.offset, &slot.records})
 				if (operand->kind == Kind::Slot) level = std::max(level, levels[operand->value] + 1);
 			std::fill_n(levels.begin() + first, count, level);
 			pair.runs[st].push_back({slot, first, count, level});
@@ -1658,7 +1668,7 @@ void RenderExecutor::TableRuns(TablePair& pair) {
 		for (size_t i = 0; i < runs.size(); ++i) {
 			const auto& run = runs[i];
 			flat.runs.push_back({{flat_of(run.read.low), flat_of(run.read.high), flat_of(run.read.offset)},
-			                     run.read.immediate, run.first, run.count});
+			                     run.read.immediate, run.first, run.count, flat_of(run.read.records), run.read.bounded});
 			if (i + 1 == runs.size() || runs[i + 1].level != run.level) flat.level_ends.push_back(static_cast<uint32_t>(i + 1));
 		}
 		for (const auto& descriptor: plan.images) {
