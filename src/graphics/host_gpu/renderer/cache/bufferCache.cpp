@@ -1896,7 +1896,8 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBuffer(uint64_t vaddr, uint64_t 
 	TouchBuffer(*buffer);
 	(void)SynchronizeBuffer(*buffer, vaddr, size, is_written, is_texel_buffer);
 	if (is_written) {
-		buffer->written_serial = m_scheduler.CommandSerial();
+		// (Not Buffer::written_serial: the write's pages were synchronized above, none of them is a CPU-dirty page an
+		// upload prologue copies later.)
 		InvalidateCopyFeedback(vaddr, size);
 		{
 			const std::unique_lock lock(m_gpu_modified_mutex);
@@ -2219,6 +2220,9 @@ void BufferCache::CopyGuestMemory(uint64_t dst_vaddr, uint64_t src_vaddr, uint64
 			// (Memory the backing view does not hold: written through the guest's view, unprotected first.)
 			InvalidateMemory(address, bytes);
 		}
+		// (Pages CPU-dirty already change no state: their epoch moves, a copy of their bytes taken meanwhile is
+		// stale. A linear copy is a dispatch, no point the observation epoch moves at.)
+		m_memory_tracker.NoteHostWrite(address, bytes);
 		std::memcpy(reinterpret_cast<void*>(address), from, bytes);
 		Spec::NoteHostWrite(address, bytes);
 	};

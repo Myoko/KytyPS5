@@ -158,6 +158,9 @@ struct RenderExecutor::TablePair {
 	// A translation or a pipeline compile the pair's next store needs (TableStore, TableDispatch): until it is done,
 	// its draws keep the native path without asking for a store (a request a frame each kept the store budget).
 	std::shared_ptr<const std::atomic<bool>> waiting;
+	// A dispatch's: the pair of the table dispatch that came after this one's the last time (the main executor's):
+	// TablePrefetchNext loads its lines while this one is made.
+	TablePair* next = nullptr;
 };
 
 struct RenderExecutor::TableXpr {
@@ -172,6 +175,7 @@ struct RenderExecutor::TableXpr {
 	// the render thread at 1-1 standing, nor lookup then).
 	std::array<uint64_t, 3> found_key {};
 	Pair*                   found_pair = nullptr;
+	Pair*                   previous_dispatch = nullptr; // the pair of the last table dispatch (TablePrefetchNext)
 	// The same for TableDispatch's dispatches (the main executor's own: its catalog), by TableDispatchWords.
 	std::array<uint64_t, 4> found_dispatch_key {};
 	Pair*                   found_dispatch = nullptr;
@@ -212,20 +216,25 @@ struct RenderExecutor::TableXpr {
 	// whose proof also needs the image starts and the mappings (formatted: an image may start at it; clamped: a mapping
 	// may extend it) holds while `special` is the table's special generation (0: no such need). (Buffer registrations
 	// anywhere used to drop them all: 3800 resolves a frame walking at 1-1, 1000 standing.)
+	// One holding a copy in the table upload ring of a range the guest wrote (RingCopy, made or shared for the main
+	// executor) has `registration` RingCopyMark | the observation epoch it is shared in and `cpu_epoch` the range's
+	// tracker regions' epoch then: the use takes it as RingCopy's terms allow, without resolving the V# again.
 	struct alignas(64) ResolvedBuffer {
 		std::array<uint32_t, 4> words {};
 		uint32_t                dwords = 0, special = 0;
 		vk::DeviceAddress       device = 0;
 		uint64_t                address = 0, size = 0, cpu_epoch = 0, registration = 0;
 	};
+	static constexpr uint64_t RingCopyMark = uint64_t {1} << 63u;
 	static constexpr size_t           ResolvedEntries = 65536;
 	std::unique_ptr<ResolvedBuffer[]> resolved = std::make_unique<ResolvedBuffer[]>(ResolvedEntries);
 	// A copy in the table upload ring of a small range the guest wrote (TableBlocks reads such a range from a copy,
 	// none held: the guest writes its pages unseen), direct-mapped by the range: the main executor's uses share it
 	// while no point the guest could learn that GPU work ran at passed (PageManager::ObservationEpoch: until then the
-	// guest writes nothing that work reads), in the same submission (`tick`: the ring keeps the copy for it) and with
-	// no page of the range's tracker regions made CPU-dirty since (`cpu_epoch`: one the GPU wrote and the guest read
-	// back in between is dirty again). A frame's constants are read by many draws: in the Latria spin ~2950 copies,
+	// guest writes nothing that work reads), in the same submission (`tick`: the ring keeps the copy for it), with
+	// the range's tracker regions' epoch unchanged (`cpu_epoch`: it moves when pages become CPU-dirty, when the
+	// emulator writes dirty pages, MemoryTracker::NoteHostWrite, and when GPU-written pages are given back) and no
+	// page of it GPU-written at the use. A frame's constants are read by many draws: in the Latria spin ~2950 copies,
 	// 11.8 MB a frame, before; ~1140 and 4.6 MB with the shared ones.
 	struct RingCopy {
 		uint64_t          address = 0, size = 0, observation = 0, tick = 0, cpu_epoch = 0;
@@ -327,6 +336,26 @@ static void TablePrefetchArrays(const Pair& pair, const Set* set) {
 	}
 }
 
+// A frame's dispatches come in much the same order frame after frame (the culling chain's ~1000 of a few hundred
+// programs): the pair that followed this one's last dispatch is noted, and the pairs of the next two dispatches expected
+// load while this one is made, in two steps (each line a load reads is in by then: the next pair's arrays from its own
+// lines, which the dispatch before asked for, and the pair after it, whose lines the next one's arrays need). Their
+// lines were cold at each use: TablePrefetchPair asks for them only once the pair is found, ~0.1 us before the first
+// read. Census per call, 1-1 standing and Latria (2 boots x 2 rounds each): async-queue table dispatches 1.76 -> 1.70
+// and 2.06 -> 2.00 us (their evaluation -9%), graphics-queue ones -4%. (For draws, whose successors vary more, the
+// same cost +3% a draw.)
+template <typename Pair>
+static void TablePrefetchNext(Pair*& previous, Pair& pair) {
+	if (previous != nullptr && previous != &pair) previous->next = &pair;
+	previous = &pair;
+	auto* const next = pair.next;
+	if (next == nullptr || next == &pair) return;
+	using Set = std::remove_pointer_t<std::remove_cvref_t<decltype(next->last_set[0])>>;
+	TablePrefetchArrays(*next, static_cast<const Set*>(nullptr));
+	__builtin_prefetch(next->last_set[0]);
+	if (auto* const after = next->next; after != nullptr && after != &pair && after != next) TablePrefetchPair(*after);
+}
+
 RenderExecutor::TableResult RenderExecutor::TableTry(CommandBuffer& buffer, std::span<const uint64_t> commands,
                                                      uint64_t index_base, uint64_t index_bytes,
                                                      vk::IndexType index_type, const NativeXprDirectDraw* direct) {
@@ -395,22 +424,26 @@ RenderExecutor::TableResult RenderExecutor::TableTry(CommandBuffer& buffer, std:
 	}
 	if (pair.refused) return Spec::Refuse("table: pair refused"), TableResult::Native;
 	// A store at most once a frame per pair and draw state, within the frame's budget (kyty_local_table_store_budget):
-	// while its programs and pipeline compile, the pair's draws keep the native path. (Once a frame per pair kept its
-	// other states' draws on the native path, storing native records, until a later frame.)
+	// while its programs and pipeline compile, the pair's draws take the normal path (Deferred). (Once a frame per pair
+	// kept its other states' draws on the native path, storing native records, until a later frame.) Those draws
+	// stored native records too, which the table variant replaced a frame or two later: 100-230 a slow frame walking
+	// into new parts of Boletarian Palace 1-3 (each traced and sorted, ~3 ms of the frame).
 	const auto request_store = [&] {
 		if (Spec::Current() != nullptr) return Spec::Refuse("table store"), TableResult::Native;
 		if (pair.waiting) {
 			if (!pair.waiting->load(std::memory_order_acquire))
-				return LiveCounters::Add(LiveCounters::TableStoreDeferred), TableResult::Native; // (programs compiling)
+				return LiveCounters::Add(LiveCounters::TableStoreDeferred), TableResult::Deferred; // (programs compiling)
 			pair.waiting.reset();
 		}
 		if (table.store_frame != frame) {
 			table.store_frame    = frame;
 			table.store_requests = 0;
 		}
-		const auto budget = kyty_local_table_store_budget.load(std::memory_order_relaxed);
-		if ((pair.store_frame == frame && pair.store_state == cache.state_key) ||
-		    (budget != 0 && table.store_requests >= budget))
+		if (pair.store_frame == frame && pair.store_state == cache.state_key)
+			return LiveCounters::Add(LiveCounters::TableStoreDeferred), TableResult::Deferred;
+		// (Past the budget, the others draw from native records meanwhile.)
+		if (const auto budget = kyty_local_table_store_budget.load(std::memory_order_relaxed);
+		    budget != 0 && table.store_requests >= budget)
 			return LiveCounters::Add(LiveCounters::TableStoreDeferred), TableResult::Native;
 		++table.store_requests;
 		pair.store_frame  = frame;
@@ -772,8 +805,32 @@ bool RenderExecutor::TableValidateSet(TableImageSet& set) {
 		// depth and stencil read by lighting and post passes: at 1-1 their sets were made again every other frame) is
 		// found by other rules than a texture's: the proof is that nothing was registered over its view since the set
 		// was last proven (or made).
-		const bool sampled = textures.IsSampledImageCurrent(dep.id, dep.desc, true);
-		if (!sampled && !textures.IsSampledDepthCurrent(dep.id, dep.desc, set.resolution_epoch[Role()])) return refuse();
+		bool sampled = textures.IsSampledImageCurrent(dep.id, dep.desc, true);
+		bool current = sampled || textures.IsSampledDepthCurrent(dep.id, dep.desc, set.resolution_epoch[Role()]);
+		const bool texture = dep.desc.type == TextureCache::BindingType::Texture;
+		if (!current && own && (texture || dep.desc.type == TextureCache::BindingType::Storage) &&
+		    !m_context.GetCommandScheduler().Current().IsInvalid()) {
+			// A surface the game uses as depth and as colour in turn (0x28a010000 at 1-1 and Latria, twice a frame): the
+			// form a use leaves is parked (TextureCache::ParkImage), registrations over it move every frame, and the sets
+			// using it failed here at every use (made again, 30-70 us each, the dispatch on the normal path meanwhile). The
+			// normal path's lookup takes the set's image back (TakeParkedImage: the same id and serial, its views kept, the
+			// other form's bytes copied in): the set then binds what that lookup and its acquisition bind. (The lookup is
+			// the proof for a depth-tiled view too, which IsSampledImageCurrent declines: the surface's storage use.)
+			auto       desc  = dep.desc;
+			const bool taken = textures.FindImage(desc) == dep.id && desc.view_info == dep.desc.view_info;
+			image            = textures.m_slot_images.try_get(dep.id); // (the lookup may have moved the slots)
+			if (taken && image != nullptr && image->serial == dep.serial && image->registered && !image->depth_id &&
+			    !image->binding.needs_rebind) {
+				if (texture && (dep.desc.info.IsDepth() || image->info.IsDepth())) {
+					current = textures.IsSampledDepthCurrent(dep.id, dep.desc, textures.ResolutionEpoch());
+				} else {
+					(void)textures.FindTexture(dep.id, dep.desc);
+					sampled = textures.IsSampledImageCurrent(dep.id, dep.desc, true);
+					current = sampled || (!dep.desc.info.HasMetadata() && !dep.desc.info.HasStencil());
+				}
+			}
+		}
+		if (!current) return refuse();
 		// (A DCC image's surface and a depth image's view are proven otherwise: checked at every validation.)
 		if (own) {
 			dep.proven   = sampled && dep.desc.info.metadata.kind != ImageMetadataKind::Dcc;
@@ -1235,6 +1292,25 @@ bool RenderExecutor::TableBlocks(TablePair& pair, std::array<std::span<const uin
 			}
 			auto& held    = *entries[i].second;
 			bool  current = held.words == words4 && (held.special == 0 || held.special == table.special_generation);
+			if (current && (held.registration & TableXpr::RingCopyMark) != 0) {
+				// Its ring copy (RingCopy's terms: the same observation epoch, the regions' epoch unchanged, no page
+				// GPU-written).
+				if (Role() == 0 && Spec::Current() == nullptr &&
+				    held.registration == (TableXpr::RingCopyMark | PageManager::ObservationEpoch()) &&
+				    cpu_epoch(held.address, held.size) == held.cpu_epoch &&
+				    !buffer_cache.IsRegionGpuModified(held.address, held.size)) {
+					LiveCounters::Add(LiveCounters::TableRingShared);
+					LiveCounters::Add(LiveCounters::TableRingSharedBytes, held.size);
+					const auto [word, stride]      = word_of(words4);
+					block[plan.BufferDword(i)]     = static_cast<uint32_t>(held.device);
+					block[plan.BufferDword(i) + 1] = static_cast<uint32_t>(held.device >> 32u);
+					block[plan.BufferDword(i) + 2] = held.dwords;
+					block[plan.BufferDword(i) + 3] = word;
+					block[plan.BufferDword(i) + 4] = stride;
+					continue;
+				}
+				current = false;
+			}
 			// (A speculation's guest memory writes wait for its commit: such a range is resolved, ObtainBuffer decides.)
 			if (const auto* spec = Spec::Current();
 			    current && held.size != 0 && spec != nullptr && spec->JournalIntersects(held.address, held.size))
@@ -1302,6 +1378,16 @@ bool RenderExecutor::TableBlocks(TablePair& pair, std::array<std::span<const uin
 								           .cpu_epoch   = cpu,
 								           .device      = device};
 						}
+						// (The V#'s later uses take it from its held entry.)
+						if (device != 0 && shared != nullptr && cpu != 0)
+							held = {.words        = words4,
+							        .dwords       = static_cast<uint32_t>(size / 4),
+							        .special      = fresh.special,
+							        .device       = device,
+							        .address      = address,
+							        .size         = size,
+							        .cpu_epoch    = cpu,
+							        .registration = TableXpr::RingCopyMark | observation};
 						if (device != 0) {
 							const auto [word, stride]      = word_of(words4);
 							block[plan.BufferDword(i)]     = static_cast<uint32_t>(device);
@@ -1891,6 +1977,7 @@ bool RenderExecutor::TableDispatch(CommandBuffer& buffer, uint32_t groups_x, uin
 	if ((Role() == 0 && known->sightings < 2) || known->vs != cs.cs_regs.data_addr) return false;
 	auto& pair = *known;
 	TablePrefetchPair(pair);
+	if (Role() == 0) TablePrefetchNext(OwnTable().previous_dispatch, pair);
 	LiveCensus::Scope census(LiveCensus::DrawPhase, 0x7ab1f, 0); // census: the dispatches' phases (b)
 	// The dispatch executor's sets retire here too (NativeXprTry collects only the draw executor's): without it they
 	// were never reused or freed, a new pool every 1024.
