@@ -39,6 +39,7 @@ extern volatile std::atomic_uint32_t kyty_local_frame_pipeline_mode;
 }
 
 #include "common/assert.h"
+#include "common/guardedCopy.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "graphics/guest_gpu/graphicsRun.h"
@@ -725,7 +726,7 @@ void BufferCache::FinishGuestReadback(size_t slot, bool detach) {
 	LiveCounters::Add(LiveCounters::GpuRangeEntries, m_gpu_modified_ranges.Count());
 	{
 		const std::unique_lock lock(m_gpu_modified_mutex);
-		for (const auto& part: request->parts) m_gpu_modified_ranges.Subtract(part.address, part.size);
+		m_gpu_modified_ranges.SubtractSorted(request->parts);
 	}
 	// The renderer may have dirtied other pages in the widened window since handoff.
 	for (const auto& page: request->pages)
@@ -932,7 +933,7 @@ bool BufferCache::TryReadCopyFeedback(Buffer& buffer, uint64_t vaddr, uint64_t s
 	}
 	{
 		const std::unique_lock lock(m_gpu_modified_mutex);
-		for (const auto& copy: copies) m_gpu_modified_ranges.Subtract(copy.address, copy.size);
+		m_gpu_modified_ranges.SubtractSorted(copies);
 	}
 	// Only complete dirty-page coverage allows dropping protection. CPU-clean bytes
 	// are never published from the snapshot. Any later upload/GPU write invalidates it.
@@ -1229,7 +1230,7 @@ void BufferCache::DownloadBufferMemory(std::span<const DownloadCopy> copies) {
 	}
 	{
 		const std::unique_lock lock(m_gpu_modified_mutex);
-		for (const auto& copy: copies) m_gpu_modified_ranges.Subtract(copy.address, copy.size);
+		m_gpu_modified_ranges.SubtractSorted(copies);
 	}
 }
 
@@ -1416,15 +1417,15 @@ void BufferCache::WriteBufferReport(const char* path) {
 	m_scheduler.Context().GetGpu().SendCommandSync([this, path] {
 		FILE* file = std::fopen(path, "wb");
 		if (file == nullptr) return;
-		std::fputs("id\taddress\tsize\tlru_tick\tgc_tick\tmapped\tgpu_modified\tcpu_modified\n", file);
+		std::fputs("id\taddress\tsize\tlru_tick\tgc_tick\tmapped\tgpu_modified\tcpu_modified\tbda_read\n", file);
 		m_slot_buffers.ForEach([&](BufferId id, const Buffer& buffer) {
 			if (buffer.is_deleted || buffer.CpuAddress() == 0) return;
 			const auto address = buffer.CpuAddress(), size = buffer.Size();
-			std::fprintf(file, "%u\t0x%" PRIx64 "\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%d\t%d\t%d\n", id.index, address, size,
-			             m_lru_cache.TickOf(buffer.lru_id), m_gc_tick,
+			std::fprintf(file, "%u\t0x%" PRIx64 "\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%d\t%d\t%d\t%d\n", id.index, address,
+			             size, m_lru_cache.TickOf(buffer.lru_id), m_gc_tick,
 			             LibKernel::Memory::IsFullyMapped(address, size) ? 1 : 0,
 			             m_memory_tracker.IsRegionGpuModified(address, size) ? 1 : 0,
-			             m_memory_tracker.IsRegionCpuModified(address, size) ? 1 : 0);
+			             m_memory_tracker.IsRegionCpuModified(address, size) ? 1 : 0, buffer.bda_read ? 1 : 0);
 		});
 		std::fclose(file);
 	});
@@ -1464,6 +1465,62 @@ void BufferCache::InvalidateMemory(uint64_t vaddr, uint64_t size) {
 	                                  [this, vaddr, size] { ReadMemory(vaddr, size, true); });
 }
 
+// The game's large memmoves (DemonsSoulsCopy, >= 256 KiB) prepare their destination this way: at 1-1 a few a frame of
+// 4 MiB into memory GPU work had written, each read back first on the GPU thread (~200 us of its time: the copy and the
+// wait for it) for bytes the memmove then overwrote.
+void BufferCache::InvalidateMemoryForWrite(uint64_t vaddr, uint64_t size) {
+	if (!GuestRange {vaddr, size}.Valid()) {
+		EXIT("BufferCache: invalid memory-invalidation range\n");
+	}
+	bool requested = false; // (the range, once for all of its regions)
+	m_memory_tracker.InvalidateRegion(vaddr, size, [&] {
+		if (std::exchange(requested, true)) return;
+		if (GuestGpu::IsGpuThread()) {
+			DiscardGpuWrites(vaddr, size);
+			return;
+		}
+		m_scheduler.Context().GetGpu().SendCommandSync([this, vaddr, size] { DiscardGpuWrites(vaddr, size); });
+	});
+}
+
+// As ReadMemoryOnGpu for a write, but only the GPU-written bytes of the first and last page outside [vaddr, vaddr +
+// size) are read back (the rest of those pages); the others are dropped: the write replaces them. A GPU write still
+// under way to the range races the guest's write on the console too.
+void BufferCache::DiscardGpuWrites(uint64_t vaddr, uint64_t size) {
+	LiveCensus::Scope census(LiveCensus::SyncDownload, vaddr >> 20u << 20u, 2);
+	const auto end   = vaddr + size;
+	const auto first = vaddr & ~(TRACKER_PAGE_SIZE - 1);
+	const auto last  = (end + TRACKER_PAGE_SIZE - 1) & ~(TRACKER_PAGE_SIZE - 1);
+	// (A guest readback of these pages under way writes back onto pages still GPU-owned: finished first.)
+	DrainGuestReadback(first, last - first);
+	if (!IsRegionRegistered(vaddr, size)) {
+		return;
+	}
+	std::vector<DownloadCopy> copies;
+	for (const auto& [begin, stop]: {std::pair {first, vaddr}, std::pair {end, last}}) {
+		if (begin >= stop || !m_gpu_modified_ranges.Intersects(begin, stop - begin)) continue;
+		// (The buffer of that page alone: one over the whole range would merge every buffer in it.)
+		auto& buffer = m_slot_buffers[FindBuffer(begin & ~(TRACKER_PAGE_SIZE - 1), TRACKER_PAGE_SIZE)];
+		m_gpu_modified_ranges.ForEachIntersection(begin, stop - begin, [&](RangeSet::Range range) {
+			copies.push_back({&buffer, buffer.Offset(range.address), range.address, range.size});
+		});
+	}
+	if (!copies.empty()) {
+		LiveCounters::Add(LiveCounters::SyncDownloads);
+		DownloadBufferMemory(copies);
+	}
+	uint64_t dropped = 0;
+	{
+		const std::unique_lock lock(m_gpu_modified_mutex);
+		m_gpu_modified_ranges.ForEachIntersection(first, last - first, [&](RangeSet::Range range) { dropped += range.size; });
+		m_gpu_modified_ranges.Subtract(first, last - first);
+	}
+	LiveCounters::Add(LiveCounters::DiscardedGpuBytes, dropped);
+	InvalidateCopyFeedback(first, last - first);
+	m_memory_tracker.UnmarkRegionAsGpuModified(first, last - first);
+	m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
+}
+
 // GpuResourceManager::UnmapMemory, after InvalidateMemory: the buffers the unmapped range holds whole go. Nothing the
 // guest maps reaches them any more (the BDA page table drops them with the registration), and kept they stayed in
 // video memory for good (the collector waits for a frame without BDA shaders, which this game never has): at 1-1, 151
@@ -1486,6 +1543,81 @@ void BufferCache::DeleteUnmappedBuffers(uint64_t vaddr, uint64_t size) {
 		DeleteBuffer(id);
 	}
 	LiveCounters::Add(LiveCounters::UnmapBufferDeletes, ids.size());
+}
+
+// A buffer the unmapped range holds in part stays for its mapped rest, and joins of buffers next to it grew it on (stream
+// leaps over memory the game maps and unmaps as it streams): at 1-1, partly unmapped buffers of 3.6 GiB of the 4.9 GiB
+// registered after 9 rounds of the user's route (36 minutes), one of 1.2 GiB, all kept by the collector (GPU-owned
+// bytes, read through BDA); with this, 1.1 of 2.3 GiB after 5 rounds (3.1 of 4.3 before), the route's last points 45 ->
+// 56 fps in the fifth. Once mapped in no more than half of it, it is cut to its mapped runs: new buffers with its
+// bytes copied on the GPU (as a join copies them; the BDA page table points at them), so the bytes copied are at most
+// the bytes freed. Its unmapped bytes are nobody's: their GPU-owned ones were read back when unmapped (InvalidateMemory),
+// and a buffer with some there left is kept as it is.
+void BufferCache::SplitUnmappedBuffers(uint64_t vaddr, uint64_t size) {
+	if (m_resources == nullptr || size == 0 || UINT64_MAX - vaddr < size) return;
+	const auto            end = vaddr + size;
+	std::vector<BufferId> candidates;
+	auto                  it = m_buffers.lower_bound(vaddr);
+	if (it != m_buffers.begin()) {
+		const auto& buffer = m_slot_buffers[std::prev(it)->second];
+		if (buffer.CpuAddress() + buffer.Size() > vaddr) candidates.push_back(std::prev(it)->second);
+	}
+	for (; it != m_buffers.end() && it->first < end; ++it) {
+		const auto& buffer = m_slot_buffers[it->second];
+		if (buffer.CpuAddress() + buffer.Size() > end) candidates.push_back(it->second);
+	}
+	// Mapped runs closer than a stream leap stay one buffer (a join would make them one again).
+	constexpr uint64_t Gap = CACHING_PAGESIZE * 128;
+	for (const auto id: candidates) {
+		const auto& old = m_slot_buffers[id];
+		if (old.is_deleted) continue;
+		const auto begin = old.CpuAddress(), stop = begin + old.Size();
+		RangeSet   mapped;
+		m_resources->MappedRanges(begin, stop - begin, mapped);
+		mapped.Subtract(vaddr, size); // (not subtracted yet: UnmapMemory does it after this)
+		std::vector<std::pair<uint64_t, uint64_t>> pieces;
+		mapped.ForEach([&](uint64_t from, uint64_t to) {
+			from = std::max(begin, from & ~(CACHING_PAGESIZE - 1));
+			to   = std::min(stop, (to + CACHING_PAGESIZE - 1) & ~(CACHING_PAGESIZE - 1));
+			if (!pieces.empty() && from <= pieces.back().second + Gap) {
+				pieces.back().second = std::max(pieces.back().second, to);
+			} else if (from < to) {
+				pieces.emplace_back(from, to);
+			}
+		});
+		uint64_t kept = 0;
+		for (const auto& [from, to]: pieces) kept += to - from;
+		if (kept * 2 > stop - begin) continue;
+		// (GPU-owned bytes outside the pieces would be lost with it.)
+		bool owned_outside = false;
+		uint64_t at = begin;
+		for (const auto& [from, to]: pieces) {
+			owned_outside = owned_outside || (from > at && m_gpu_modified_ranges.Intersects(at, from - at));
+			at            = to;
+		}
+		if (owned_outside || (stop > at && m_gpu_modified_ranges.Intersects(at, stop - at))) continue;
+		// New buffers first (inserting can move the slots: the old one is looked up again after), then the copies, the
+		// old one out, the new ones in (CreateBuffer's order).
+		std::vector<BufferId> ids;
+		for (const auto& [from, to]: pieces) {
+			ids.push_back(m_slot_buffers.insert(m_graphics, m_scheduler, MemoryUsage::DeviceLocal, from,
+			                                    AllFlags | vk::BufferUsageFlagBits::eShaderDeviceAddress, to - from));
+		}
+		const auto& source = m_slot_buffers[id];
+		for (size_t i = 0; i < ids.size(); ++i) {
+			auto&      piece        = m_slot_buffers[ids[i]];
+			const auto [from, to]   = pieces[i];
+			piece.bda_read          = source.bda_read;
+			SetVulkanObjectNameF(m_graphics.device, piece.Handle(), "Kyty.GameBuffer[guest=0x{:016x} size=0x{:x}]", from,
+			                     to - from);
+			piece.CopyFrom(m_scheduler.Current(), source, from - begin, 0, to - from);
+			NoteGpuWrite(from, to - from); // (as JoinOverlap)
+		}
+		LiveCounters::Add(LiveCounters::UnmapBufferSplits);
+		LiveCounters::Add(LiveCounters::UnmapSplitFreedBytes, stop - begin - kept);
+		DeleteBuffer(id);
+		for (const auto piece: ids) Register(piece);
+	}
 }
 
 void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
@@ -1552,8 +1684,8 @@ void BufferCache::FinishWriteReadback(uint64_t vaddr, uint64_t size) {
 	m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
 }
 
-// KYTY_SYNC_STACK (diagnostics): the host frames of each new caller chain of the render thread's synchronous
-// downloads (SYNC-STACK lines, exe offsets for the linker map; the first 64 chains).
+// KYTY_SYNC_STACK (diagnostics): the host frames of each caller chain of the render thread's synchronous downloads
+// (SYNC-STACK lines, exe offsets for the linker map; 64 chains), printed at its 1st, 2nd, 4th, ... call with the count.
 static void LogSyncStack(uint64_t vaddr, uint64_t size, bool is_write) {
 #if defined(_WIN32)
 	std::array<void*, 14> frames {};
@@ -1561,12 +1693,14 @@ static void LogSyncStack(uint64_t vaddr, uint64_t size, bool is_write) {
 	const auto            count = RtlCaptureStackBackTrace(2, static_cast<unsigned long>(frames.size()), frames.data(), &hash);
 	static std::mutex                        mutex;
 	static std::unordered_map<unsigned long, uint32_t> seen;
+	uint32_t calls = 0;
 	{
 		std::lock_guard lock(mutex);
 		if (seen.size() >= 64 && !seen.contains(hash)) return;
-		if (seen[hash]++ != 0) return;
+		calls = ++seen[hash];
+		if ((calls & (calls - 1)) != 0) return;
 	}
-	std::string text = fmt::format("SYNC-STACK addr=0x{:x} size=0x{:x} write={}:", vaddr, size, is_write ? 1 : 0);
+	std::string text = fmt::format("SYNC-STACK addr=0x{:x} size=0x{:x} write={} calls={}:", vaddr, size, is_write ? 1 : 0, calls);
 	for (unsigned i = 0; i < count; i++) {
 		const auto address = reinterpret_cast<uint64_t>(frames[i]);
 		text += address >= 0x140000000ull && address < 0x150000000ull ? fmt::format(" exe+0x{:x}", address - 0x140000000ull)
@@ -1874,6 +2008,27 @@ void BufferCache::FlushPrologueCopies(vk::CommandBuffer command) {
 	}
 }
 
+// An upload's source bytes (a CPU-dirty range) into host memory, from inside the memory tracker's upload callback: through
+// the backing view, whatever the guest range's protection, else through the guest view without faulting. A read of the
+// guest view that faulted re-entered the tracker from the callback (another tracker's page protection: the fault
+// handler read GPU data back) and ended the emulator (10-12, Tower of Latria, third visit). Bytes not readable at all (no
+// mapping) are uploaded as zeros, reported.
+static void ReadUploadSource(uint8_t* destination, uint64_t address, uint64_t size) {
+	if (Libs::LibKernel::Memory::TryReadBackingToHost(address, destination, size)) return;
+#if defined(_WIN32)
+	if (const auto missed = Common::GuardedCopy(destination, reinterpret_cast<const void*>(address), size); missed != 0) {
+		std::memset(destination + (size - missed), 0, missed);
+		static std::atomic<uint32_t> reported {0};
+		if (reported.fetch_add(1, std::memory_order_relaxed) < 8)
+			std::printf("BufferCache: an upload's source 0x%llx+0x%llx is unreadable from +0x%llx: zeros uploaded\n",
+			            static_cast<unsigned long long>(address), static_cast<unsigned long long>(size),
+			            static_cast<unsigned long long>(size - missed));
+	}
+#else
+	std::memcpy(destination, reinterpret_cast<const void*>(address), size);
+#endif
+}
+
 vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> copies,
                                      uint64_t total_size, const Buffer** ring_used) {
 	if (copies.empty()) {
@@ -1926,7 +2081,7 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 			if (source != nullptr) {
 				AsyncUpload::Get().Push(mapped + copy.srcOffset, source, copy.size, address);
 			} else {
-				std::memcpy(mapped + copy.srcOffset, reinterpret_cast<const void*>(address), copy.size);
+				ReadUploadSource(mapped + copy.srcOffset, address, copy.size);
 			}
 			copy.srcOffset += base_offset;
 		}
@@ -1939,9 +2094,7 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 	auto temporary = std::make_unique<Buffer>(m_graphics, m_scheduler, MemoryUsage::Upload, 0,
 	                                         vk::BufferUsageFlagBits::eTransferSrc, total_size);
 	for (const auto& copy: copies) {
-		const auto address = buffer.CpuAddress() + copy.dstOffset;
-		std::memcpy(temporary->Mapped().data() + copy.srcOffset,
-		            reinterpret_cast<const void*>(address), copy.size);
+		ReadUploadSource(temporary->Mapped().data() + copy.srcOffset, buffer.CpuAddress() + copy.dstOffset, copy.size);
 	}
 	temporary->Flush(0, total_size);
 	const auto handle = temporary->Handle();
@@ -2411,6 +2564,15 @@ void BufferCache::CopyGuestMemory(uint64_t dst_vaddr, uint64_t src_vaddr, uint64
 bool BufferCache::IsRegionRegistered(uint64_t vaddr, uint64_t size) {
 	if (!GuestRange {vaddr, size}.Valid()) {
 		EXIT("BufferCache: invalid registered-region query\n");
+	}
+	// A short range asks the page table: buffers cover whole caching pages (CreateBuffer aligns them, a split cuts at
+	// mapping bounds) and registration fills their pages. (The map's search was 0.5% of the GPU thread at the 1-1
+	// ramparts: every guest readback asks.)
+	if (const auto first = vaddr >> PageTable::kPageBits, last = (vaddr + size - 1) >> PageTable::kPageBits;
+	    last - first < 4) {
+		for (auto page = first; page <= last; ++page)
+			if (const auto* owner = m_page_table.Find(page); owner != nullptr && *owner) return true;
+		return false;
 	}
 	// Cached buffers are ordered and non-overlapping. The last buffer beginning before the query
 	// end is therefore the only possible intersection.
