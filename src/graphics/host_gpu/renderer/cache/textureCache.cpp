@@ -1342,6 +1342,9 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		if (const auto depth_id = ResolveDepthOverlap(requested, binding, cached_id)) {
 			return {depth_id};
 		}
+		if (const auto texel_id = ResolveBlockTexelOverlap(requested, cached_id)) {
+			return {texel_id};
+		}
 		if (requested.IsBlock() && !cached.info.IsBlock()) {
 			return {ExpandImage(requested, cached_id)};
 		}
@@ -1450,9 +1453,58 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 	return {merged_id};
 }
 
+// The blocks of a block-compressed image as an uncompressed image of them: the same tiling, element grid (BlockExtent,
+// bytes per block: ResolveOverlap's checks before) and placement of the levels both hold. The game's GPU block
+// compressors write BC textures so (Demon's Souls' character creation: each head preset's face, composited and then
+// compressed to BC3 / BC7 2048x2048 by CS 55d35da67c9a387a / b59223a986bb112e through R32G32B32A32_UINT 512x512 storage
+// views of the textures' bytes). Vulkan views of one image cannot be that over more than a level, so the requested form
+// is an image of its own made from the other's contents, and the other is parked (ExpandImage takes it back the other
+// way, with the texels' contents). Before, the storage view was an image of its own made from the guest's bytes and the
+// compressed texture kept its old contents: faces showed the previous preset's makeup, tattoos or stale bytes.
+ImageId TextureCache::ResolveBlockTexelOverlap(const ImageInfo& requested, ImageId cached_id) {
+	const auto& cached = m_slot_images[cached_id].info;
+	if (requested.IsBlock() || !cached.IsBlock() || requested.IsDepth() || cached.IsDepth() || requested.samples != 1 ||
+	    cached.samples != 1 || requested.tile_mode != cached.tile_mode || requested.type != cached.type ||
+	    requested.IsVolume() || requested.resources.layers != cached.resources.layers || requested.HasMetadata() ||
+	    cached.HasMetadata() || requested.HasStencil() || cached.HasStencil() ||
+	    requested.resources.levels > cached.resources.levels || requested.resources.levels > requested.mip_layout.size())
+		return {};
+	for (uint32_t level = 0; level < requested.resources.levels; ++level) {
+		if (requested.mip_layout[level].offset != cached.mip_layout[level].offset ||
+		    requested.mip_layout[level].size != cached.mip_layout[level].size)
+			return {};
+	}
+	RefreshCopySource(cached_id);
+	auto texel_id = TakeParkedImage(requested);
+	if (!texel_id) texel_id = InsertImage(requested);
+	auto& texels = m_slot_images[texel_id];
+	auto& blocks = m_slot_images[cached_id];
+	texels.usage = blocks.usage;
+	if (blocks.binding.is_bound || blocks.binding.is_target) {
+		blocks.binding.needs_rebind = true;
+	}
+	InitializeImage(texel_id);
+	CopyImage(texel_id, cached_id);
+	ParkImage(cached_id);
+	static std::atomic<uint32_t> reports {0};
+	if (reports.fetch_add(1, std::memory_order_relaxed) < 8) {
+		std::printf("TextureCache: 0x%llx+0x%llx as the texels of its blocks (fmt %u %ux%u levels %u from fmt %u %ux%u "
+		            "levels %u)\n",
+		            static_cast<unsigned long long>(requested.data.address),
+		            static_cast<unsigned long long>(requested.data.size), static_cast<uint32_t>(requested.guest_format),
+		            requested.extent.width, requested.extent.height, requested.resources.levels,
+		            static_cast<uint32_t>(m_slot_images[cached_id].info.guest_format),
+		            m_slot_images[cached_id].info.extent.width, m_slot_images[cached_id].info.extent.height,
+		            m_slot_images[cached_id].info.resources.levels);
+	}
+	return texel_id;
+}
+
 ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId source_id) {
 	RefreshCopySource(source_id);
-	const auto expanded_id = InsertImage(info);
+	// (The blocks' image parked for these texels: ResolveBlockTexelOverlap.)
+	auto expanded_id = TakeParkedImage(info);
+	if (!expanded_id) expanded_id = InsertImage(info);
 	auto&      expanded    = m_slot_images[expanded_id];
 	auto&      source      = m_slot_images[source_id];
 	expanded.usage         = source.usage;
@@ -1605,7 +1657,7 @@ void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_off
 		TileManager::Result linear {source.Handle(), source_offset, info.data.size};
 		if (!plan.tiles.empty()) {
 			linear = m_tiler.Detile(source.Handle(), source_offset, info.data.size,
-			                        plan.LinearSize(), plan.tiles);
+			                        plan.LinearSize(), plan.tiles, source.Usage() == MemoryUsage::Upload);
 		}
 		if (plan.swap_bgra16) {
 			linear = m_tiler.SwapBgra16(linear);
@@ -1626,7 +1678,8 @@ void TextureCache::UploadImage(Image& image, Buffer& source, uint64_t source_off
 	if (info.IsTiled()) {
 		const auto tiles = BuildDepthTiles(info);
 		linear =
-		    m_tiler.Detile(source.Handle(), source_offset, info.data.size, info.data.size, tiles);
+		    m_tiler.Detile(source.Handle(), source_offset, info.data.size, info.data.size, tiles,
+		                   source.Usage() == MemoryUsage::Upload);
 	}
 	const auto transfer_bytes = DepthAspectTransferBytes(info.pixel_format);
 	if (transfer_bytes != info.bytes_per_block) {
@@ -1700,7 +1753,8 @@ void TextureCache::UploadStencil(Image& image, Buffer& source, uint64_t source_o
 		tiles.back().surface_z = layer;
 	}
 	const auto linear =
-	    m_tiler.Detile(source.Handle(), source_offset, info.stencil.size, info.stencil.size, tiles);
+	    m_tiler.Detile(source.Handle(), source_offset, info.stencil.size, info.stencil.size, tiles,
+	                   source.Usage() == MemoryUsage::Upload);
 	for (auto& copy: copies) {
 		copy.bufferOffset += linear.offset;
 	}
@@ -2017,9 +2071,13 @@ bool TextureCache::UploadDepthPartial(Image& image, uint32_t first_layer, uint32
 		}
 		total = pieces.back().offset + pieces.back().size;
 	}
-	const auto [source, source_offset] = m_buffer_cache.StageImagePieces(pieces, total);
+	const char* refused = nullptr;
+	const auto [source, source_offset] = m_buffer_cache.StageImagePieces(pieces, total, &refused);
 	if (source == nullptr) {
-		return PartialFail("depth_stage");
+		return PartialFail(refused == nullptr        ? "depth_stage"
+		                   : refused[0] == 'o' ? "depth_stage:owner"
+		                   : refused[0] == 'g' ? "depth_stage:gpu"
+		                                       : "depth_stage:map");
 	}
 	// The picked layers, packed: as the whole path's copies and tiles, at their own layer.
 	std::vector<vk::BufferImageCopy> copies(picked.size());
@@ -2042,7 +2100,8 @@ bool TextureCache::UploadDepthPartial(Image& image, uint32_t first_layer, uint32
 			                 info.extent.width, info.extent.height, 1, info.pitch});
 			tiles.back().surface_z = picked[i];
 		}
-		linear = m_tiler.Detile(source->Handle(), source_offset, total, slice * picked.size(), tiles);
+		linear = m_tiler.Detile(source->Handle(), source_offset, total, slice * picked.size(), tiles,
+		                        source->Usage() == MemoryUsage::Upload);
 	}
 	for (auto& copy: copies) {
 		copy.bufferOffset += linear.offset;
@@ -2198,7 +2257,8 @@ bool TextureCache::UploadImagePartial(Image& image, uint64_t window_begin, uint6
 	if (source == nullptr) {
 		return PartialFail("stage");
 	}
-	const auto linear = m_tiler.Detile(source->Handle(), source_offset, total, linear_total, tiles);
+	const auto linear = m_tiler.Detile(source->Handle(), source_offset, total, linear_total, tiles,
+	                                   source->Usage() == MemoryUsage::Upload);
 	for (auto& region: regions) {
 		region.bufferOffset += linear.offset;
 	}
