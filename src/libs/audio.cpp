@@ -230,6 +230,64 @@ SDL_AudioFormat Audio::SdlFormat(Format format) {
 	return FormatIsFloat(format) ? AUDIO_F32SYS : AUDIO_S16SYS;
 }
 
+// The host output device the DualSense's haptics and speaker play on: Windows and Linux list the
+// pad's USB audio interface as an output device of its own ("Speakers (DualSense Wireless
+// Controller)"). The name is matched, so a localized prefix is fine, but an ambiguous match is
+// refused: playing the game's audio on the wrong device is worse than not playing it (the
+// mainline's DualSenseHaptics refuses ambiguous USB or Bluetooth endpoints for the same reason).
+// Diagnostic for now: it only says which device would be used (see the AUDIO-DEVICE lines).
+static std::string FindControllerAudioDevice() {
+	if (SDL_WasInit(SDL_INIT_AUDIO) == 0) {
+		return {};
+	}
+
+	std::string matched;
+	const int   devices = SDL_GetNumAudioDevices(0);
+	for (int i = 0; i < devices; i++) {
+		const char* name = SDL_GetAudioDeviceName(i, 0);
+		if (name == nullptr) {
+			continue;
+		}
+		std::string lower = name;
+		for (auto& c : lower) {
+			if (c >= 'A' && c <= 'Z') {
+				c = static_cast<char>(c - 'A' + 'a');
+			}
+		}
+		if (lower.find("dualsense") == std::string::npos &&
+		    lower.find("wireless controller") == std::string::npos) {
+			continue;
+		}
+		if (!matched.empty()) {
+			return {}; // ambiguous: two pads, or an endpoint per interface
+		}
+		matched = name;
+	}
+	return matched;
+}
+
+// Lists the host's output devices once, and which of them the DualSense's audio would use.
+static void LogAudioDevicesOnce() {
+	static bool logged = false;
+	if (logged || SDL_WasInit(SDL_INIT_AUDIO) == 0) {
+		return;
+	}
+	logged = true;
+
+	const int devices = SDL_GetNumAudioDevices(0);
+	LOGF("AudioOut: %d output device(s)\n", devices);
+	for (int i = 0; i < devices; i++) {
+		const char* name = SDL_GetAudioDeviceName(i, 0);
+		LOGF("AudioOut:   [%d] %s\n", i, name != nullptr ? name : "(null)");
+	}
+	const auto controller_device = FindControllerAudioDevice();
+	if (controller_device.empty()) {
+		LOGF("AudioOut: no DualSense audio endpoint found (its haptics and speaker have no host path)\n");
+	} else {
+		LOGF("AudioOut: DualSense audio endpoint: %s\n", controller_device.c_str());
+	}
+}
+
 bool Audio::OpenSdlDevice(PortOut* port) {
 	EXIT_IF(port == nullptr);
 
@@ -237,6 +295,8 @@ bool Audio::OpenSdlDevice(PortOut* port) {
 		LOGF("AudioOut: SDL audio init failed: %s\n", SDL_GetError());
 		return false;
 	}
+
+	LogAudioDevicesOnce();
 
 	SDL_AudioSpec desired {};
 	desired.freq     = static_cast<int>(port->freq);
@@ -489,6 +549,10 @@ Audio::Id Audio::AudioOutOpen(int type, uint32_t samples_num, uint32_t freq, For
 			for (int i = 0; i < port.channels_num; i++) {
 				port.volume[i] = 32768;
 			}
+
+			LOGF("AudioOut: port %d: type %d, %u Hz, %u samples, format 0x%08x, %d channel(s)%s\n", id,
+			     type, freq, samples_num, static_cast<uint32_t>(format), port.channels_num,
+			     type == AUDIO_OUT_PORT_TYPE_VIBRATION ? " (vibration: kept silent for now)" : "");
 
 			if (type != AUDIO_OUT_PORT_TYPE_VIBRATION) {
 				OpenSdlDevice(&port);
