@@ -53,6 +53,7 @@ extern volatile std::atomic_uint32_t kyty_local_frame_pipeline_mode;
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
@@ -2291,6 +2292,11 @@ std::pair<Buffer*, uint64_t> BufferCache::ObtainBufferForImage(uint64_t vaddr, u
 	return {&m_staging_buffer, stage_offset};
 }
 
+bool BufferCache::BufferHoldsRange(uint64_t vaddr, uint64_t size) {
+	const auto* owner = m_page_table.Find(vaddr >> PageTable::kPageBits);
+	return owner != nullptr && *owner && m_slot_buffers[*owner].IsInBounds(vaddr, size);
+}
+
 void BufferCache::ApplyImageProtects() {
 	for (const auto& range: m_image_protects) m_image_protect_manager->SyncProtection(range.address, range.size);
 	m_image_protects.clear();
@@ -2376,9 +2382,13 @@ std::pair<Buffer*, uint64_t> BufferCache::StageImagePieces(const std::vector<Sta
 			EXIT("BufferCache: invalid image staging piece\n");
 		}
 		DrainGuestReadback(piece.vaddr, piece.size);
-		const auto* owner = m_page_table.Find(piece.vaddr >> PageTable::kPageBits);
-		if (owner != nullptr && *owner) return refuse("owner", piece.vaddr, piece.size, &m_slot_buffers[*owner]);
-		if (IsRegionGpuModified(piece.vaddr, piece.size)) return refuse("gpu", piece.vaddr, piece.size, nullptr);
+		// (A cached buffer over a piece holds no newer bytes than guest memory where none of them is GPU-written: the
+		// buffer only takes CPU writes from it. Pieces in one refused before, and the whole image was uploaded: the
+		// shadow-map pool at 4-2, inside a buffer over a texture pool, 320 MiB at every layer the game streamed.)
+		if (IsRegionGpuModified(piece.vaddr, piece.size)) {
+			const auto* owner = m_page_table.Find(piece.vaddr >> PageTable::kPageBits);
+			return refuse("gpu", piece.vaddr, piece.size, owner != nullptr && *owner ? &m_slot_buffers[*owner] : nullptr);
+		}
 	}
 	auto [staging, stage_offset] = m_staging_buffer.Map(total, 16);
 	if (staging == nullptr) {
@@ -2678,6 +2688,31 @@ void BufferCache::RunGarbageCollector(bool collect) {
 	}
 	if (m_graphics.CanReportMemoryUsage()) {
 		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();
+	}
+	if (KytyGcLiveBudget() && m_graphics.CanReportMemoryUsage()) {
+		static const uint64_t base_trigger       = m_trigger_gc_memory;
+		static const uint64_t base_critical      = m_critical_gc_memory;
+		static auto           kyty_budget_window = std::chrono::steady_clock::time_point {};
+		const auto            now                = std::chrono::steady_clock::now();
+		const uint64_t        budget             = KytyGcLiveBudgetValue(m_graphics);
+		if (now - kyty_budget_window >= std::chrono::seconds(2)) {
+			kyty_budget_window     = now;
+			constexpr uint64_t MiB = 1024ull * 1024;
+			const uint64_t     live_trigger  = budget > 2560 * MiB ? budget - 1536 * MiB : 1024 * MiB;
+			const uint64_t     live_critical = budget > 1536 * MiB ? budget - 512 * MiB : 1024 * MiB;
+			const uint64_t     trigger       = std::min(base_trigger, live_trigger);
+			const uint64_t     critical      = std::max(std::min(base_critical, live_critical), trigger + 256 * MiB);
+			const auto moved = [](uint64_t a, uint64_t b) { return (a > b ? a - b : b - a) >= (uint64_t {64} << 20u); };
+			if (moved(trigger, m_trigger_gc_memory) || moved(critical, m_critical_gc_memory)) {
+				std::printf("KYTYGCBUDGET buffer budget=%lluMB trigger=%lluMB critical=%lluMB used=%lluMB\n",
+				            static_cast<unsigned long long>(budget >> 20), static_cast<unsigned long long>(trigger >> 20),
+				            static_cast<unsigned long long>(critical >> 20),
+				            static_cast<unsigned long long>(m_total_used_memory >> 20));
+				std::fflush(stdout);
+			}
+			m_trigger_gc_memory  = trigger;
+			m_critical_gc_memory = critical;
+		}
 	}
 	if (m_total_used_memory < m_trigger_gc_memory) {
 		return;
