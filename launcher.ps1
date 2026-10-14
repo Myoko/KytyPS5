@@ -14,7 +14,7 @@ $resolutions = '1280x720', '1920x1080', '2560x1440', '3840x2160'
 $renderHeights = '1440 (PS5)', '1296', '1152', '1080', '900'
 
 $settings = [ordered]@{ game = ''; resolution = '2560x1440'; fullscreen = $false; aspect = $true; language = 1; redzone = $true;
-	ecores = $false; cheats = $true; fps120 = $false; render = 1440 }
+	ecores = $false; cheats = $true; fps120 = $false; render = 1440; vsync = $false }
 if (Test-Path $settingsPath) {
 	$saved = Get-Content $settingsPath -Raw | ConvertFrom-Json
 	foreach ($property in $saved.PSObject.Properties) { if ($settings.Contains($property.Name)) { $settings[$property.Name] = $property.Value } }
@@ -86,6 +86,8 @@ function Get-PlayCommand {
 	if (!$settings.redzone) { $arguments += '-NoRedZone' }
 	if ($settings.fps120) { $arguments += '-Fps120' }
 	if ([int]$settings.render -gt 0 -and [int]$settings.render -ne 1440) { $arguments += @('-RenderHeight', [int]$settings.render) }
+	# Presents wait for the display's refresh (Vulkan FIFO): no tearing, and G-SYNC/FreeSync displays keep adapting.
+	if ($settings.vsync) { $arguments += @('-PresentMode', 'Fifo') }
 	if ($settings.game) { $arguments += @('-Game', "`"$($settings.game)`"") }
 	# run-windows.ps1 passes --game-patch only for -Patch, and the emulator rejects it twice, so the
 	# file is added here rather than left to the emulator's own _Patches lookup.
@@ -194,6 +196,8 @@ $redzone = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '红区�
 Add-Row '' @($redzone)
 $fps120 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '最高 120 fps（用游戏自身的帧；过场动画会放快）'; AutoSize = $true; Checked = [bool]$settings.fps120 }
 Add-Row '' @($fps120)
+$vsync = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '垂直同步（不撕裂；自适应同步显示器保持生效）'; AutoSize = $true; Checked = [bool]$settings.vsync }
+Add-Row '' @($vsync)
 $render = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 120 }
 $render.Items.AddRange($renderHeights)
 $render.SelectedItem = ($renderHeights | Where-Object { ($_ -split ' ')[0] -eq [string][int]$settings.render } | Select-Object -First 1)
@@ -232,6 +236,7 @@ function Read-Form {
 	$settings.language   = $language.SelectedIndex
 	$settings.redzone    = $redzone.Checked
 	$settings.fps120     = $fps120.Checked
+	$settings.vsync      = $vsync.Checked
 	$settings.render     = [int](([string]$render.SelectedItem -split ' ')[0])
 	$settings.ecores     = $ecores.Checked
 	$settings.cheats     = $cheats.Checked
