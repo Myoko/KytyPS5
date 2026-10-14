@@ -48,6 +48,11 @@ float      g_gain     = 1.0f;
 bool       g_all_channels  = false;
 uint32_t   g_first_channel = 2; // the actuator pair; KYTY_DUALSENSE_HAPTICS_CHANNELS overrides it
 uint32_t   g_channel_count = 2;
+// The speaker route has its own channels and gain: the pad's speaker is small, so its port often
+// needs more level than the actuators, and which pair carries it is worth an experiment.
+uint32_t   g_speaker_first_channel = 0;
+uint32_t   g_speaker_channel_count = 2;
+float      g_speaker_gain          = 1.0f;
 
 std::string Narrow(const wchar_t* text) {
 	std::string out;
@@ -92,6 +97,27 @@ void ReadSettings() {
 		const auto gain = std::strtof(value, nullptr);
 		if (gain > 0.0f && gain <= 4.0f) {
 			g_gain = gain;
+		}
+	}
+	// KYTY_DUALSENSE_SPEAKER_CHANNELS=01|23|all and KYTY_DUALSENSE_SPEAKER_GAIN=<float>: which
+	// channels the pad speaker port plays on (0-1 by default, as the mainline and this module's
+	// first version do) and how much level it gets. Both keep the pad's USB id selection.
+	if (const char* value = std::getenv("KYTY_DUALSENSE_SPEAKER_CHANNELS"); value != nullptr) {
+		const std::string channels(value);
+		if (channels == "23") {
+			g_speaker_first_channel = 2;
+			g_speaker_channel_count = 2;
+		} else if (channels == "01") {
+			g_speaker_first_channel = 0;
+			g_speaker_channel_count = 2;
+		} else if (channels == "all") {
+			g_all_channels = true;
+		}
+	}
+	if (const char* value = std::getenv("KYTY_DUALSENSE_SPEAKER_GAIN"); value != nullptr) {
+		const auto gain = std::strtof(value, nullptr);
+		if (gain >= 0.0f && gain <= 8.0f) {
+			g_speaker_gain = gain;
 		}
 	}
 	if (const char* value = std::getenv("KYTY_DUALSENSE_HAPTICS_LOG"); value != nullptr) {
@@ -281,16 +307,17 @@ bool Open(bool speaker) {
 			return false;
 		}
 
-		std::printf("DualSense: stream open: %u Hz, %u ch, buffer %u frames, gain %.2f\n",
+		std::printf("DualSense: stream open: %u Hz, %u ch, buffer %u frames, gains %.2f/%.2f "
+		            "(vibration/speaker)\n",
 		            g_mix->nSamplesPerSec, g_mix->nChannels, g_buffer_frames,
-		            static_cast<double>(g_gain));
+		            static_cast<double>(g_gain), static_cast<double>(g_speaker_gain));
 	}
 
 	g_routes |= route;
-	std::printf("DualSense: %s route on channels %u-%u\n", speaker ? "speaker" : "vibration",
-	            speaker ? SPEAKER_FIRST_CHANNEL : g_first_channel,
-	            speaker ? SPEAKER_FIRST_CHANNEL + SPEAKER_CHANNELS - 1u
-	                    : g_first_channel + g_channel_count - 1u);
+	const auto first = speaker ? g_speaker_first_channel : g_first_channel;
+	const auto count = speaker ? g_speaker_channel_count : g_channel_count;
+	std::printf("DualSense: %s route on channels %u-%u (gain %.2f)\n", speaker ? "speaker" : "vibration",
+	            first, first + count - 1u, static_cast<double>(speaker ? g_speaker_gain : g_gain));
 	return true;
 }
 
@@ -334,8 +361,9 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 		return false;
 	}
 
-	const auto first_channel = speaker ? SPEAKER_FIRST_CHANNEL : g_first_channel;
-	const auto channel_count = speaker ? SPEAKER_CHANNELS : g_channel_count;
+	const auto first_channel = speaker ? g_speaker_first_channel : g_first_channel;
+	const auto channel_count = speaker ? g_speaker_channel_count : g_channel_count;
+	const auto route_gain    = speaker ? g_speaker_gain : g_gain;
 	const auto channels      = g_all_channels ? target_channels : channel_count;
 
 	// Resample (linear: enough for haptics) and put the signal in the route's channels.
@@ -364,6 +392,8 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 	auto* out = reinterpret_cast<float*>(buffer);
 	std::memset(out, 0, static_cast<size_t>(out_frames) * target_channels * sizeof(float));
 
+	float peak = 0.0f;
+
 	for (uint32_t i = 0; i < out_frames; i++) {
 		const auto source_index =
 		    source_rate == target_rate
@@ -373,22 +403,31 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 			break;
 		}
 
-		// Mono goes to one channel, stereo to the pair.
-		for (uint32_t c = 0; c < source_channels && (g_all_channels || c < channels); c++) {
+		// Mono fills every channel of the route (a one-channel pad speaker port has to drive both of
+		// its channels, or only one side plays), stereo maps one to one.
+		for (uint32_t c = 0; c < channels; c++) {
+			const auto source_channel =
+			    source_channels == 1 ? 0u : (c < source_channels ? c : source_channels - 1u);
 			float value = 0.0f;
 			if (is_float) {
 				value = reinterpret_cast<const float*>(data)[static_cast<size_t>(source_index) *
-				                                             source_channels + c];
+				                                                 source_channels +
+				                                             source_channel];
 			} else {
 				value = static_cast<float>(reinterpret_cast<const int16_t*>(data)[
-				            static_cast<size_t>(source_index) * source_channels + c]) /
+				            static_cast<size_t>(source_index) * source_channels + source_channel]) /
 				        32768.0f;
 			}
-			value *= g_gain;
+			value *= route_gain;
 			if (value > 1.0f) {
 				value = 1.0f;
 			} else if (value < -1.0f) {
 				value = -1.0f;
+			}
+			if (value > peak) {
+				peak = value;
+			} else if (-value > peak) {
+				peak = -value;
 			}
 
 			if (g_all_channels) {
@@ -406,6 +445,18 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 	}
 
 	g_render->ReleaseBuffer(out_frames, 0);
+
+	// What actually reaches the pad, so a log says whether the game fills this route at all: the
+	// first writes, then one every 512 (about every 2.7 s of 5 ms calls), with their peak level.
+	static uint32_t speaker_writes  = 0;
+	static uint32_t vibration_writes = 0;
+	auto&           writes          = speaker ? speaker_writes : vibration_writes;
+	writes++;
+	if (writes <= 4 || (writes % 512) == 0) {
+		std::printf("DualSense: %s write %u: %u frames at %u Hz, %u ch, %s, peak %.3f, queue %u/%u\n",
+		            speaker ? "speaker" : "vibration", writes, frames, source_rate, source_channels,
+		            is_float ? "float" : "s16", static_cast<double>(peak), padding, g_buffer_frames);
+	}
 	return true;
 }
 
