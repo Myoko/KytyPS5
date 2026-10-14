@@ -462,6 +462,42 @@ bool Audio::QueueSdlAudio(PortOut* port, const void* data, const float* gains, b
 	if (data == nullptr) {
 		return false;
 	}
+
+	// The pad routes are silent while the guest keeps writing into them, so a log has to say whether
+	// the guest's own samples are silent or this port's volume scaled them away: this prints the raw
+	// samples' peak and the volume the port carries, next to the prepared peak the module reports.
+	const auto report_pad_samples = [&](bool speaker) {
+		static int speaker_reports   = 0;
+		static int vibration_reports = 0;
+		auto&      reports           = speaker ? speaker_reports : vibration_reports;
+		const auto channels          = PreparedChannels(*port);
+		if (reports >= 8 || port->samples_num == 0 || channels == 0) {
+			return;
+		}
+		reports++;
+
+		const auto count = static_cast<size_t>(port->samples_num) * channels;
+		float      peak  = 0.0f;
+		if (FormatIsFloat(port->format)) {
+			const auto* samples = static_cast<const float*>(data);
+			for (size_t i = 0; i < count; i++) {
+				const float value = samples[i] < 0.0f ? -samples[i] : samples[i];
+				peak              = value > peak ? value : peak;
+			}
+		} else {
+			const auto* samples = static_cast<const int16_t*>(data);
+			for (size_t i = 0; i < count; i++) {
+				const float value = (samples[i] < 0 ? -static_cast<float>(samples[i])
+				                                   : static_cast<float>(samples[i])) /
+				                    32768.0f;
+				peak = value > peak ? value : peak;
+			}
+		}
+		std::printf("AudioOut: %s raw samples %zu peak %.4f, port volume %d/%d (32768 is full)\n",
+		            speaker ? "pad speaker" : "vibration", count, static_cast<double>(peak),
+		            port->volume[0], port->volume[1]);
+	};
+
 	// A vibration port has no main output: its audio drives the pad's own actuators instead (the
 	// DualSense's USB audio endpoint, whose second channel pair is the haptics). The guest's own
 	// per-channel gain goes with it: a DualSense's vibration and speaker levels are set there, and
@@ -469,6 +505,7 @@ bool Audio::QueueSdlAudio(PortOut* port, const void* data, const float* gains, b
 	// endpoint is behind, the audio is dropped rather than delaying the guest's audio thread.
 	if (port->audio_device == 0) {
 		if (port->type == AUDIO_OUT_PORT_TYPE_VIBRATION && Controller::DualSenseHaptics::Available()) {
+			report_pad_samples(false);
 			std::vector<uint8_t> prepared_buffer;
 			const void*          prepared_data = PrepareOutputBuffer(*port, data, &prepared_buffer);
 			return Controller::DualSenseHaptics::Write(prepared_data, port->samples_num, port->freq,
@@ -483,6 +520,10 @@ bool Audio::QueueSdlAudio(PortOut* port, const void* data, const float* gains, b
 	const auto           output_channels = PreparedChannels(*port);
 	const auto           prepared_size =
 	    BytesPerSample(port->format) * output_channels * port->samples_num;
+
+	if (port->type == AUDIO_OUT_PORT_TYPE_PADSPK) {
+		report_pad_samples(true);
+	}
 
 	std::vector<uint8_t> convert_buffer;
 	const void*          queue_data = prepared_data;
@@ -658,6 +699,21 @@ bool Audio::AudioOutSetVolume(Id handle, uint32_t bitflag, const int* volume) {
 
 	if (AudioOutValid(handle)) {
 		auto& port = m_out_ports[handle.GetId()];
+
+		// The console's LOGF is silent in the release configuration, and this is where a pad speaker
+		// port's level (or its silencing) comes from: show the first calls and every port type, so a
+		// log says whether the guest asked for a pad speaker level at all.
+		static int volume_reports = 0;
+		const bool report         = volume_reports < 24 && port.type != AUDIO_OUT_PORT_TYPE_MAIN;
+		if (report) {
+			volume_reports++;
+			std::printf("AudioOut: port %d (type %d, %d ch) volume: bitflag 0x%x", handle.GetId(),
+			            port.type, port.channels_num, bitflag);
+			for (int i = 0; i < port.channels_num; i++) {
+				std::printf(" %d", volume != nullptr ? volume[i] : -1);
+			}
+			std::printf("\n");
+		}
 
 		for (int i = 0; i < port.channels_num; i++, bitflag >>= 1u) {
 			auto bit = bitflag & 0x1u;
