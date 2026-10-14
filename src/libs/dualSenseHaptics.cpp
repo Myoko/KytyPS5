@@ -384,6 +384,8 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 	return true;
 }
 
+} // namespace Libs::Controller::DualSenseHaptics
+
 #else
 
 namespace Libs::Controller::DualSenseHaptics {
