@@ -10,6 +10,7 @@
 #include "kernel/pthread.h"
 #include "kernel/semaphore.h"
 #include "libs/audio_internal.h"
+#include "libs/dualSenseHaptics.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
 
@@ -453,7 +454,20 @@ const void* Audio::PrepareOutputBuffer(const PortOut& port, const void* data,
 bool Audio::QueueSdlAudio(PortOut* port, const void* data, bool blocking) {
 	EXIT_IF(port == nullptr);
 
-	if (port->audio_device == 0 || data == nullptr) {
+	if (data == nullptr) {
+		return false;
+	}
+	// A vibration port has no main output: its audio drives the pad's own actuators instead (the
+	// DualSense's USB audio endpoint, whose second channel pair is the haptics). Best effort: when
+	// the endpoint is behind, the audio is dropped rather than delaying the guest's audio thread.
+	if (port->audio_device == 0) {
+		if (port->type == AUDIO_OUT_PORT_TYPE_VIBRATION && Controller::DualSenseHaptics::Available()) {
+			std::vector<uint8_t> prepared_buffer;
+			const void*          prepared_data = PrepareOutputBuffer(*port, data, &prepared_buffer);
+			return Controller::DualSenseHaptics::Write(prepared_data, port->samples_num, port->freq,
+			                                           PreparedChannels(*port),
+			                                           FormatIsFloat(port->format));
+		}
 		return false;
 	}
 
@@ -550,11 +564,17 @@ Audio::Id Audio::AudioOutOpen(int type, uint32_t samples_num, uint32_t freq, For
 				port.volume[i] = 32768;
 			}
 
-			LOGF("AudioOut: port %d: type %d, %u Hz, %u samples, format 0x%08x, %d channel(s)%s\n", id,
-			     type, freq, samples_num, static_cast<uint32_t>(format), port.channels_num,
-			     type == AUDIO_OUT_PORT_TYPE_VIBRATION ? " (vibration: kept silent for now)" : "");
+			LOGF("AudioOut: port %d: type %d, %u Hz, %u samples, format 0x%08x, %d channel(s)\n", id,
+			     type, freq, samples_num, static_cast<uint32_t>(format), port.channels_num);
 
-			if (type != AUDIO_OUT_PORT_TYPE_VIBRATION) {
+			if (type == AUDIO_OUT_PORT_TYPE_VIBRATION) {
+				// The game's vibration plays on the pad's own actuators, not on the speakers: its
+				// USB audio endpoint's second channel pair (see libs/dualSenseHaptics.h). Without
+				// one, the port has no host path and stays silent, as it always did.
+				if (!Controller::DualSenseHaptics::Open()) {
+					LOGF("AudioOut: port %d has no host path (vibration)\n", id);
+				}
+			} else {
 				OpenSdlDevice(&port);
 			}
 
@@ -571,6 +591,9 @@ bool Audio::AudioOutClose(Id handle) {
 	if (AudioOutValid(handle)) {
 		auto& port = m_out_ports[handle.GetId()];
 
+		if (port.type == AUDIO_OUT_PORT_TYPE_VIBRATION) {
+			Controller::DualSenseHaptics::Close();
+		}
 		CloseSdlDevice(&port);
 		port = {};
 
