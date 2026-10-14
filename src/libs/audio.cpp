@@ -137,7 +137,7 @@ private:
 	static void            CloseSdlDevice(PortOut* port);
 	static const void*     PrepareOutputBuffer(const PortOut& port, const void* data,
 	                                           std::vector<uint8_t>* buffer);
-	static bool            QueueSdlAudio(PortOut* port, const void* data, bool blocking);
+	static bool            QueueSdlAudio(PortOut* port, const void* data, const float* gains, bool blocking);
 };
 
 static Audio* g_audio = nullptr;
@@ -453,22 +453,24 @@ const void* Audio::PrepareOutputBuffer(const PortOut& port, const void* data,
 	return buffer->data();
 }
 
-bool Audio::QueueSdlAudio(PortOut* port, const void* data, bool blocking) {
+bool Audio::QueueSdlAudio(PortOut* port, const void* data, const float* gains, bool blocking) {
 	EXIT_IF(port == nullptr);
 
 	if (data == nullptr) {
 		return false;
 	}
 	// A vibration port has no main output: its audio drives the pad's own actuators instead (the
-	// DualSense's USB audio endpoint, whose second channel pair is the haptics). Best effort: when
-	// the endpoint is behind, the audio is dropped rather than delaying the guest's audio thread.
+	// DualSense's USB audio endpoint, whose second channel pair is the haptics). The guest's own
+	// per-channel gain goes with it: a DualSense's vibration and speaker levels are set there, and
+	// without it the actuators and the pad's speaker play far too quietly. Best effort: when the
+	// endpoint is behind, the audio is dropped rather than delaying the guest's audio thread.
 	if (port->audio_device == 0) {
 		if (port->type == AUDIO_OUT_PORT_TYPE_VIBRATION && Controller::DualSenseHaptics::Available()) {
 			std::vector<uint8_t> prepared_buffer;
 			const void*          prepared_data = PrepareOutputBuffer(*port, data, &prepared_buffer);
 			return Controller::DualSenseHaptics::Write(prepared_data, port->samples_num, port->freq,
 			                                           PreparedChannels(*port),
-			                                           FormatIsFloat(port->format), false);
+			                                           FormatIsFloat(port->format), false, gains);
 		}
 		return false;
 	}
@@ -537,7 +539,7 @@ bool Audio::QueueSdlAudio(PortOut* port, const void* data, bool blocking) {
 	if (port->type == AUDIO_OUT_PORT_TYPE_PADSPK && Controller::DualSenseHaptics::Available()) {
 		Controller::DualSenseHaptics::Write(prepared_data, port->samples_num, port->freq,
 		                                    PreparedChannels(*port), FormatIsFloat(port->format),
-		                                    true);
+		                                    true, gains);
 	}
 
 	return true;
@@ -705,7 +707,7 @@ uint32_t Audio::AudioOutOutputs(OutputParam* params, uint32_t num, bool blocking
 	for (uint32_t i = 0; i < num; i++) {
 		auto& port = m_out_ports[params[i].handle.GetId()];
 
-		QueueSdlAudio(&port, params[i].data, blocking);
+		QueueSdlAudio(&port, params[i].data, params[i].gains, blocking);
 	}
 
 	for (uint32_t i = 0; i < num; i++) {

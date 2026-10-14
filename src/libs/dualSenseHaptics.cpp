@@ -445,7 +445,7 @@ void Close(bool speaker) {
 }
 
 bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t source_channels,
-           bool is_float, bool speaker) {
+           bool is_float, bool speaker, const float* gains) {
 	std::lock_guard lock(g_mutex);
 	if (g_client == nullptr || data == nullptr || frames == 0 || source_channels == 0 ||
 	    g_mix == nullptr) {
@@ -519,6 +519,9 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 				        32768.0f;
 			}
 			value *= route_gain;
+			if (gains != nullptr) {
+				value *= gains[source_channel];
+			}
 			if (value > 1.0f) {
 				value = 1.0f;
 			} else if (value < -1.0f) {
@@ -553,9 +556,12 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 	auto&           writes          = speaker ? speaker_writes : vibration_writes;
 	writes++;
 	if (writes <= 4 || (writes % 512) == 0) {
-		std::printf("DualSense: %s write %u: %u frames at %u Hz, %u ch, %s, peak %.3f, queue %u/%u\n",
+		std::printf("DualSense: %s write %u: %u frames at %u Hz, %u ch, %s, gains %s%.2f, peak %.3f, "
+		            "queue %u/%u\n",
 		            speaker ? "speaker" : "vibration", writes, frames, source_rate, source_channels,
-		            is_float ? "float" : "s16", static_cast<double>(peak), padding, g_buffer_frames);
+		            is_float ? "float" : "s16", gains != nullptr ? "" : "(none) ",
+		            static_cast<double>(gains != nullptr ? gains[0] : 1.0f),
+		            static_cast<double>(peak), padding, g_buffer_frames);
 	}
 	return true;
 }
@@ -571,7 +577,7 @@ uint32_t SampleRate() { return 0; }
 uint32_t EndpointChannels() { return 0; }
 bool     Open(bool) { return false; }
 void     Close(bool) {}
-bool     Write(const void*, uint32_t, uint32_t, uint32_t, bool, bool) { return false; }
+bool     Write(const void*, uint32_t, uint32_t, uint32_t, bool, bool, const float*) { return false; }
 
 } // namespace Libs::Controller::DualSenseHaptics
 

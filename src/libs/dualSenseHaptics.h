@@ -40,10 +40,12 @@ void Close(bool speaker);
 
 // Writes `frames` frames of `source_channels`-channel audio (signed 16-bit, or float when
 // `is_float`) at `source_rate` into the route's channels of the endpoint, resampling when the rates
-// differ and applying the gain. Never waits: when the endpoint's queue is behind, the audio is
-// dropped (haptics are best effort, and the caller is the guest's audio thread).
+// differ and applying the route's gain. `gains`, when the guest set them, scales each source channel
+// (its AudioOut2 gain attribute is where a pad's speaker and vibration levels live). Never waits:
+// when the endpoint's queue is behind, the audio is dropped (haptics are best effort, and the caller
+// is the guest's audio thread).
 bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t source_channels,
-           bool is_float, bool speaker);
+           bool is_float, bool speaker, const float* gains);
 
 } // namespace Libs::Controller::DualSenseHaptics
 

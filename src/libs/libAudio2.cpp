@@ -191,6 +191,11 @@ struct AudioOut2PortStateEntry {
 	const void*            pcm_data      = nullptr;
 	float                  gain          = 1.0f; // a mono (object) port's gain attribute
 	uint32_t               ambisonics    = 0;    // an object port's attribute 8: 0x40 | ACN when it carries one
+	// Attribute 1 as the guest sends it: one gain for each of the port's channels. Its speaker and
+	// vibration ports carry their level here, and a vibration port's is two channels wide - the old
+	// single-float read dropped both.
+	std::array<float, 16>  gains {};
+	bool                   gains_set = false;
 };
 
 struct AudioOut2SpeakerArrayState {
@@ -416,6 +421,9 @@ static const void* audioout2_mix_objects_locked(AudioOut2ContextHandle ctx, cons
 static void audioout2_queue_context_audio(AudioOut2ContextHandle ctx, bool blocking) {
 	std::vector<AudioInternal::OutputParam> params;
 	params.reserve(AudioInternal::OUT_PORTS_MAX);
+	// The gains live in the port states, which the call below reads after the lock is dropped: keep
+	// a copy per parameter (fixed size, so these addresses stay put).
+	std::array<std::array<float, 16>, AudioInternal::OUT_PORTS_MAX> gain_storage {};
 
 	g_audioout2_port_mutex.Lock();
 	bool objects_mixed = false;
@@ -430,7 +438,12 @@ static void audioout2_queue_context_audio(AudioOut2ContextHandle ctx, bool block
 				data          = audioout2_mix_objects_locked(ctx, state);
 				objects_mixed = true;
 			}
-			params.push_back(AudioInternal::OutputParam {state.audio_handle, data});
+			const float* gains = nullptr;
+			if (state.gains_set) {
+				gain_storage[params.size()] = state.gains;
+				gains                       = gain_storage[params.size()].data();
+			}
+			params.push_back(AudioInternal::OutputParam {state.audio_handle, data, gains});
 		}
 	}
 	g_audioout2_port_mutex.Unlock();
@@ -738,6 +751,9 @@ int KYTY_SYSV_ABI AudioOut2PortSetAttributes(AudioOut2PortHandle       port,
 	bool        has_pcm        = false;
 	float       gain           = 1.0f;
 	bool        has_gain       = false;
+	std::array<float, 16> gains {};
+	uint32_t    gains_count    = 0;
+	bool        has_gains      = false;
 	uint32_t    ambisonics     = 0;
 	bool        has_ambisonics = false;
 	for (uint32_t i = 0; i < num; i++) {
@@ -748,11 +764,25 @@ int KYTY_SYSV_ABI AudioOut2PortSetAttributes(AudioOut2PortHandle       port,
 			pcm_data = pcm.data;
 			has_pcm  = true;
 		}
-		// A mono port's gain (a float per channel).
-		if (attributes[i].attribute_id == AUDIO_OUT2_PORT_ATTRIBUTE_ID_GAIN && attributes[i].value != nullptr &&
-		    attributes[i].value_size == sizeof(float)) {
-			std::memcpy(&gain, attributes[i].value, sizeof(float));
-			has_gain = true;
+		// Attribute 1: one gain for each of the port's channels (a mono port's is one float). Only a
+		// finite, non-negative set is taken - a NaN fails both comparisons - and anything else keeps
+		// the last gains, as a DualSense does.
+		if (attributes[i].attribute_id == AUDIO_OUT2_PORT_ATTRIBUTE_ID_GAIN &&
+		    attributes[i].value != nullptr && attributes[i].value_size >= sizeof(float) &&
+		    attributes[i].value_size <= gains.size() * sizeof(float) &&
+		    (attributes[i].value_size % sizeof(float)) == 0) {
+			const auto count = static_cast<uint32_t>(attributes[i].value_size / sizeof(float));
+			std::array<float, 16> candidate {};
+			std::memcpy(candidate.data(), attributes[i].value, attributes[i].value_size);
+			const bool valid = std::all_of(candidate.begin(), candidate.begin() + count,
+			                               [](float value) { return value >= 0.0f && value <= 64.0f; });
+			if (valid) {
+				gains       = candidate;
+				gains_count = count;
+				has_gains   = true;
+				gain        = candidate[0];
+				has_gain    = true;
+			}
 		}
 		if (attributes[i].attribute_id == AUDIO_OUT2_PORT_ATTRIBUTE_ID_AMBISONICS && attributes[i].value != nullptr &&
 		    attributes[i].value_size == sizeof(uint32_t)) {
@@ -761,11 +791,15 @@ int KYTY_SYSV_ABI AudioOut2PortSetAttributes(AudioOut2PortHandle       port,
 		}
 	}
 
-	if (has_pcm || has_gain || has_ambisonics) {
+	if (has_pcm || has_gain || has_gains || has_ambisonics) {
 		g_audioout2_port_mutex.Lock();
 		if (auto* state = audioout2_find_port_locked(port); state != nullptr) {
 			if (has_pcm) state->pcm_data = pcm_data;
 			if (has_gain) state->gain = gain;
+			if (has_gains) {
+				state->gains     = gains;
+				state->gains_set = true;
+			}
 			if (has_ambisonics) state->ambisonics = ambisonics;
 		}
 		g_audioout2_port_mutex.Unlock();
