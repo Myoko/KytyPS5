@@ -54,7 +54,7 @@ uint32_t   g_channel_count = 2;
 // needs more level than the actuators, and which pair carries it is worth an experiment.
 uint32_t   g_speaker_first_channel = 0;
 uint32_t   g_speaker_channel_count = 2;
-float      g_speaker_gain          = 4.0f;
+float      g_speaker_gain          = 8.0f;
 
 std::string Narrow(const wchar_t* text) {
 	std::string out;
@@ -373,6 +373,11 @@ uint32_t EndpointChannels() {
 	return g_mix != nullptr ? g_mix->nChannels : 0;
 }
 
+bool SpeakerActive() {
+	std::lock_guard lock(g_mutex);
+	return (g_routes & ROUTE_SPEAKER) != 0U;
+}
+
 bool Open(bool speaker) {
 	ReadSettings();
 	if (!g_enabled) {
@@ -621,6 +626,7 @@ uint32_t EndpointChannels() { return 0; }
 bool     Open(bool) { return false; }
 void     Close(bool) {}
 bool     Write(const void*, uint32_t, uint32_t, uint32_t, bool, bool, const float*) { return false; }
+bool     SpeakerActive() { return false; }
 
 } // namespace Libs::Controller::DualSenseHaptics
 

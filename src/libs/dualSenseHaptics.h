@@ -44,6 +44,10 @@ bool Open(bool speaker);
 // Closes the route, and tears the stream down once no route is left.
 void Close(bool speaker);
 
+// True while the speaker route is open: a pad speaker port whose samples the pad takes must not be
+// played on the main output as well, or the two paths' different latencies are heard as an echo.
+bool SpeakerActive();
+
 // Writes `frames` frames of `source_channels`-channel audio (signed 16-bit, or float when
 // `is_float`) at `source_rate` into the route's channels of the endpoint, resampling when the rates
 // differ and applying the route's gain. `gains`, when the guest set them, scales each source channel

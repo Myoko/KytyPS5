@@ -515,6 +515,18 @@ bool Audio::QueueSdlAudio(PortOut* port, const void* data, const float* gains, b
 		return false;
 	}
 
+	// A pad speaker port whose samples the pad takes plays only there: playing them on the main
+	// output as well would be heard as an echo, because the two paths' latencies differ. Without the
+	// pad (or with its speaker route closed) they stay on the main output, as they always did.
+	if (port->type == AUDIO_OUT_PORT_TYPE_PADSPK && Controller::DualSenseHaptics::SpeakerActive()) {
+		report_pad_samples(true);
+		std::vector<uint8_t> prepared_buffer;
+		const void*          prepared_data = PrepareOutputBuffer(*port, data, &prepared_buffer);
+		return Controller::DualSenseHaptics::Write(prepared_data, port->samples_num, port->freq,
+		                                           PreparedChannels(*port),
+		                                           FormatIsFloat(port->format), true, gains);
+	}
+
 	std::vector<uint8_t> prepared_buffer;
 	const void*          prepared_data   = PrepareOutputBuffer(*port, data, &prepared_buffer);
 	const auto           output_channels = PreparedChannels(*port);
@@ -578,14 +590,8 @@ bool Audio::QueueSdlAudio(PortOut* port, const void* data, const float* gains, b
 		return false;
 	}
 
-	// A pad speaker port keeps playing on the main output (a pad without a speaker, or one whose
-	// speaker is not routed, still has to be heard) and goes to the pad's own speaker as well.
-	if (port->type == AUDIO_OUT_PORT_TYPE_PADSPK && Controller::DualSenseHaptics::Available()) {
-		Controller::DualSenseHaptics::Write(prepared_data, port->samples_num, port->freq,
-		                                    PreparedChannels(*port), FormatIsFloat(port->format),
-		                                    true, gains);
-	}
-
+	// A pad speaker port reaches this point only when the pad did not take it (see above): its
+	// samples belong on the main output alone.
 	return true;
 }
 
