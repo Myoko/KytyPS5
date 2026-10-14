@@ -1,9 +1,11 @@
 #include "libs/dualSenseHaptics.h"
 
+#include "SDL.h"
 #include "common/logging/log.h"
 
 #if defined(_WIN32)
 
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -65,8 +67,40 @@ std::string Narrow(const wchar_t* text) {
 	return out;
 }
 
-std::string Trimmed(std::string text) {
-	const auto spaces = " \t\r\n";
+// The pad's speaker stays silent until the host routes the endpoint's audio to it: the controller's
+// own mixer sits on the headphone output, and the USB endpoint only carries samples to it. These are
+// the values the Linux driver sends with no headphones plugged in, through output report 0x02: route
+// the right channel to the speaker, mute the headphones, speaker volume 100 and the +6 dB preamp.
+// github.com/Jetsku/KytyPS5 routes it the same way ("the values Linux uses without headphones"), and
+// without it the speaker plays nothing here while the pad's own "test" tone stays faint. Passing
+// false restores the headphone routing.
+bool RouteSpeaker(bool speaker) {
+	std::array<uint8_t, 38> report {};
+	report[0] = 0x80; // audio control valid
+	if (speaker) {
+		report[0] |= 0x20; // speaker volume valid
+		report[1]  = 0x80; // audio control 2 valid
+		report[5]  = 0x64; // speaker volume, 100 of 100
+		report[7]  = 0x30; // output path: right channel to the speaker, headphones muted
+		report[37] = 0x02; // speaker preamp, +6 dB
+	}
+
+	const int devices = SDL_NumJoysticks();
+	for (int i = 0; i < devices; i++) {
+		auto* pad = SDL_GameControllerFromInstanceID(SDL_JoystickGetDeviceInstanceID(i));
+		if (pad == nullptr || SDL_GameControllerGetType(pad) != SDL_CONTROLLER_TYPE_PS5) {
+			continue;
+		}
+		const bool sent =
+		    SDL_GameControllerSendEffect(pad, report.data(), static_cast<int>(report.size())) == 0;
+		std::printf("DualSense: audio routing -> %s%s\n", speaker ? "the pad's speaker" : "headphones",
+		            sent ? "" : " (the HID report was refused)");
+		return sent;
+	}
+	return false;
+}
+
+std::string Trimmed(std::string text) {	const auto spaces = " \t\r\n";
 	const auto first  = text.find_first_not_of(spaces);
 	if (first == std::string::npos) {
 		return {};
@@ -418,14 +452,23 @@ bool Open(bool speaker) {
 	const auto count = speaker ? g_speaker_channel_count : g_channel_count;
 	std::printf("DualSense: %s route on channels %u-%u (gain %.2f)\n", speaker ? "speaker" : "vibration",
 	            first, first + count - 1u, static_cast<double>(speaker ? g_speaker_gain : g_gain));
+	if (speaker) {
+		// Without this the endpoint's samples never reach the pad's speaker (see RouteSpeaker).
+		(void)RouteSpeaker(true);
+	}
 	return true;
 }
 
 void Close(bool speaker) {
 	std::lock_guard lock(g_mutex);
+	const bool had_speaker = (g_routes & ROUTE_SPEAKER) != 0U;
 	g_routes &= ~(speaker ? ROUTE_SPEAKER : ROUTE_VIBRATION);
 	if (g_routes != 0U) {
 		return; // another route is still playing
+	}
+
+	if (had_speaker) {
+		(void)RouteSpeaker(false); // the pad's headphone routing goes back, as on the console
 	}
 
 	if (g_client != nullptr) {
