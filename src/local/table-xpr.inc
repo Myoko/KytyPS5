@@ -35,6 +35,26 @@ struct RenderExecutor::TableVariant {
 	std::array<Prospero::ColorComponentMapping, RENDER_COLOR_ATTACHMENTS_MAX> mapping {};
 };
 
+// Words a draw writes whole after resizing (TableEvaluate's T#/S# words): resize leaves the new ones uninitialized. (With
+// std::allocator it zeroed them first, a memset call per draw: TableEvaluate 7.1 -> 6.8% of the GPU thread at Latria.)
+template <typename T>
+struct TableUninitialized: std::allocator<T> {
+	using std::allocator<T>::allocator;
+	template <typename U>
+	struct rebind {
+		using other = TableUninitialized<U>;
+	};
+	template <typename U>
+	void construct(U* at) noexcept {
+		::new (static_cast<void*>(at)) U;
+	}
+	template <typename U, typename... Args>
+	void construct(U* at, Args&&... args) {
+		::new (static_cast<void*>(at)) U(std::forward<Args>(args)...);
+	}
+};
+using TableWords = std::vector<uint32_t, TableUninitialized<uint32_t>>;
+
 // The descriptor set of one choice of images and samplers (the T#/S# words of every stage).
 struct RenderExecutor::TableImageSet {
 	struct Image {
@@ -52,7 +72,7 @@ struct RenderExecutor::TableImageSet {
 		bool                    proven   = false;
 		uint64_t                validity = 0;
 	};
-	std::vector<uint32_t> words; // without the LOD statistics fields (NativeXprLodStatsMask)
+	TableWords            words; // without the LOD statistics fields (NativeXprLodStatsMask)
 	vk::DescriptorSet     set  = nullptr;
 	vk::DescriptorPool    pool = nullptr;
 	std::vector<Image>    images;
@@ -196,7 +216,7 @@ struct RenderExecutor::TableXpr {
 	uint64_t store_state = 0, store_frame = 0;
 	uint32_t store_requests = 0;
 	// The draw's T#/S# words (the set's key) and pixel stage LOD statistics words; its runs' addresses.
-	std::vector<uint32_t>                words;
+	TableWords                           words;
 	std::vector<uint32_t>                lod_stats;
 	std::vector<uint64_t>                addresses;
 	// 16 KiB guest pages seen mapped (direct-mapped by page), while the mapping epoch is the same.
@@ -2475,7 +2495,7 @@ bool RenderExecutor::TableDispatch(CommandBuffer& buffer, uint32_t groups_x, uin
 	phase.emplace(LiveCensus::DrawPhase, 0x7ab1f, 4);
 	// Emission, as DispatchDirect's.
 	buffer.EndRendering();
-	const bool chain     = DemonsSouls::IsSupportedGame();
+	const bool chain     = DemonsSouls::ComputeChains();
 	const auto vk_buffer = chain ? buffer.ChainHandle() : buffer.Handle();
 	TableWatchEnd(cache.GetTableUploadBuffer(), cache, m_context.GetGraphics(),
 	              Role() == 0 && Spec::Current() == nullptr ? &m_context.GetCommandScheduler() : nullptr, vk_buffer,
