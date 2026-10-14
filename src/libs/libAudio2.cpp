@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -852,6 +853,29 @@ int KYTY_SYSV_ABI AudioOut2UserCreate(uint32_t user_id, AudioOut2UserHandle* han
 int KYTY_SYSV_ABI AudioOut2UserDestroy(AudioOut2UserHandle handle) {
 	PRINT_NAME();
 	LOGF("\t handle = 0x%016" PRIx64 "\n", static_cast<uint64_t>(handle));
+	return OK;
+}
+
+int KYTY_SYSV_ABI AudioOut2UserGetSupportedAttributes(AudioOut2UserHandle handle,
+                                                      uint32_t* context_attributes,
+                                                      uint32_t* port_attributes) {
+	PRINT_NAME();
+
+	if (context_attributes == nullptr || port_attributes == nullptr) {
+		return AUDIO_OUT2_ERROR_INVALID_PARAM;
+	}
+
+	// The context attributes this branch answers, and the port attributes it understands: the
+	// per-channel gain (attribute 1) and the PCM buffer (attribute 0). The console works the same
+	// way, and the guest asks this before it relies on either.
+	*context_attributes = 0;
+	*port_attributes    = (1u << AUDIO_OUT2_PORT_ATTRIBUTE_ID_PCM) |
+	                   (1u << AUDIO_OUT2_PORT_ATTRIBUTE_ID_GAIN);
+
+	// printf, not LOGF: the console's LOGF is silent in the release configuration.
+	std::printf("AudioOut2: user 0x%016" PRIx64
+	            " supported attributes: context 0x%x, port 0x%x (PCM and gain)\n",
+	            static_cast<uint64_t>(handle), *context_attributes, *port_attributes);
 	return OK;
 }
 
