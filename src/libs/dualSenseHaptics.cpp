@@ -54,7 +54,7 @@ uint32_t   g_channel_count = 2;
 // needs more level than the actuators, and which pair carries it is worth an experiment.
 uint32_t   g_speaker_first_channel = 0;
 uint32_t   g_speaker_channel_count = 2;
-float      g_speaker_gain          = 1.0f;
+float      g_speaker_gain          = 4.0f;
 
 std::string Narrow(const wchar_t* text) {
 	std::string out;
@@ -177,7 +177,7 @@ void ReadSettingsFile() {
 			}
 		} else if (key == "speaker_gain") {
 			const auto gain = std::strtof(value.c_str(), nullptr);
-			if (gain >= 0.0f && gain <= 8.0f) {
+			if (gain >= 0.0f && gain <= 64.0f) {
 				g_speaker_gain = gain;
 			}
 		} else if (key == "channels" || key == "vibration_channels") {
@@ -247,7 +247,7 @@ void ReadSettings() {
 	}
 	if (const char* value = std::getenv("KYTY_DUALSENSE_SPEAKER_GAIN"); value != nullptr) {
 		const auto gain = std::strtof(value, nullptr);
-		if (gain >= 0.0f && gain <= 8.0f) {
+		if (gain >= 0.0f && gain <= 64.0f) {
 			g_speaker_gain = gain;
 		}
 	}

@@ -15,11 +15,17 @@
 // endpoint cannot be picked by name: Windows calls the pad's endpoint and the machine's speakers
 // both "Speakers"/"扬声器" (see the notes). Linux keeps using SDL's device list.
 //
-// Environment:
+// Environment and dualsense-haptics.txt (the file wins; both optional):
 //   KYTY_DUALSENSE_HAPTICS=0|1     off when 0 (default: on)
-//   KYTY_DUALSENSE_HAPTICS_CHANNELS=23|01|all   which of the endpoint's channels take the signal
-//                                  (default: 23, the actuator pair; 01 is the speaker pair)
-//   KYTY_DUALSENSE_HAPTICS_GAIN=<float>         applied to the samples (default: 1.0)
+//   KYTY_DUALSENSE_HAPTICS_CHANNELS=23|01|all   which of the endpoint's channels take the vibration
+//                                  (default: 23, the actuator pair)
+//   KYTY_DUALSENSE_HAPTICS_GAIN=<float>         applied to the vibration samples (default: 1.0)
+//   KYTY_DUALSENSE_SPEAKER_CHANNELS=01|23|all   the same for the pad speaker (default: 01)
+//   KYTY_DUALSENSE_SPEAKER_GAIN=<float>         0..64 (default: 4.0, +12 dB). What the guest sends
+//                                  to a pad speaker port is quiet - Demon's Souls peaks at about
+//                                  -40 dB - and the controller's own amplifier then buries it in
+//                                  its noise floor, so the digital gain is what makes it clear.
+//                                  4.0 is what github.com/Jetsku/KytyPS5's launcher gives at 200%.
 //   KYTY_DUALSENSE_HAPTICS_LOG=1   prints what it finds and what it writes (default: off)
 namespace Libs::Controller::DualSenseHaptics {
 
