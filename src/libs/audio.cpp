@@ -75,7 +75,10 @@ public:
 
 	struct OutputParam {
 		Id          handle;
-		const void* data = nullptr;
+		const void* data  = nullptr;
+		// One gain for each of the port's channels, from the guest's per-channel gain attribute
+		// (see AudioInternal::OutputParam): where a pad's speaker and vibration levels are set.
+		const float* gains = nullptr;
 	};
 
 	Audio() = default;
@@ -173,7 +176,7 @@ uint32_t AudioOutOutputs(const OutputParam* params, uint32_t num, bool blocking)
 	for (uint32_t i = 0; i < num; i++) {
 		if (params[i].handle > 0 && params[i].data != nullptr) {
 			output_params.push_back(
-			    Audio::OutputParam {Audio::Id(params[i].handle), params[i].data});
+			    Audio::OutputParam {Audio::Id(params[i].handle), params[i].data, params[i].gains});
 		}
 	}
 
