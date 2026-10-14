@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -276,16 +277,17 @@ static void LogAudioDevicesOnce() {
 	logged = true;
 
 	const int devices = SDL_GetNumAudioDevices(0);
-	LOGF("AudioOut: %d output device(s)\n", devices);
+	std::printf("AudioOut: %d output device(s), default is the one the main ports use\n", devices);
 	for (int i = 0; i < devices; i++) {
 		const char* name = SDL_GetAudioDeviceName(i, 0);
-		LOGF("AudioOut:   [%d] %s\n", i, name != nullptr ? name : "(null)");
+		std::printf("AudioOut:   [%d] %s\n", i, name != nullptr ? name : "(null)");
 	}
 	const auto controller_device = FindControllerAudioDevice();
 	if (controller_device.empty()) {
-		LOGF("AudioOut: no DualSense audio endpoint found (its haptics and speaker have no host path)\n");
+		std::printf("AudioOut: no DualSense-named output device (SDL names only; the pad's endpoint "
+		            "is used by USB id regardless)\n");
 	} else {
-		LOGF("AudioOut: DualSense audio endpoint: %s\n", controller_device.c_str());
+		std::printf("AudioOut: DualSense audio endpoint by name: %s\n", controller_device.c_str());
 	}
 }
 
@@ -466,7 +468,7 @@ bool Audio::QueueSdlAudio(PortOut* port, const void* data, bool blocking) {
 			const void*          prepared_data = PrepareOutputBuffer(*port, data, &prepared_buffer);
 			return Controller::DualSenseHaptics::Write(prepared_data, port->samples_num, port->freq,
 			                                           PreparedChannels(*port),
-			                                           FormatIsFloat(port->format));
+			                                           FormatIsFloat(port->format), false);
 		}
 		return false;
 	}
@@ -530,6 +532,14 @@ bool Audio::QueueSdlAudio(PortOut* port, const void* data, bool blocking) {
 		return false;
 	}
 
+	// A pad speaker port keeps playing on the main output (a pad without a speaker, or one whose
+	// speaker is not routed, still has to be heard) and goes to the pad's own speaker as well.
+	if (port->type == AUDIO_OUT_PORT_TYPE_PADSPK && Controller::DualSenseHaptics::Available()) {
+		Controller::DualSenseHaptics::Write(prepared_data, port->samples_num, port->freq,
+		                                    PreparedChannels(*port), FormatIsFloat(port->format),
+		                                    true);
+	}
+
 	return true;
 }
 
@@ -564,17 +574,23 @@ Audio::Id Audio::AudioOutOpen(int type, uint32_t samples_num, uint32_t freq, For
 				port.volume[i] = 32768;
 			}
 
-			LOGF("AudioOut: port %d: type %d, %u Hz, %u samples, format 0x%08x, %d channel(s)\n", id,
-			     type, freq, samples_num, static_cast<uint32_t>(format), port.channels_num);
+			// The console's own diagnostics use printf because LOGF is silent by default.
+			std::printf("AudioOut: port %d: type %d, %u Hz, %u samples, format 0x%08x, %d channel(s)\n",
+			            id, type, freq, samples_num, static_cast<uint32_t>(format), port.channels_num);
 
-			if (type == AUDIO_OUT_PORT_TYPE_VIBRATION) {
-				// The game's vibration plays on the pad's own actuators, not on the speakers: its
-				// USB audio endpoint's second channel pair (see libs/dualSenseHaptics.h). Without
-				// one, the port has no host path and stays silent, as it always did.
-				if (!Controller::DualSenseHaptics::Open()) {
-					LOGF("AudioOut: port %d has no host path (vibration)\n", id);
+			if (type == AUDIO_OUT_PORT_TYPE_VIBRATION || type == AUDIO_OUT_PORT_TYPE_PADSPK) {
+				// The vibration port plays on the pad's actuators and the pad speaker port on its
+				// speaker: the two routes of the pad's own USB audio endpoint (see
+				// libs/dualSenseHaptics.h). Without that endpoint the vibration port has no host
+				// path and stays silent, as it always did, and the pad speaker port keeps playing
+				// on the main output below.
+				const bool pad_speaker = type == AUDIO_OUT_PORT_TYPE_PADSPK;
+				if (!Controller::DualSenseHaptics::Open(pad_speaker)) {
+					std::printf("AudioOut: port %d has no pad path (%s)\n", id,
+					            pad_speaker ? "speaker" : "vibration");
 				}
-			} else {
+			}
+			if (type != AUDIO_OUT_PORT_TYPE_VIBRATION) {
 				OpenSdlDevice(&port);
 			}
 
@@ -591,8 +607,8 @@ bool Audio::AudioOutClose(Id handle) {
 	if (AudioOutValid(handle)) {
 		auto& port = m_out_ports[handle.GetId()];
 
-		if (port.type == AUDIO_OUT_PORT_TYPE_VIBRATION) {
-			Controller::DualSenseHaptics::Close();
+		if (port.type == AUDIO_OUT_PORT_TYPE_VIBRATION || port.type == AUDIO_OUT_PORT_TYPE_PADSPK) {
+			Controller::DualSenseHaptics::Close(port.type == AUDIO_OUT_PORT_TYPE_PADSPK);
 		}
 		CloseSdlDevice(&port);
 		port = {};

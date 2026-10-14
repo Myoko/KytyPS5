@@ -4,11 +4,10 @@
 
 #if defined(_WIN32)
 
-#include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
-#include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #include <audioclient.h>
@@ -27,20 +26,27 @@ constexpr PROPERTYKEY PKEY_INTERFACE_FRIENDLY_NAME = {
 // The pad's USB interface path, as both the audio driver and the registry report it.
 constexpr const char* PAD_DEVICE_PATH = "VID_054C&PID_0CE6";
 
-IMMDevice*       g_device   = nullptr;
-IAudioClient*    g_client   = nullptr;
-IAudioRenderClient* g_render = nullptr;
-WAVEFORMATEX*    g_mix      = nullptr;
-uint32_t         g_buffer_frames = 0;
-bool             g_started  = false;
+// The endpoint's four channels: 0-1 play on the pad's speaker, 2-3 drive its haptic actuators.
+constexpr uint32_t SPEAKER_FIRST_CHANNEL = 0;
+constexpr uint32_t SPEAKER_CHANNELS      = 2;
+
+constexpr uint32_t ROUTE_SPEAKER   = 1U << 0U;
+constexpr uint32_t ROUTE_VIBRATION = 1U << 1U;
+
+IMMDevice*          g_device        = nullptr;
+IAudioClient*       g_client        = nullptr;
+IAudioRenderClient* g_render        = nullptr;
+WAVEFORMATEX*       g_mix           = nullptr;
+uint32_t            g_buffer_frames = 0;
+uint32_t            g_routes        = 0;
 
 std::mutex g_mutex;
 int        g_found    = -1; // -1 unknown, 0 no endpoint, 1 yes
 bool       g_enabled  = true;
 bool       g_log      = false;
 float      g_gain     = 1.0f;
-bool       g_all_channels = false;
-uint32_t   g_first_channel = 2;
+bool       g_all_channels  = false;
+uint32_t   g_first_channel = 2; // the actuator pair; KYTY_DUALSENSE_HAPTICS_CHANNELS overrides it
 uint32_t   g_channel_count = 2;
 
 std::string Narrow(const wchar_t* text) {
@@ -54,7 +60,8 @@ std::string Narrow(const wchar_t* text) {
 	return out;
 }
 
-void ReadSettings() {	static bool read = false;
+void ReadSettings() {
+	static bool read = false;
 	if (read) {
 		return;
 	}
@@ -110,7 +117,7 @@ IMMDevice* FindEndpoint() {
 	                           __uuidof(IMMDeviceEnumerator), reinterpret_cast<void**>(&enumerator));
 	if (FAILED(hr)) {
 		if (g_log) {
-			LOGF("DualSenseHaptics: CoCreateInstance failed: 0x%08x\n", static_cast<uint32_t>(hr));
+			std::printf("DualSense: CoCreateInstance failed: 0x%08x\n", static_cast<uint32_t>(hr));
 		}
 		return nullptr;
 	}
@@ -142,8 +149,8 @@ IMMDevice* FindEndpoint() {
 				const auto path = Narrow(value.pwszVal);
 				is_pad          = path.find(PAD_DEVICE_PATH) != std::string::npos;
 				if (g_log) {
-					LOGF("DualSenseHaptics: endpoint %u: %s%s\n", i, path.c_str(),
-					     is_pad ? "  <- the pad" : "");
+					std::printf("DualSense: endpoint %u: %s%s\n", i, path.c_str(),
+					            is_pad ? "  <- the pad" : "");
 				}
 			}
 			PropVariantClear(&value);
@@ -154,11 +161,10 @@ IMMDevice* FindEndpoint() {
 			if (matched != nullptr) {
 				// Two pads: which one is playing is not knowable here, and driving the wrong one
 				// would be worse than not driving any (the mainline refuses ambiguous endpoints too).
+				device->Release();
 				matched->Release();
 				matched = nullptr;
-				if (g_log) {
-					LOGF("DualSenseHaptics: more than one pad endpoint, none is used\n");
-				}
+				std::printf("DualSense: more than one pad endpoint, none is used\n");
 				break;
 			}
 			matched = device;
@@ -183,17 +189,16 @@ bool Available() {
 		return g_found == 1;
 	}
 
-	// COM is initialized here rather than assumed: the emulator's threads may not have it.
 	EnsureCom();
 
 	IMMDevice* device = FindEndpoint();
 	g_found           = device != nullptr ? 1 : 0;
 	if (device != nullptr) {
 		device->Release();
-	}
-	if (g_log || g_found == 0) {
-		LOGF("DualSenseHaptics: %s\n", g_found == 1 ? "the pad's audio endpoint is available"
-		                                            : "no DualSense audio endpoint (no haptics)");
+		std::printf("DualSense: the pad's audio endpoint is available (speaker 0-1, actuators %u-%u)\n",
+		            g_first_channel, g_first_channel + g_channel_count - 1u);
+	} else {
+		std::printf("DualSense: no audio endpoint found (no pad speaker and no haptics)\n");
 	}
 	return g_found == 1;
 }
@@ -208,83 +213,96 @@ uint32_t EndpointChannels() {
 	return g_mix != nullptr ? g_mix->nChannels : 0;
 }
 
-bool Open() {
+bool Open(bool speaker) {
 	ReadSettings();
 	if (!g_enabled) {
 		return false;
 	}
 
 	std::lock_guard lock(g_mutex);
-	if (g_client != nullptr) {
-		return true; // already open: one stream serves every vibration port
+	const auto route = speaker ? ROUTE_SPEAKER : ROUTE_VIBRATION;
+	if ((g_routes & route) != 0U) {
+		return true; // this route is already playing
 	}
 
-	EnsureCom();
+	if (g_client == nullptr) {
+		EnsureCom();
 
-	bool ok = false;
-	do {
 		IMMDevice* device = FindEndpoint();
 		if (device == nullptr) {
-			break;
+			return false;
 		}
 		g_found = 1;
 
-		if (FAILED(device->Activate(__uuidof(IAudioClient), CLSCTX_INPROC_SERVER, nullptr,
-		                            reinterpret_cast<void**>(&g_client))) ||
-		    g_client == nullptr) {
-			device->Release();
-			break;
-		}
+		bool opened = false;
+		do {
+			if (FAILED(device->Activate(__uuidof(IAudioClient), CLSCTX_INPROC_SERVER, nullptr,
+			                            reinterpret_cast<void**>(&g_client))) ||
+			    g_client == nullptr) {
+				break;
+			}
+
+			if (FAILED(g_client->GetMixFormat(&g_mix)) || g_mix == nullptr) {
+				break;
+			}
+			if (g_mix->wFormatTag != WAVE_FORMAT_IEEE_FLOAT &&
+			    g_mix->wFormatTag != WAVE_FORMAT_EXTENSIBLE) {
+				break;
+			}
+			if (g_mix->wBitsPerSample != 32) {
+				break;
+			}
+
+			// 100 ms of buffer; the pad's own path starts about a second late, which the queue
+			// covers as long as the game keeps writing.
+			if (FAILED(
+			        g_client->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 1000000LL, 0, g_mix, nullptr))) {
+				break;
+			}
+			if (FAILED(g_client->GetBufferSize(&g_buffer_frames))) {
+				break;
+			}
+			if (FAILED(g_client->GetService(__uuidof(IAudioRenderClient),
+			                                reinterpret_cast<void**>(&g_render))) ||
+			    g_render == nullptr) {
+				break;
+			}
+			if (FAILED(g_client->Start())) {
+				break;
+			}
+			opened = true;
+		} while (false);
+
 		device->Release();
 
-		if (FAILED(g_client->GetMixFormat(&g_mix)) || g_mix == nullptr) {
-			break;
-		}
-		if (g_mix->wFormatTag != WAVE_FORMAT_IEEE_FLOAT && g_mix->wFormatTag != WAVE_FORMAT_EXTENSIBLE) {
-			break;
-		}
-		if (g_mix->wBitsPerSample != 32) {
-			break;
+		if (!opened) {
+			Close(speaker);
+			std::printf("DualSense: the pad's endpoint could not be opened\n");
+			return false;
 		}
 
-		// 100 ms of buffer; the pad's own path starts about a second late, which the stream's
-		// queue covers as long as the game keeps writing.
-		if (FAILED(g_client->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 1000000LL, 0, g_mix, nullptr))) {
-			break;
-		}
-		if (FAILED(g_client->GetBufferSize(&g_buffer_frames))) {
-			break;
-		}
-		if (FAILED(g_client->GetService(__uuidof(IAudioRenderClient),
-		                                reinterpret_cast<void**>(&g_render))) ||
-		    g_render == nullptr) {
-			break;
-		}
-		if (FAILED(g_client->Start())) {
-			break;
-		}
-		g_started = true;
-		ok        = true;
-
-		if (g_log) {
-			LOGF("DualSenseHaptics: opened: %u Hz, %u ch, buffer %u frames, gain %.2f, channels %s\n",
-			     g_mix->nSamplesPerSec, g_mix->nChannels, g_buffer_frames, static_cast<double>(g_gain),
-			     g_all_channels ? "all" : "pair");
-		}
-	} while (false);
-
-	if (!ok) {
-		Close();
+		std::printf("DualSense: stream open: %u Hz, %u ch, buffer %u frames, gain %.2f\n",
+		            g_mix->nSamplesPerSec, g_mix->nChannels, g_buffer_frames,
+		            static_cast<double>(g_gain));
 	}
-	return ok;
+
+	g_routes |= route;
+	std::printf("DualSense: %s route on channels %u-%u\n", speaker ? "speaker" : "vibration",
+	            speaker ? SPEAKER_FIRST_CHANNEL : g_first_channel,
+	            speaker ? SPEAKER_FIRST_CHANNEL + SPEAKER_CHANNELS - 1u
+	                    : g_first_channel + g_channel_count - 1u);
+	return true;
 }
 
-void Close() {
+void Close(bool speaker) {
 	std::lock_guard lock(g_mutex);
+	g_routes &= ~(speaker ? ROUTE_SPEAKER : ROUTE_VIBRATION);
+	if (g_routes != 0U) {
+		return; // another route is still playing
+	}
+
 	if (g_client != nullptr) {
-		if (g_started) {
-			g_client->Stop();
-		}
+		g_client->Stop();
 		g_client->Release();
 		g_client = nullptr;
 	}
@@ -297,13 +315,16 @@ void Close() {
 		g_mix = nullptr;
 	}
 	g_buffer_frames = 0;
-	g_started       = false;
 }
 
 bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t source_channels,
-           bool is_float) {
+           bool is_float, bool speaker) {
 	std::lock_guard lock(g_mutex);
-	if (!g_started || data == nullptr || frames == 0 || source_channels == 0 || g_mix == nullptr) {
+	if (g_client == nullptr || data == nullptr || frames == 0 || source_channels == 0 ||
+	    g_mix == nullptr) {
+		return false;
+	}
+	if ((g_routes & (speaker ? ROUTE_SPEAKER : ROUTE_VIBRATION)) == 0U) {
 		return false;
 	}
 
@@ -313,7 +334,11 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 		return false;
 	}
 
-	// Resample (linear: enough for haptics) and put the signal in the chosen channels.
+	const auto first_channel = speaker ? SPEAKER_FIRST_CHANNEL : g_first_channel;
+	const auto channel_count = speaker ? SPEAKER_CHANNELS : g_channel_count;
+	const auto channels      = g_all_channels ? target_channels : channel_count;
+
+	// Resample (linear: enough for haptics) and put the signal in the route's channels.
 	const auto out_frames = source_rate == target_rate
 	                            ? frames
 	                            : static_cast<uint32_t>(static_cast<uint64_t>(frames) * target_rate /
@@ -348,8 +373,8 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 			break;
 		}
 
-		// Mono goes to one channel, stereo to the pair (the actuator pair by default).
-		for (uint32_t c = 0; c < source_channels && c < g_channel_count; c++) {
+		// Mono goes to one channel, stereo to the pair.
+		for (uint32_t c = 0; c < source_channels && (g_all_channels || c < channels); c++) {
 			float value = 0.0f;
 			if (is_float) {
 				value = reinterpret_cast<const float*>(data)[static_cast<size_t>(source_index) *
@@ -373,7 +398,7 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 				continue;
 			}
 
-			const auto channel = g_first_channel + c;
+			const auto channel = first_channel + c;
 			if (channel < target_channels) {
 				out[static_cast<size_t>(i) * target_channels + channel] = value;
 			}
@@ -393,9 +418,9 @@ namespace Libs::Controller::DualSenseHaptics {
 bool     Available() { return false; }
 uint32_t SampleRate() { return 0; }
 uint32_t EndpointChannels() { return 0; }
-bool     Open() { return false; }
-void     Close() {}
-bool     Write(const void*, uint32_t, uint32_t, uint32_t, bool) { return false; }
+bool     Open(bool) { return false; }
+void     Close(bool) {}
+bool     Write(const void*, uint32_t, uint32_t, uint32_t, bool, bool) { return false; }
 
 } // namespace Libs::Controller::DualSenseHaptics
 

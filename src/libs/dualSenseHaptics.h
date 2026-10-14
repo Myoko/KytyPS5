@@ -30,17 +30,20 @@ bool Available();
 uint32_t SampleRate();
 uint32_t EndpointChannels();
 
-// Opens the endpoint and starts its stream. False when there is none, it is already open, or it
-// cannot take the format: the caller then keeps the port silent, as before.
-bool Open();
-void Close();
+// Opens the endpoint for one of its routes: the pad speaker port plays on the endpoint's FIRST
+// channel pair, the vibration port on its second (the actuators). Several routes share the one
+// stream, and it stays open while any route is. False when there is no endpoint, when it cannot
+// take the format, or when that route is already open: the caller then leaves the port as it was.
+bool Open(bool speaker);
+// Closes the route, and tears the stream down once no route is left.
+void Close(bool speaker);
 
 // Writes `frames` frames of `source_channels`-channel audio (signed 16-bit, or float when
-// `is_float`) at `source_rate` into the endpoint's chosen channels, resampling when the rates
+// `is_float`) at `source_rate` into the route's channels of the endpoint, resampling when the rates
 // differ and applying the gain. Never waits: when the endpoint's queue is behind, the audio is
 // dropped (haptics are best effort, and the caller is the guest's audio thread).
 bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t source_channels,
-           bool is_float);
+           bool is_float, bool speaker);
 
 } // namespace Libs::Controller::DualSenseHaptics
 
