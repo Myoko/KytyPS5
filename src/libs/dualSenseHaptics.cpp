@@ -206,10 +206,11 @@ void ReadSettingsFile() {
 	std::fclose(file);
 
 	std::printf("DualSense: dualsense-haptics.txt: %s, vibration gain %.2f on channels %u-%u, "
-	            "speaker gain %.2f on channels %u-%u%s\n",
+	            "speaker gain %.2f on channels %u-%u, preamp %s%s\n",
 	            g_enabled ? "on" : "off", static_cast<double>(g_gain), g_first_channel,
 	            g_first_channel + g_channel_count - 1u, static_cast<double>(g_speaker_gain),
 	            g_speaker_first_channel, g_speaker_first_channel + g_speaker_channel_count - 1u,
+	            g_speaker_preamp ? "on (+6 dB)" : "off",
 	            g_all_channels ? ", all channels" : "");
 }
 
