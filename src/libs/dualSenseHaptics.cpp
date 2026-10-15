@@ -46,7 +46,7 @@ std::mutex g_mutex;
 int        g_found    = -1; // -1 unknown, 0 no endpoint, 1 yes
 bool       g_enabled  = true;
 bool       g_log      = false;
-float      g_gain     = 1.0f;
+float      g_gain     = 4.0f; // the tested setting: 1.0 leaves the actuators faint in play
 bool       g_all_channels  = false;
 uint32_t   g_first_channel = 2; // the actuator pair; KYTY_DUALSENSE_HAPTICS_CHANNELS overrides it
 uint32_t   g_channel_count = 2;
