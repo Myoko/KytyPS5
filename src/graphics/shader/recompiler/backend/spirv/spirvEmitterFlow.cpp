@@ -1,8 +1,41 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInternal.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
+
+// KYTY_PS_WAVE_OR=0 turns off the reduction below (IsWaveOrScanRead).
+static bool PsWaveOrEnabled() {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_PS_WAVE_OR");
+		return value == nullptr || value[0] != '0';
+	}();
+	return enabled;
+}
+
+// v_readlane 31 or 63 of `x | permlanex16(x)` in a wave64 non-compute program without two-half emulation.
+static bool IsWaveOrScanRead(ValueEmitContext& ctx, const IR::Inst& inst) {
+	if (!PsWaveOrEnabled() || ctx.other_half != nullptr || ctx.state.program.wave_size != 64u ||
+	    ctx.state.stage == ShaderType::Compute)
+		return false;
+	const auto lane = inst.Arg(1).Resolve();
+	if (!lane.IsImmediate() || lane.GetType() != IR::Type::U32 || (lane.U32() != 31u && lane.U32() != 63u)) return false;
+	const auto* value = inst.Arg(0).Resolve().TryInstruction();
+	if (value != nullptr && value->GetOpcode() == IR::ValueOpcode::SelectU32)
+		value = value->Arg(1).Resolve().TryInstruction();
+	if (value == nullptr || value->GetOpcode() != IR::ValueOpcode::BitwiseOr32) return false;
+	for (size_t i = 0; i < 2; i++) {
+		const auto* arg = value->Arg(i).Resolve().TryInstruction();
+		if (arg != nullptr && arg->GetOpcode() == IR::ValueOpcode::SelectU32) // a VGPR write under exec
+			arg = arg->Arg(1).Resolve().TryInstruction();
+		if (arg != nullptr && arg->GetOpcode() == IR::ValueOpcode::Permlane16U32 && arg->Flags<IR::PermlaneFlags>().x16)
+			return true;
+	}
+	return false;
+}
 namespace {
 
 bool UserDataDwordIndex(const EmitterState& state, IR::ScalarReg reg, uint32_t& dword_index) {
@@ -619,6 +652,24 @@ bool EmitValueFlow(ValueEmitContext& ctx, const IR::Inst& inst) {
 			return true;
 		}
 		case IR::ValueOpcode::ReadLane:
+			if (IsWaveOrScanRead(ctx, inst)) {
+				static std::atomic<uint32_t> logged {0};
+				if (logged.fetch_add(1) < 64)
+					std::printf("PS_WAVE_OR %016llx lane %u\n", static_cast<unsigned long long>(state.program.shader_hash),
+					            inst.Arg(1).Resolve().U32());
+				// A wave64 OR reduction (DPP row_shr 1/2/4/8, v_permlanex16, v_readlane 31/63) in a graphics shader that
+				// runs on 32-wide host subgroups: lane 63 does not exist and fragment subgroups can have lanes without a
+				// fragment, which break the scan's chain (dark columns on Demon's Souls' water, PS 7a59c1a20cbe5d4a).
+				// Each lane's scanned value holds its own bits and only bits of the wave, so the subgroup's OR of them
+				// is the union the scan meant. (The capability only where it is used: every other module keeps its
+				// SPIR-V, so the pipelines precompiled for them stay valid.)
+				state.builder.RequireCapability(CapabilityGroupNonUniformArithmetic);
+				const auto result = state.builder.AllocateId();
+				state.builder.AddFunction({OpGroupNonUniformBitwiseOr, TypeU32(state), result,
+				                           ConstantU32(state, ScopeSubgroup), 0u /* Reduce */, ctx.Arg(inst, 0)});
+				ctx.Define(inst, result);
+				return true;
+			}
 			ctx.Define(inst, ctx.Shuffle(inst, 0, ctx.Arg(inst, 1)));
 			return true;
 		case IR::ValueOpcode::WriteLane: {
