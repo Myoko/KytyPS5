@@ -142,8 +142,9 @@ function Get-PlayCommand {
 	# The console stays for the live log; after a crash it waits for a key.
 	return 'powershell ' + ($arguments -join ' ') + ' & if !errorlevel! neq 0 pause'
 }
-function Get-PrecompileCommand {
+function Get-PrecompileCommand([string]$switch = '') {
 	$arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$root\precompile-windows.ps1`"")
+	if ($switch) { $arguments += $switch }
 	if ($settings.ecores -and $efficiencyMask -ne 0) { $arguments += @('-Affinity', $efficiencyMask) }
 	if ($settings.game) { $arguments += @('-Game', "`"$($settings.game)`"") }
 	return 'powershell ' + ($arguments -join ' ') + ' & pause'
@@ -152,6 +153,7 @@ function Save-Settings { $settings | ConvertTo-Json | Set-Content $settingsPath 
 if ($DryRun) {
 	"play:       cmd /v:on /s /c `"$(Get-PlayCommand)`""
 	"precompile: cmd /s /c `"$(Get-PrecompileCommand)`""
+	"hints:      cmd /s /c `"$(Get-PrecompileCommand '-ExportHints')`""
 	"efficiency cores: 0x{0:X}" -f $efficiencyMask
 	"frame generation: $(if ($frameGenAvailable) { "NVIDIA's Streamline runtime in $streamline" } else { "no NVIDIA-signed Streamline runtime (settings: '$($settings.streamline)')" })"
 	return
@@ -310,9 +312,16 @@ Update-Title
 $buttons = New-Object System.Windows.Forms.FlowLayoutPanel -Property @{ AutoSize = $true; Margin = '0,10,0,0' }
 $play = New-Object System.Windows.Forms.Button -Property @{ Text = '开始游戏'; AutoSize = $true; Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold) }
 $precompile = New-Object System.Windows.Forms.Button -Property @{ Text = '预编译着色器'; AutoSize = $true }
+$share = New-Object System.Windows.Forms.Button -Property @{ Text = '导出着色器 hints'; AutoSize = $true }
+(New-Object System.Windows.Forms.ToolTip).SetToolTip($share, ('把你这次游玩记录到的着色器导出为 my-hints-<game>.hints（不含游戏代码）：' +
+	'附到 GitHub issue 里，下一个版本的预编译就会带上它们。'))
 $logs = New-Object System.Windows.Forms.Button -Property @{ Text = '日志目录'; AutoSize = $true }
 $readme = New-Object System.Windows.Forms.Button -Property @{ Text = '说明 (README)'; AutoSize = $true }
 $buttons.Controls.AddRange(@($play, $precompile, $logs, $readme))
+$share.Add_Click({
+	Read-Form
+	Start-Process cmd -ArgumentList "/s /c `"$(Get-PrecompileCommand '-ExportHints')`"" -WorkingDirectory $root
+})
 $grid.Controls.Add($buttons)
 $grid.SetColumnSpan($buttons, 2)
 $credit = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray'; Margin = '0,8,0,0'

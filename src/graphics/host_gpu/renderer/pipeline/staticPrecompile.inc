@@ -211,8 +211,15 @@ bool PipelineCache::WarmSeeds(const PrecompileOptions& args, size_t& left_out) {
 	const auto decode   = [&](uint32_t index, LocalShaderWarmup::Record& record) {
 		LocalShaderWarmup::Reader reader {seed_words[index]};
 		if (!LocalShaderWarmup::Visit(reader, record)) return false;
-		if (args.host_subgroup_size != 0 && record.stage == ShaderType::Compute)
+		// (The static key holds the subgroup size too: one recorded on another GPU failed ValidKey, so the compiled
+		// inputs left out every compute record where the size differs: an AMD RDNA3+ precompile (64) of seeds and
+		// NVIDIA-recorded hints (32) wrote 11,676 inputs of 28,742, and the shader prefetch translated no compute
+		// shader there.)
+		if (args.host_subgroup_size != 0 && record.stage == ShaderType::Compute &&
+		    record.compute.host_subgroup_size != args.host_subgroup_size) {
 			record.compute.host_subgroup_size = args.host_subgroup_size;
+			BuildStageStaticKey(record.compute, record.static_key);
+		}
 		return true;
 	};
 	const auto stage_of = [&](size_t index) { return ShaderType(seed_words[index][0]); };
@@ -261,7 +268,7 @@ bool PipelineCache::WarmSeeds(const PrecompileOptions& args, size_t& left_out) {
 	using Permutations = std::vector<std::unique_ptr<Permutation>>;
 	std::mutex                    finish_mutex;
 	std::atomic<size_t>           indirect {0};
-	size_t                        compiled = 0;
+	std::atomic<size_t>           compiled {0};
 	std::map<std::string, size_t> rejections;
 	std::vector<std::string>      rejected(seed_words.size());
 	// The SPIR-V of each permutation (its hash: what the driver cache is keyed by; its size).
@@ -270,6 +277,25 @@ bool PipelineCache::WarmSeeds(const PrecompileOptions& args, size_t& left_out) {
 		size_t   words = 0;
 	};
 	std::unordered_map<const Permutation*, Spirv> spirv_of;
+	// Whether a seed's program binds a resource (1) or none (2), as its translation below found (0: not translated): a
+	// seed without a recorded specialization gets exact and table modules only when it binds none (compile_variant,
+	// whose translation is the same: table mode comes after it), so the others are not translated again to find out
+	// (a dry run of the seeds translated every program twice more for that).
+	std::vector<std::atomic<uint8_t>> binds(seed_words.size());
+	// A translated program's permutation: its compiled info, its IR freed and its shader module made (the module
+	// store's compression) on this worker, as the emulator's compile workers do; only the registration (a shader id)
+	// under the lock. (With all of it under the lock, a dry run of the seeds took 43 s on 22 threads, 51 s on 6.)
+	const auto finish = [&](const ShaderParams& params, const ShaderRecompiler::CompileOptions& options,
+	                        ShaderRecompiler::CompileResult& result, ShaderRecompiler::IR::ResourceSpecialization specialization,
+	                        const Spirv& spirv) {
+		auto            info   = ProgramCache::TakeOnWorker(result);
+		const auto      module = ProgramCache::CreateModule(programs.device, options, result.spirv);
+		std::lock_guard lock(finish_mutex);
+		auto            permutation = std::make_unique<Permutation>(
+		    programs.FinishPermutation(params, options, result, std::move(info), std::move(specialization), module));
+		spirv_of[permutation.get()] = spirv;
+		return permutation;
+	};
 	const auto compile = [&](uint32_t index, uint32_t push_cursor) {
 		Permutations              out;
 		LocalShaderWarmup::Record seed;
@@ -279,6 +305,8 @@ bool PipelineCache::WarmSeeds(const PrecompileOptions& args, size_t& left_out) {
 		try {
 			Common::RecoverableExitScope recoverable;
 			auto translated = ShaderRecompiler::TranslateProgram(seed.code, options);
+			const bool binds_none = translated.program.info.buffers.empty() && translated.program.info.images.empty();
+			binds[index].store(binds_none ? 2 : 1, std::memory_order_relaxed);
 			if (std::ranges::any_of(translated.program.descriptor_sources,
 			                        [](const auto& source) { return source.indirect_image.has_value(); }))
 				indirect.fetch_add(1, std::memory_order_relaxed);
@@ -307,12 +335,10 @@ bool PipelineCache::WarmSeeds(const PrecompileOptions& args, size_t& left_out) {
 						std::fclose(file);
 					}
 				}
-				ShaderParams    params {seed.code, user_data, seed.hash, seed.back_code};
-				std::lock_guard lock(finish_mutex);
-				out.push_back(std::make_unique<Permutation>(
-				    programs.FinishPermutation(params, options, std::move(result), std::move(specialization))));
-				spirv_of[out.back().get()] = spirv;
-				if (++compiled % 1000 == 0) PipelineCacheLog("Shader seeds: compiled {} programs, {} ms", compiled, elapsed());
+				ShaderParams params {seed.code, user_data, seed.hash, seed.back_code};
+				out.push_back(finish(params, options, result, std::move(specialization), spirv));
+				if (const auto done = compiled.fetch_add(1, std::memory_order_relaxed) + 1; done % 1000 == 0)
+					PipelineCacheLog("Shader seeds: compiled {} programs, {} ms", done, elapsed());
 			}
 		} catch (Common::RecoverableExit& exit) {
 			std::lock_guard lock(finish_mutex);
@@ -371,6 +397,7 @@ bool PipelineCache::WarmSeeds(const PrecompileOptions& args, size_t& left_out) {
 		LocalShaderWarmup::Record seed;
 		if (!decode(index, seed)) return nullptr;
 		const bool recorded = !seed.specialization.buffers.empty() || !seed.specialization.images.empty();
+		if (!recorded && binds[index].load(std::memory_order_relaxed) == 1) return nullptr; // (the check below)
 		std::vector<uint32_t> user_data(seed.user_data_count);
 		auto                  options = LocalShaderWarmup::Options(seed, user_data);
 		options.table_mode            = table;
@@ -398,12 +425,8 @@ bool PipelineCache::WarmSeeds(const PrecompileOptions& args, size_t& left_out) {
 			                                               table ? push_cursor : seed.push_cursor);
 			const Spirv     spirv {XXH3_64bits(result.spirv.data(), result.spirv.size() * sizeof(uint32_t)),
 			                   result.spirv.size()};
-			ShaderParams    params {seed.code, user_data, seed.hash, seed.back_code};
-			std::lock_guard lock(finish_mutex);
-			auto            permutation = std::make_unique<Permutation>(
-			    programs.FinishPermutation(params, options, std::move(result), std::move(specialization)));
-			spirv_of[permutation.get()] = spirv;
-			return permutation;
+			ShaderParams params {seed.code, user_data, seed.hash, seed.back_code};
+			return finish(params, options, result, std::move(specialization), spirv);
 		} catch (Common::RecoverableExit&) {
 			return nullptr; // (a program table mode refuses, or a specialization the recompiler rejects)
 		}
@@ -765,7 +788,7 @@ bool PipelineCache::WarmSeeds(const PrecompileOptions& args, size_t& left_out) {
 			// guess was right (seldom: a 1-1 session met none of these variants, every native pipeline it made had a
 			// recorded specialization's modules). One the store lacks is built in the background, its draws taking the
 			// normal path meanwhile (TryCreateGraphicsPipeline), so a guess file leaves them out (a third of its time).
-			const bool native_first = !guesses || args.native_guesses;
+			const bool native_first = args.native_variants && (!guesses || args.native_guesses);
 			for (const auto& [pixel, cursor]: pixel_variants(recipe)) {
 				const auto found = vertex.find({recipe.vertex, cursor});
 				if (found == vertex.end()) continue;
@@ -787,7 +810,8 @@ bool PipelineCache::WarmSeeds(const PrecompileOptions& args, size_t& left_out) {
 					for (const auto& vertex_permutation: found->second)
 						portable |= same_as(exact[recipe.vertex].get(), vertex_permutation.get());
 				}
-				if (!portable) create_with_native(*exact[recipe.vertex], pixel, "gfx-exact", "gfx-exact-native", true);
+				if (!portable)
+					create_with_native(*exact[recipe.vertex], pixel, "gfx-exact", "gfx-exact-native", args.native_variants);
 			}
 			// Table mode (TableStore): a draw without vertex buffers, its table programs with native bindings: those of each
 			// specialization of its two programs (the pairs of their SPIR-V once).
@@ -843,9 +867,11 @@ bool PipelineCache::WarmSeeds(const PrecompileOptions& args, size_t& left_out) {
 	for (const auto& [permutation, spirv]: spirv_of) spirv_words += spirv.words;
 	PipelineCacheLog("Shader seeds: {} programs ({} with indirect image tables, {} MiB of SPIR-V) in {} ms; {} pipelines "
 	                 "in {} ms ({} threads; {} made by another work item{}{})",
-	                 compiled, indirect.load(), spirv_words >> 18u, programs_ms, created.load(), elapsed() - programs_ms,
+	                 compiled.load(), indirect.load(), spirv_words >> 18u, programs_ms, created.load(), elapsed() - programs_ms,
 	                 threads, left_to_others.load(), planned ? ", planned" : "",
-	                 guesses && !args.native_guesses ? "; guessed specializations: no native variants" : "");
+	                 !args.native_variants                ? "; no native variants"
+	                 : guesses && !args.native_guesses ? "; guessed specializations: no native variants"
+	                                                   : "");
 	for (const auto& [message, count]: rejections) PipelineCacheLog("Shader seeds: rejected {}: {}", count, message);
 
 	// What was compiled, as a warmup file (compiler inputs with the specialization used), with the SPIR-V
@@ -999,9 +1025,27 @@ bool PipelineCache::StaticInputsCurrent(GraphicContext& graphics, const std::fil
 	const auto      written = std::filesystem::last_write_time(path, error);
 	if (error) return false;
 	const auto seeded = std::filesystem::last_write_time(seeds, error);
-	return !error && written >= seeded &&
-	       LocalShaderWarmup::Cache::FileIdentity(path) ==
-	           "KytyShaderWarmup3:" + PipelineCacheTitleId() + ShaderInputDeviceSignature(graphics.GetPhysicalDeviceProperties());
+	if (error || written < seeded ||
+	    LocalShaderWarmup::Cache::FileIdentity(path) !=
+	        "KytyShaderWarmup3:" + PipelineCacheTitleId() + ShaderInputDeviceSignature(graphics.GetPhysicalDeviceProperties()))
+		return false;
+	// A wave64 GPU's inputs made before 1ad4dccb hold no compute record (their static keys had the seeds' subgroup
+	// size): fewer records than the seed file (1.07: 11,676 for its 20,141, else 28,742), so they are made again.
+	if (graphics.SupportsComputeWave64()) {
+		// (The record count: the first word after the identity line and the checksum.)
+		const auto records = [](const std::filesystem::path& file) -> uint64_t {
+			std::ifstream stream(file, std::ios::binary);
+			std::string   identity;
+			uint64_t      checksum = 0;
+			uint32_t      count    = 0;
+			if (!std::getline(stream, identity) || !stream.read(reinterpret_cast<char*>(&checksum), sizeof(checksum)) ||
+			    !stream.read(reinterpret_cast<char*>(&count), sizeof(count)))
+				return 0;
+			return count;
+		};
+		if (records(path) < records(seeds)) return false;
+	}
+	return true;
 }
 
 // The store and its shards' files (or only the shards': prune), into a new store; the shard files are
