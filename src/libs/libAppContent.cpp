@@ -86,6 +86,9 @@ static bool ResolveTitleId(std::string* title_id) {
 	return false;
 }
 
+// Defined with the add-on mounting below; the initialization only names the directory.
+static std::filesystem::path AddcontRoot();
+
 int KYTY_SYSV_ABI AppContentInitialize(const AppContentInitParam* init_param,
                                        AppContentBootParam*       boot_param) {
 	PRINT_NAME();
@@ -103,6 +106,11 @@ int KYTY_SYSV_ABI AppContentInitialize(const AppContentInitParam* init_param,
 	} else {
 		LOGF("\t TITLE_ID missing\n");
 	}
+
+	// printf, not LOGF: this line is the canary that says a game uses AppContent at all. It comes
+	// after the title id is known, because that is what the add-on directory is named.
+	std::printf("AppContent: initialized; add-on content is looked for in %s\n",
+	            AddcontRoot().string().c_str());
 
 	return OK;
 }

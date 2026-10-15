@@ -1566,13 +1566,18 @@ static const std::vector<NpEntitlementAccessAddcontEntitlementInfo>& AddcontEnti
 
 		std::string title_id;
 		if (!Loader::SystemContentParamSfoGetString("TITLE_ID", &title_id) || title_id.empty()) {
+			std::printf("NpEntitlementAccess: no title id; only the built-in add-on list is answered\n");
 			return;
 		}
 		std::error_code error;
 		const auto      root = std::filesystem::path("Content") / title_id;
 		if (!std::filesystem::is_directory(root, error)) {
+			std::printf("NpEntitlementAccess: %s is not a directory; only the built-in add-on list is "
+			            "answered\n",
+			            root.string().c_str());
 			return;
 		}
+		std::printf("NpEntitlementAccess: reading add-ons from %s\n", root.string().c_str());
 		for (const auto& dir: std::filesystem::directory_iterator(root, error)) {
 			if (!dir.is_directory(error)) {
 				continue;
@@ -1620,6 +1625,12 @@ static int KYTY_SYSV_ABI NpEntitlementAccessInitialize(
     const NpEntitlementAccessInitParam* init_param, NpEntitlementAccessBootParam* boot_param) {
 	PRINT_NAME();
 
+	// A canary in printf: it says whether a game asks this library about its add-ons at all, and
+	// forces the list to be built, which prints what it found.
+	(void)AddcontEntitlements();
+	std::printf("NpEntitlementAccess: initialized with %zu add-on entitlement(s)\n",
+	            AddcontEntitlements().size());
+
 	if (init_param == nullptr || boot_param == nullptr) {
 		return NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
 	}
@@ -1631,6 +1642,9 @@ static int KYTY_SYSV_ABI NpEntitlementAccessInitialize(
 
 static int KYTY_SYSV_ABI NpEntitlementAccessGetSkuFlag(uint32_t* sku_flag) {
 	PRINT_NAME();
+
+	// printf: a canary for the games that ask this library about their add-ons.
+	std::printf("NpEntitlementAccess: sku flag asked for\n");
 
 	if (sku_flag == nullptr) {
 		return NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
@@ -1655,6 +1669,9 @@ static int KYTY_SYSV_ABI NpEntitlementAccessGetAddcontEntitlementInfoList(
 	}
 
 	*hit_num = static_cast<uint32_t>(AddcontEntitlements().size());
+
+	// printf: a canary for the games that list their add-ons rather than asking one by one.
+	std::printf("NpEntitlementAccess: add-on list asked for -> %u entr(ies)\n", *hit_num);
 
 	if (list != nullptr && list_num != 0) {
 		memset(list, 0, sizeof(*list) * list_num);
