@@ -55,6 +55,20 @@ uint32_t   g_channel_count = 2;
 uint32_t   g_speaker_first_channel = 0;
 uint32_t   g_speaker_channel_count = 2;
 float      g_speaker_gain          = 8.0f;
+// The controller's own +6 dB speaker preamp (HID output report byte 37). github.com/Jetsku/KytyPS5
+// sends it, and Linux does too, but together with this route's digital gain it can push the loudest
+// moments to full scale inside the controller, where the pad's small amplifier and speaker clip -
+// heard as tearing. Off by default here, so the digital gain is the only level that adds.
+bool       g_speaker_preamp        = false;
+
+// What the routes actually did, so a log can tell clipping from silence and from a stalled endpoint.
+uint64_t   g_speaker_writes        = 0;
+uint64_t   g_vibration_writes      = 0;
+uint64_t   g_speaker_clips         = 0;
+uint64_t   g_vibration_clips       = 0;
+uint64_t   g_dropped_writes        = 0;
+float      g_speaker_peak_max      = 0.0f;
+float      g_vibration_peak_max    = 0.0f;
 
 std::string Narrow(const wchar_t* text) {
 	std::string out;
@@ -82,7 +96,7 @@ bool RouteSpeaker(bool speaker) {
 		report[1]  = 0x80; // audio control 2 valid
 		report[5]  = 0x64; // speaker volume, 100 of 100
 		report[7]  = 0x30; // output path: right channel to the speaker, headphones muted
-		report[37] = 0x02; // speaker preamp, +6 dB
+		report[37] = g_speaker_preamp ? 0x02 : 0x00; // speaker preamp, +6 dB when asked for
 	}
 
 	const int devices = SDL_NumJoysticks();
@@ -93,7 +107,8 @@ bool RouteSpeaker(bool speaker) {
 		}
 		const bool sent =
 		    SDL_GameControllerSendEffect(pad, report.data(), static_cast<int>(report.size())) == 0;
-		std::printf("DualSense: audio routing -> %s%s\n", speaker ? "the pad's speaker" : "headphones",
+		std::printf("DualSense: audio routing -> %s%s%s\n", speaker ? "the pad's speaker" : "headphones",
+		            speaker && g_speaker_preamp ? " (+6 dB preamp)" : "",
 		            sent ? "" : " (the HID report was refused)");
 		return sent;
 	}
@@ -184,6 +199,8 @@ void ReadSettingsFile() {
 			ParseChannels(value, &g_first_channel, &g_channel_count, &g_all_channels);
 		} else if (key == "speaker_channels") {
 			ParseChannels(value, &g_speaker_first_channel, &g_speaker_channel_count, &g_all_channels);
+		} else if (key == "speaker_preamp") {
+			g_speaker_preamp = value != "0" && Lowered(value) != "false" && Lowered(value) != "no";
 		}
 	}
 	std::fclose(file);
@@ -250,6 +267,11 @@ void ReadSettings() {
 		if (gain >= 0.0f && gain <= 64.0f) {
 			g_speaker_gain = gain;
 		}
+	}
+	// KYTY_DUALSENSE_SPEAKER_PREAMP=1 asks for the controller's own +6 dB speaker preamp (off by
+	// default: with this route's digital gain the loudest moments then clip inside the controller).
+	if (const char* value = std::getenv("KYTY_DUALSENSE_SPEAKER_PREAMP"); value != nullptr) {
+		g_speaker_preamp = std::string(value) != "0";
 	}
 	if (const char* value = std::getenv("KYTY_DUALSENSE_HAPTICS_LOG"); value != nullptr) {
 		g_log = std::string(value) != "0";
@@ -529,6 +551,7 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 	}
 	const auto free = g_buffer_frames > padding ? g_buffer_frames - padding : 0;
 	if (free < out_frames) {
+		g_dropped_writes++;
 		return false; // behind: drop rather than delay the guest's audio thread
 	}
 
@@ -570,6 +593,15 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 			if (gains != nullptr) {
 				value *= gains[source_channel];
 			}
+			// Count what the gain pushed past full scale before clamping it: the digital domain is
+			// where this branch can act, and the controller's own amplifier clips after it.
+			if (value > 1.0f || value < -1.0f) {
+				if (speaker) {
+					g_speaker_clips++;
+				} else {
+					g_vibration_clips++;
+				}
+			}
 			if (value > 1.0f) {
 				value = 1.0f;
 			} else if (value < -1.0f) {
@@ -597,19 +629,26 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 
 	g_render->ReleaseBuffer(out_frames, 0);
 
-	// What actually reaches the pad, so a log says whether the game fills this route at all: the
-	// first writes, then one every 512 (about every 2.7 s of 5 ms calls), with their peak level.
-	static uint32_t speaker_writes  = 0;
-	static uint32_t vibration_writes = 0;
-	auto&           writes          = speaker ? speaker_writes : vibration_writes;
-	writes++;
-	if (writes <= 4 || (writes % 512) == 0) {
-		std::printf("DualSense: %s write %u: %u frames at %u Hz, %u ch, %s, gains %s%.2f, peak %.3f, "
-		            "queue %u/%u\n",
-		            speaker ? "speaker" : "vibration", writes, frames, source_rate, source_channels,
-		            is_float ? "float" : "s16", gains != nullptr ? "" : "(none) ",
+	// What actually reaches the pad, so a log says whether the game fills this route at all, how loud
+	// it got and whether the gain ran past full scale: the first writes, then one every 512 (about
+	// every 2.7 s of 5 ms calls), with the peak and the run's maximum, clipped samples and drops.
+	auto& route_writes = speaker ? g_speaker_writes : g_vibration_writes;
+	auto& route_peak   = speaker ? g_speaker_peak_max : g_vibration_peak_max;
+	auto& route_clips  = speaker ? g_speaker_clips : g_vibration_clips;
+	route_writes++;
+	if (peak > route_peak) {
+		route_peak = peak;
+	}
+	if (route_writes <= 4 || (route_writes % 512) == 0) {
+		std::printf("DualSense: %s write %llu: %u frames at %u Hz, %u ch, %s, gains %s%.2f, peak "
+		            "%.3f (max %.3f), clipped %llu, dropped %llu, queue %u/%u\n",
+		            speaker ? "speaker" : "vibration", static_cast<unsigned long long>(route_writes),
+		            frames, source_rate, source_channels, is_float ? "float" : "s16",
+		            gains != nullptr ? "" : "(none) ",
 		            static_cast<double>(gains != nullptr ? gains[0] : 1.0f),
-		            static_cast<double>(peak), padding, g_buffer_frames);
+		            static_cast<double>(peak), static_cast<double>(route_peak),
+		            static_cast<unsigned long long>(route_clips),
+		            static_cast<unsigned long long>(g_dropped_writes), padding, g_buffer_frames);
 	}
 	return true;
 }

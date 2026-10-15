@@ -27,6 +27,11 @@
 //                                  its noise floor, so the digital gain is what makes it clear.
 //                                  8 is clear, 16 borderline, 32 clips (4.0 is what
 //                                  github.com/Jetsku/KytyPS5's launcher gives at 200%).
+//   KYTY_DUALSENSE_SPEAKER_PREAMP=0|1  the controller's own +6 dB speaker preamp (default: off).
+//                                  github.com/Jetsku/KytyPS5 and Linux both send it, but with this
+//                                  route's digital gain the loudest moments then reach full scale
+//                                  inside the controller, where the pad's small amplifier and
+//                                  speaker clip - reported in play as tearing.
 //   KYTY_DUALSENSE_HAPTICS_LOG=1   prints what it finds and what it writes (default: off)
 namespace Libs::Controller::DualSenseHaptics {
 
