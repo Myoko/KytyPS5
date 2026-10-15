@@ -6,12 +6,17 @@
 #include "libs/libs.h"
 #include "libs/network.h"
 #include "loader/symbolDatabase.h"
+#include "loader/systemContent.h"
 
 #include <cctype>
+#include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <vector>
 
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
@@ -1542,6 +1547,75 @@ static constexpr NpEntitlementAccessAddcontEntitlementInfo NP_ENTITLEMENT_ACCESS
     {{{"_mtqu6"}, {}}, 3, 4}, // GTA V hash 0x9cd1bcad
 };
 
+// The add-ons the guest may be told it owns: the entries this port has always had, plus every add-on
+// kept beside the emulator in
+//
+//   Content\<title id>\<anything>\sce_sys\param.json
+//
+// whose contentId's last dash-separated part is the entitlement label (sixteen characters, which is
+// what the guest asks about) - the same directory sceAppContentAddcontMount serves, so a game that
+// finds its add-on content there is also told it owns it. Built once, on the first question.
+static const std::vector<NpEntitlementAccessAddcontEntitlementInfo>& AddcontEntitlements() {
+	static std::vector<NpEntitlementAccessAddcontEntitlementInfo> entitlements;
+	static std::once_flag                                         once;
+
+	std::call_once(once, [] {
+		for (const auto& entry: NP_ENTITLEMENT_ACCESS_ADDON_LIST) {
+			entitlements.push_back(entry);
+		}
+
+		std::string title_id;
+		if (!Loader::SystemContentParamSfoGetString("TITLE_ID", &title_id) || title_id.empty()) {
+			return;
+		}
+		std::error_code error;
+		const auto      root = std::filesystem::path("Content") / title_id;
+		if (!std::filesystem::is_directory(root, error)) {
+			return;
+		}
+		for (const auto& dir: std::filesystem::directory_iterator(root, error)) {
+			if (!dir.is_directory(error)) {
+				continue;
+			}
+			std::ifstream param(dir.path() / "sce_sys" / "param.json");
+			if (!param) {
+				continue;
+			}
+			const std::string text((std::istreambuf_iterator<char>(param)),
+			                       std::istreambuf_iterator<char>());
+			const auto        key = text.find("\"contentId\"");
+			if (key == std::string::npos) {
+				continue;
+			}
+			const auto colon = text.find(':', key);
+			const auto first = colon == std::string::npos ? std::string::npos : text.find('"', colon + 1);
+			const auto last  = first == std::string::npos ? std::string::npos : text.find('"', first + 1);
+			if (first == std::string::npos || last == std::string::npos) {
+				continue;
+			}
+			const auto content_id = text.substr(first + 1, last - first - 1);
+			const auto dash       = content_id.rfind('-');
+			if (dash == std::string::npos || dash + 1 >= content_id.size()) {
+				continue;
+			}
+			const auto label = content_id.substr(dash + 1);
+
+			NpEntitlementAccessAddcontEntitlementInfo info {};
+			std::snprintf(info.entitlement_label.data, sizeof(info.entitlement_label.data), "%s",
+			              label.c_str());
+			info.package_type    = NP_ENTITLEMENT_ACCESS_ADDON_LIST[0].package_type;
+			info.download_status = NP_ENTITLEMENT_ACCESS_ADDON_LIST[0].download_status;
+			entitlements.push_back(info);
+
+			// printf, not LOGF: the console's LOGF is silent in the release configuration.
+			std::printf("NpEntitlementAccess: add-on '%s' reported as owned (%s)\n", label.c_str(),
+			            content_id.c_str());
+		}
+	});
+
+	return entitlements;
+}
+
 static int KYTY_SYSV_ABI NpEntitlementAccessInitialize(
     const NpEntitlementAccessInitParam* init_param, NpEntitlementAccessBootParam* boot_param) {
 	PRINT_NAME();
@@ -1580,15 +1654,15 @@ static int KYTY_SYSV_ABI NpEntitlementAccessGetAddcontEntitlementInfoList(
 		return NP_ENTITLEMENT_ACCESS_ERROR_PARAMETER;
 	}
 
-	*hit_num = static_cast<uint32_t>(sizeof(NP_ENTITLEMENT_ACCESS_ADDON_LIST) /
-	                                 sizeof(NP_ENTITLEMENT_ACCESS_ADDON_LIST[0]));
+	*hit_num = static_cast<uint32_t>(AddcontEntitlements().size());
 
 	if (list != nullptr && list_num != 0) {
 		memset(list, 0, sizeof(*list) * list_num);
 
-		const auto copy_num = (list_num < *hit_num ? list_num : *hit_num);
+		const auto& entitlements = AddcontEntitlements();
+		const auto  copy_num     = (list_num < *hit_num ? list_num : *hit_num);
 		for (uint32_t i = 0; i < copy_num; i++) {
-			list[i] = NP_ENTITLEMENT_ACCESS_ADDON_LIST[i];
+			list[i] = entitlements[i];
 		}
 	}
 
@@ -1611,14 +1685,19 @@ static int KYTY_SYSV_ABI NpEntitlementAccessGetAddcontEntitlementInfo(
 
 	memset(info, 0, sizeof(*info));
 
-	for (const auto& entitlement: NP_ENTITLEMENT_ACCESS_ADDON_LIST) {
+	for (const auto& entitlement: AddcontEntitlements()) {
 		if (strncmp(entitlement_label->data, entitlement.entitlement_label.data,
 		            sizeof(entitlement_label->data)) == 0) {
 			*info = entitlement;
+			// printf, not LOGF: this line is what says which add-ons a game asked about.
+			std::printf("NpEntitlementAccess: add-on '%.16s' asked about -> owned\n",
+			            entitlement_label->data);
 			return 0;
 		}
 	}
 
+	std::printf("NpEntitlementAccess: add-on '%.16s' asked about -> not owned\n",
+	            entitlement_label->data);
 	return NP_ENTITLEMENT_ACCESS_ERROR_NO_ENTITLEMENT;
 }
 

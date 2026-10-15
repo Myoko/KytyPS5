@@ -9,9 +9,17 @@
 #include "loader/symbolDatabase.h"
 #include "loader/systemContent.h"
 
+#include <algorithm>
+#include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <string>
 #include <system_error>
+#include <vector>
+
+#include "kernel/fileSystem.h"
 
 namespace Libs {
 
@@ -161,16 +169,65 @@ int KYTY_SYSV_ABI AppContentDownloadDataGetAvailableSpaceKb(const AppContentMoun
 	return GetAvailableSpaceKb(mount_point, available_space_kb);
 }
 
+// Add-on content (DLC) is kept beside the emulator, one directory per add-on:
+//
+//   Content\<title id>\<anything>\
+//       sce_sys\param.json      the add-on's own, as it comes out of the package
+//       ...                     the add-on's files
+//
+// The guest asks for each one by its entitlement label and gets a mount point back (the guest's
+// AppContentMountPoint holds sixteen bytes, so the points are short). A directory named like the
+// label, or whose param.json mentions it, is taken for that label; a dump's label often differs from
+// the store's, so a label that matches nothing takes the next directory in name order - the pairing
+// is logged, and renaming the directory fixes it.
+static std::filesystem::path AddcontRoot() {
+	return std::filesystem::path("Content") / g_title_id;
+}
+
+static std::string EntitlementText(const NpUnifiedEntitlementLabel* label) {
+	std::string text;
+	for (size_t i = 0; i < sizeof(label->data) && label->data[i] != '\0'; i++) {
+		text.push_back(label->data[i]);
+	}
+	return text;
+}
+
+static std::vector<std::filesystem::path> AddcontFolders() {
+	std::vector<std::filesystem::path> folders;
+
+	std::error_code error;
+	const auto      root = AddcontRoot();
+	if (!std::filesystem::is_directory(root, error)) {
+		return folders;
+	}
+	for (const auto& entry: std::filesystem::directory_iterator(root, error)) {
+		if (entry.is_directory(error)) {
+			folders.push_back(entry.path());
+		}
+	}
+	std::sort(folders.begin(), folders.end());
+	return folders;
+}
+
+static bool FolderMentionsLabel(const std::filesystem::path& folder, const std::string& label) {
+	if (label.empty()) {
+		return false;
+	}
+	if (folder.filename().string().find(label) != std::string::npos) {
+		return true;
+	}
+	std::ifstream param(folder / "sce_sys" / "param.json");
+	if (!param) {
+		return false;
+	}
+	const std::string text((std::istreambuf_iterator<char>(param)), std::istreambuf_iterator<char>());
+	return text.find(label) != std::string::npos;
+}
+
 int KYTY_SYSV_ABI AppContentAddcontMount(uint32_t                         service_label,
                                          const NpUnifiedEntitlementLabel* entitlement_label,
                                          AppContentMountPoint*            mount_point) {
 	PRINT_NAME();
-
-	LOGF("\t service_label     = %" PRIu32 "\n"
-	     "\t entitlement_label = 0x%016" PRIx64 "\n"
-	     "\t mount_point       = 0x%016" PRIx64 "\n",
-	     service_label, reinterpret_cast<uint64_t>(entitlement_label),
-	     reinterpret_cast<uint64_t>(mount_point));
 
 	if (entitlement_label == nullptr || mount_point == nullptr) {
 		return APP_CONTENT_ERROR_PARAMETER;
@@ -178,7 +235,44 @@ int KYTY_SYSV_ABI AppContentAddcontMount(uint32_t                         servic
 
 	std::memset(mount_point->data, 0, sizeof(mount_point->data));
 
-	return APP_CONTENT_ERROR_DRM_NO_ENTITLEMENT;
+	// The console's LOGF is silent in the release configuration, so these report through printf.
+	static std::vector<std::string> mounted;
+	static std::atomic<uint32_t>    next_point {0};
+
+	const auto label   = EntitlementText(entitlement_label);
+	const auto folders = AddcontFolders();
+
+	std::filesystem::path chosen;
+	for (const auto& folder: folders) {
+		if (FolderMentionsLabel(folder, label)) {
+			chosen = folder;
+			break;
+		}
+	}
+	if (chosen.empty()) {
+		for (const auto& folder: folders) {
+			if (std::find(mounted.begin(), mounted.end(), folder.string()) == mounted.end()) {
+				chosen = folder;
+				break;
+			}
+		}
+	}
+
+	if (chosen.empty()) {
+		std::printf("AppContent: no add-on for '%s' under %s\n", label.c_str(),
+		            AddcontRoot().string().c_str());
+		return APP_CONTENT_ERROR_DRM_NO_ENTITLEMENT;
+	}
+
+	const auto point = "/addcont" + std::to_string(next_point.fetch_add(1));
+	LibKernel::FileSystem::Mount(chosen, point);
+	mounted.push_back(chosen.string());
+
+	std::printf("AppContent: add-on '%s' -> %s (mounted at %s)\n", label.c_str(),
+	            chosen.string().c_str(), point.c_str());
+
+	std::snprintf(mount_point->data, sizeof(mount_point->data), "%s", point.c_str());
+	return OK;
 }
 
 int KYTY_SYSV_ABI AppContentAddcontUnmount(const AppContentMountPoint* mount_point) {
@@ -193,6 +287,9 @@ int KYTY_SYSV_ABI AppContentAddcontUnmount(const AppContentMountPoint* mount_poi
 	if (mount_point->data[0] == '\0') {
 		return APP_CONTENT_ERROR_NOT_MOUNTED;
 	}
+
+	LibKernel::FileSystem::Umount(mount_point->data);
+	std::printf("AppContent: add-on unmounted (%s)\n", mount_point->data);
 
 	return OK;
 }
