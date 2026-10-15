@@ -20,10 +20,13 @@
 #                                            or its bin\x64; default: a "streamline" folder next to
 #                                            the emulator)
 #   .\run-windows.ps1 -Fps120                the game's frame rate up to 120 fps instead of 60 (a 120 Hz
-#                                            virtual vblank; movies play faster)
+#                                            virtual vblank; movies, menus and loading screens keep 60)
 #   .\run-windows.ps1 -Vblank 240            another virtual vblank rate (default 60, the console's)
 #   .\run-windows.ps1 -RenderHeight 1080     Demon's Souls renders its 3D at 1920x1080 instead of 2560x1440
 #                                            (720-1440; its 4K output and UI stay): faster where the GPU limits
+#   .\run-windows.ps1 -Aspect 21:9           Demon's Souls renders its 3D wider (21:9 = 64:27, up to 32:9; 3416x1440
+#                                            at 21:9), seeing more to the sides; shown at that aspect (the HUD at
+#                                            its sides unstretched, in-game menus stretched), movies at 16:9
 #   .\run-windows.ps1 -Quality low            Demon's Souls draws less (low / lowest: simpler shadows and
 #                                            distant detail): faster where the CPU limits
 #   .\run-windows.ps1 -Game <folder>         the game (the folder with eboot.bin); remembered in
@@ -56,6 +59,7 @@ param(
 	[int]$Vblank = 0,
 	[switch]$Fps120,
 	[int]$RenderHeight = 0,
+	[string]$Aspect = '',
 	[string]$Quality = '',
 	[string[]]$Set = @(),
 	[string]$Patch = '',
@@ -200,9 +204,9 @@ if ($Language -ge 0) { Set-Option '--console-language' "$Language" }
 # vblank or a flip on the CPU, its submissions block once the flips queue up. At the console's
 # 60 Hz the game runs at most 60 fps; frames that miss a vblank still queue (no 30 fps lock).
 # -Fps120: a 120 Hz vblank, the game's own frames up to 120 fps (Stonefang standing 60 -> 79 fps).
-# Play keeps its speed (its clock is real time: a 0.7 s camera turn and a 0.6 s walk end in the
-# same place at 79 and 60 fps), but movies advance a frame per flip and play faster (start-up to
-# the title 70 -> 54 s). With the Linux configs' 240 Hz the intro played about four times too fast.
+# Play keeps its speed with gameMinDeltaTime (below), but movies advance a frame per flip and play
+# faster (start-up to the title 70 -> 54 s). With the Linux configs' 240 Hz the intro played about
+# four times too fast.
 Set-Option '--vblank-frequency' "$(if ($Vblank -gt 0) { $Vblank } elseif ($Fps120) { 120 } else { 60 })"
 if ($Patch) { Set-Option '--game-patch' (Resolve-Path $Patch).Path }
 # Windows dispatches exceptions on the faulting thread's stack, over the guest's SysV red
@@ -299,6 +303,9 @@ if (!$environment.Contains('KYTY_GAME_CONVARS') -and !$Baseline -and $titleId -m
 # the game upscales it to its 3840x2160 output as it does 1440 (a laptop's RTX 3080 at Boletaria 1-1: standing
 # 20.7 -> 24.5 fps at 1080, walking 18.7 -> 22.2).
 if ($RenderHeight -gt 0 -and $RenderHeight -ne 1440) { $environment['KYTY_RENDER_HEIGHT'] = "$RenderHeight" }
+# -Aspect 21:9 (or 32:9, w:h): the 3D rendered at that aspect, its width at the render height (3416x1440), the game's
+# projection widened to match; the presenter shows those frames at the aspect and the others at 16:9.
+if ($Aspect -and $Aspect -ne '16:9') { $environment['KYTY_RENDER_ASPECT'] = $Aspect }
 # -Quality low|lowest: Demon's Souls engine settings that cut what a frame draws, for PCs whose CPU limits the frame
 # rate (each draw costs the emulator CPU time). low: shadows drawn from simpler meshes, levels of detail chosen as for
 # a 720-line picture (1080), sun shadows to 125 m (250); lowest: detail as for 480 lines, sun shadows to 60 m, no
@@ -351,6 +358,15 @@ if ($StreamlineDir) { $environment['KYTY_STREAMLINE_DIR'] = $StreamlineDir }
 foreach ($pair in ($Set | ForEach-Object { $_ -split ',(?=[A-Za-z_][A-Za-z0-9_]*=)' })) {
 	$key, $value = $pair -split '=', 2
 	if ($value) { $environment[$key] = $value } else { $environment.Remove($key); Remove-Item "env:$key" -ErrorAction SilentlyContinue }
+}
+# Above 60 Hz (-Fps120, -Vblank; after -Set, whose engine settings get it too): Demon's Souls steps its game by at
+# least a frame of its target rate each frame (gameMinDeltaTime below 0, its default: 1/60 s, the cinematic mode's
+# 1/30), so frames past that rate played the game that much faster (issue #22: Stonefang 2-3 at 74 fps walked 4.52 m/s,
+# 3.66 at 60; the cinematic mode several times over). A 4 ms least step keeps it real time (the same run, the same
+# 74 fps: 3.54-3.68 m/s).
+$vblankHz = if ($Vblank -gt 0) { $Vblank } elseif ($Fps120) { 120 } else { 60 }
+if ($vblankHz -gt 60 -and $titleId -match '^PPSA0134[0-2]$' -and "$($environment['KYTY_GAME_CONVARS'])" -notmatch 'gameMinDeltaTime') {
+	$environment['KYTY_GAME_CONVARS'] = (@($environment['KYTY_GAME_CONVARS'], 'gameMinDeltaTime=0.004') | Where-Object { $_ }) -join ';'
 }
 
 # The performance cores of a hybrid CPU (Windows' CPU set efficiency classes: an Intel Core with

@@ -9,7 +9,8 @@ $languages = '日语', '英语（美国）', '法语（法国）', '西班牙语
 	'葡萄牙语（葡萄牙）', '俄语', '韩语', '中文（繁体）', '中文（简体）', '芬兰语', '瑞典语',
 	'丹麦语', '挪威语', '波兰语', '葡萄牙语（巴西）', '英语（英国）', '土耳其语', '西班牙语（拉丁美洲）',
 	'阿拉伯语', '法语（加拿大）', '捷克语', '匈牙利语', '希腊语', '罗马尼亚语', '泰语', '越南语', '印尼语'
-$resolutions = '1280x720', '1920x1080', '2560x1440', '3840x2160'
+$resolutions = '1280x720', '1920x1080', '2560x1440', '3840x2160', '2560x1080', '3440x1440', '3840x1600', '5120x2160',
+	'3840x1080', '5120x1440'
 # The height Demon's Souls renders its 3D at (run-windows.ps1 -RenderHeight); its output and UI stay 3840x2160.
 $renderHeights = '1440 (PS5)', '1296', '1152', '1080', '900'
 # Demon's Souls' own settings for what a frame draws (run-windows.ps1 -Quality): simpler shadows and distant detail.
@@ -20,7 +21,7 @@ $frameGens = '关闭', '2x', '3x', '4x', '5x', '6x'
 $overlays = '关闭', '帧率', '详细'
 
 $settings = [ordered]@{ game = ''; resolution = '2560x1440'; fullscreen = $false; aspect = $true; language = 1; redzone = $true;
-	ecores = $false; cheats = $true; fps120 = $false; render = 1440; quality = 'standard'; vsync = $false; hdr = $false; framegen = 0; hud = 0; streamline = '' }
+	ecores = $false; cheats = $true; fps120 = $false; render = 1440; ratio = '16:9'; quality = 'standard'; vsync = $false; hdr = $false; framegen = 0; hud = 0; streamline = '' }
 if (Test-Path $settingsPath) {
 	$saved = Get-Content $settingsPath -Raw | ConvertFrom-Json
 	foreach ($property in $saved.PSObject.Properties) { if ($settings.Contains($property.Name)) { $settings[$property.Name] = $property.Value } }
@@ -123,6 +124,7 @@ function Get-PlayCommand {
 	if (!$settings.redzone) { $arguments += '-NoRedZone' }
 	if ($settings.fps120) { $arguments += '-Fps120' }
 	if ([int]$settings.render -gt 0 -and [int]$settings.render -ne 1440) { $arguments += @('-RenderHeight', [int]$settings.render) }
+	if ($settings.ratio -in '21:9', '32:9') { $arguments += @('-Aspect', $settings.ratio) }
 	# Presents wait for the display's refresh (Vulkan FIFO): no tearing, and G-SYNC/FreeSync displays keep adapting.
 	if ($settings.vsync) { $arguments += @('-PresentMode', 'Fifo') }
 	# Demon's Souls' own settings for what a frame draws (run-windows.ps1 -Quality): simpler shadows and distant detail.
@@ -244,7 +246,7 @@ $language.SelectedIndex = [Math]::Max(0, [Math]::Min($languages.Count - 1, [int]
 Add-Row '主机语言' @($language)
 $redzone = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '红区保护（推荐）'; AutoSize = $true; Checked = [bool]$settings.redzone }
 Add-Row '' @($redzone)
-$fps120 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '最高 120 fps（用游戏自身的帧；过场动画会放快）'; AutoSize = $true; Checked = [bool]$settings.fps120 }
+$fps120 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '最高 120 fps（游戏自身的帧；过场动画保持 60）'; AutoSize = $true; Checked = [bool]$settings.fps120 }
 Add-Row '' @($fps120)
 $vsync = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '垂直同步（不撕裂；自适应同步显示器保持生效）'; AutoSize = $true; Checked = [bool]$settings.vsync }
 Add-Row '' @($vsync)
@@ -256,6 +258,14 @@ $render.SelectedItem = ($renderHeights | Where-Object { ($_ -split ' ')[0] -eq [
 if ($render.SelectedIndex -lt 0) { $render.SelectedIndex = 0 }
 $renderNote = New-Object System.Windows.Forms.Label -Property @{ Text = '《恶魔之魂》的 3D 渲染高度；越低越快、越模糊'; AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
 Add-Row '渲染高度' @($render, $renderNote)
+$ratios = '16:9 (PS5)', '21:9', '32:9'
+$ratio = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 160 }
+$ratio.Items.AddRange($ratios)
+$ratio.SelectedItem = ($ratios | Where-Object { ($_ -split ' ')[0] -eq [string]$settings.ratio } | Select-Object -First 1)
+if ($ratio.SelectedIndex -lt 0) { $ratio.SelectedIndex = 0 }
+$ratioNote = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0'
+	Text = '3D 画面更宽（两侧看得更多）；HUD 保持形状、菜单会被拉伸、过场保持 16:9' }
+Add-Row '画面比例' @($ratio, $ratioNote)
 $quality = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 205 }
 $quality.Items.AddRange($qualities)
 $quality.SelectedItem = ($qualities | Where-Object { ($_ -split ' ')[0] -eq [string]$settings.quality } | Select-Object -First 1)
@@ -343,6 +353,7 @@ function Read-Form {
 	$settings.hud        = $hud.SelectedIndex
 	$settings.render     = [int](([string]$render.SelectedItem -split ' ')[0])
 	$settings.quality    = ([string]$quality.SelectedItem -split ' ')[0].ToLowerInvariant()
+	$settings.ratio      = ([string]$ratio.SelectedItem -split ' ')[0]
 	# (Kept as it was where the DLLs are missing.)
 	if ($frameGenAvailable) { $settings.framegen = if ($frameGen.SelectedIndex -gt 0) { $frameGen.SelectedIndex + 1 } else { 0 } }
 	$settings.ecores     = $ecores.Checked

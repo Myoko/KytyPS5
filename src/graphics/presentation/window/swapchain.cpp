@@ -12,6 +12,7 @@
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window/windowInternal.h"
+#include "loader/demonsSoulsRenderSize.h"
 #include "loader/demonsSoulsWarp.h"
 #ifdef KYTY_LOCAL_VULKAN_RECORDING
 #include "vulkan-recording.h"
@@ -49,6 +50,7 @@ struct Presenter::Frame {
 	bool                   reusing_last = false;
 	bool                   hdr          = false; // BT.2100 PQ pixels
 	bool                   blank        = false; // a cleared frame (no guest picture)
+	bool                   scene        = false; // the game's 3D view (FrameGen::TakeScene)
 
 	void Configure(GraphicContext& graphics, vk::Extent2D extent, vk::Format format);
 	void Transit(vk::CommandBuffer command, vk::ImageLayout layout, vk::AccessFlags2 access);
@@ -302,8 +304,9 @@ public:
 	void                 Recreate(bool surface_lost = false);
 	[[nodiscard]] Status AcquireNextImage();
 	[[nodiscard]] bool   PrepareSystemOverlay(SystemOverlayHud* hud = nullptr);
+	// `scene`: the frame shows the game's 3D view (Presenter::IsSceneFrame).
 	void                 RecordPresentCommands(CommandBuffer& command, VulkanImage& source,
-	                                           bool draw_system_overlay);
+	                                           bool draw_system_overlay, bool scene);
 	uint64_t             Submit(CommandScheduler& scheduler);
 	[[nodiscard]] Status Present();
 
@@ -457,8 +460,9 @@ struct Presenter::Impl {
 			return;
 		}
 		std::array<char, 128> line {};
-		if (progress.done < progress.total) {
-			std::snprintf(line.data(), line.size(), "Preparing shaders %zu%%  (%zu / %zu)", progress.done * 100 / progress.total,
+		if (progress.done < progress.total || progress.label != nullptr) {
+			std::snprintf(line.data(), line.size(), "%s %zu%%  (%zu / %zu)",
+			              progress.label != nullptr ? progress.label : "Preparing shaders", progress.done * 100 / progress.total,
 			              progress.done, progress.total);
 		} else {
 			if (prefetch_finished == std::chrono::steady_clock::time_point {}) {
@@ -829,7 +833,7 @@ bool Swapchain::PrepareSystemOverlay(SystemOverlayHud* hud) {
 }
 
 void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& source,
-                                      bool draw_system_overlay) {
+                                      bool draw_system_overlay, bool scene) {
 	if (source.state.layout != vk::ImageLayout::eTransferSrcOptimal) {
 		EXIT("invalid prepared presentation image, vk_image=%p layout=%d\n",
 		     static_cast<void*>(source.image), static_cast<int>(source.state.layout));
@@ -861,13 +865,23 @@ void Swapchain::RecordPresentCommands(CommandBuffer& command, VulkanImage& sourc
 		const char* value = std::getenv("KYTY_PRESENT_ASPECT");
 		return value != nullptr && std::string_view(value) == "fit";
 	}();
-	int dst_x = 0, dst_y = 0;
-	int dst_w = static_cast<int>(m_extent.width), dst_h = static_cast<int>(m_extent.height);
-	if (aspect_fit && source.extent.width != 0 && source.extent.height != 0) {
-		const double scale = std::min(static_cast<double>(m_extent.width) / source.extent.width,
-		                              static_cast<double>(m_extent.height) / source.extent.height);
-		dst_w = std::max(1, static_cast<int>(std::lround(source.extent.width * scale)));
-		dst_h = std::max(1, static_cast<int>(std::lround(source.extent.height * scale)));
+	// KYTY_RENDER_ASPECT: the game's 3D was rendered wider and squeezed into its 16:9 output; a frame showing it is
+	// shown at that aspect, the others (movies, menus, loading screens) at their own 16:9, both fitted to the window
+	// (within 2% of the window's aspect: filling it).
+	int          dst_x = 0, dst_y = 0;
+	int          dst_w = static_cast<int>(m_extent.width), dst_h = static_cast<int>(m_extent.height);
+	const double frame_aspect = source.extent.height != 0
+	                                ? static_cast<double>(source.extent.width) / source.extent.height
+	                                : 0.0;
+	const double wide         = Loader::DemonsSoulsRenderSize::WideAspect();
+	double       aspect       = wide > 0.0 ? (scene ? wide : frame_aspect) : aspect_fit ? frame_aspect : 0.0;
+	if (const double window = static_cast<double>(m_extent.width) / std::max(1u, m_extent.height);
+	    wide > 0.0 && std::fabs(aspect / window - 1.0) < 0.02) {
+		aspect = 0.0;
+	}
+	if (aspect > 0.0 && source.extent.width != 0 && source.extent.height != 0) {
+		dst_w = std::max(1, static_cast<int>(std::lround(std::min<double>(m_extent.width, m_extent.height * aspect))));
+		dst_h = std::max(1, static_cast<int>(std::lround(std::min<double>(m_extent.height, m_extent.width / aspect))));
 		dst_x = (static_cast<int>(m_extent.width) - dst_w) / 2;
 		dst_y = (static_cast<int>(m_extent.height) - dst_h) / 2;
 		if (dst_w != static_cast<int>(m_extent.width) || dst_h != static_cast<int>(m_extent.height)) {
@@ -1012,6 +1026,7 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 	frame->Configure(m_impl->window.graphic_ctx,
 	                 {image.backing.extent.width, image.backing.extent.height}, frame_format);
 	frame->CopyFrom(buffer, image);
+	frame->scene    = FrameGen::TakeScene();
 	frame->fg.valid = false;
 	if (FrameGen::Enabled()) {
 		FrameGen::PrepareInputs(m_impl->window.graphic_ctx, m_impl->renderer.GetTextureCache(),
@@ -1032,6 +1047,7 @@ Presenter::Frame& Presenter::PrepareBlankFrame(uint32_t width, uint32_t height, 
 	frame->fg.valid = false;
 	frame->hdr      = false;
 	frame->blank    = true;
+	frame->scene    = false;
 	frame->Configure(m_impl->window.graphic_ctx, {width, height}, format);
 	vk::ClearColorValue clear {};
 	clear.float32[3] = opaque ? 1.0f : 0.0f;
@@ -1088,6 +1104,10 @@ RenderContext& Presenter::Renderer() const noexcept {
 
 bool Presenter::FlipRateApplies(const Frame& frame) noexcept {
 	return !FrameGen::Enabled() || frame.fg.valid;
+}
+
+bool Presenter::IsSceneFrame(const Frame& frame) noexcept {
+	return frame.scene;
 }
 
 void Presenter::Present(Frame& frame, bool reuse) {
@@ -1148,7 +1168,7 @@ void Presenter::Present(Frame& frame, bool reuse) {
 				    (static_cast<float>(hud->drawn.offset.x - region.offset.x) + static_cast<float>(hud->drawn.extent.width) + margin) / w,
 				    (static_cast<float>(hud->drawn.offset.y - region.offset.y) + static_cast<float>(hud->drawn.extent.height) + margin) / h);
 			}
-			swapchain.RecordPresentCommands(command, frame.image, draw_system_overlay);
+			swapchain.RecordPresentCommands(command, frame.image, draw_system_overlay, frame.scene);
 			frame.present_tick = swapchain.Submit(m_impl->present_scheduler);
 		}
 #if defined(_WIN32)

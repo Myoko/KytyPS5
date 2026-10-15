@@ -254,7 +254,12 @@ public:
 	                                                 const ShaderProgram&          compute_program);
 	// The optimized builds finished since replace their unoptimized pipelines (at each flip: the draws of native
 	// XPR records hold their pipelines and look nothing up). GPU thread.
+	// Each flip (from the CPU or the GPU's commands): optimized builds in place, shader plans unused for a while out of
+	// memory.
 	void PromoteFinished();
+	// The session's numbers in the log (shader prefetch, unoptimized first builds, shader plans), once: at the window's
+	// close, before the process may end without this cache's destructor.
+	void ReportSession();
 	// Live "objects": what the cache keeps, as counts (stdout).
 	void ReportObjects(uint64_t id) const;
 	// Native XPR records (src/local/native-xpr.inc): the SRT evaluation of a stage
@@ -274,8 +279,11 @@ public:
 	// The shader prefetch (ProgramCache::Prefetch): programs translated or taken over, of `total`;
 	// all zero while it loads its inputs or when it does not run. Any thread.
 	struct PrefetchProgress {
-		size_t done = 0, total = 0;
+		size_t      done = 0, total = 0;
+		const char* label = nullptr; // a warmup beside the game's phase (null: the prefetch's progress)
 	};
+	// Stops a warmup still running beside the game, and waits for it (the window's close; not under m_mutex).
+	void StopWarmup();
 	[[nodiscard]] PrefetchProgress GetPrefetchProgress() const;
 
 private:
@@ -416,6 +424,20 @@ private:
 	                                     bool primitive_restart_enable, const ShaderProgram& vertex_program,
 	                                     const ShaderProgram& pixel_program, bool native_bindings, bool async);
 	void      FinishCompileWorkers();
+	bool      m_session_reported = false; // (ReportSession)
+	// The start-up warmup (the constructor's choices): in front of the game, or beside it on m_warmup_thread
+	// (KYTY_SHADER_WARMUP_BACKGROUND) until done or m_warmup_stop.
+	struct WarmupSettings {
+		bool     compile_shaders = false, warm_pipelines = false, background = false;
+		uint64_t compute_video = UINT64_MAX;
+	};
+	void              RunWarmup(WarmupSettings settings);
+	void              StartShaderPrefetch(std::vector<std::vector<uint32_t>> recorded_inputs);
+	std::thread       m_warmup_thread;
+	std::atomic<bool> m_warmup_stop {false};
+	// Pipelines made where first needed (CreateGraphicsPipeline, CreateComputePipeline), and the time it took.
+	uint64_t m_render_pipelines   = 0;
+	double   m_render_pipeline_ms = 0.0;
 	CompileWorkers& Workers();
 	CompileWorkers& TableWorkers();
 	CompileWorkers& OptimizeWorkers();
@@ -429,7 +451,7 @@ private:
 	void              MainPipelineDone();
 	void InitializeStaticCache(bool create);
 	// The recorded pipelines; compute ones, newest first, while they took less than `compute_video` bytes of video memory.
-	void WarmPipelines(uint64_t compute_video = UINT64_MAX);
+	void WarmPipelines(uint64_t compute_video, bool background);
 #ifdef KYTY_STATIC_PRECOMPILE
 	bool SaveStaticCache(vk::PipelineCache cache, const std::filesystem::path& path);
 	static bool MergeBinaryShards(GraphicContext& graphics, bool prune, bool keep_shards);
