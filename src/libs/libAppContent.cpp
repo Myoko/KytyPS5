@@ -86,6 +86,9 @@ static bool ResolveTitleId(std::string* title_id) {
 	return false;
 }
 
+// Defined with the add-on mounting below; the initialization only names the directory.
+static std::filesystem::path AddcontRoot();
+
 int KYTY_SYSV_ABI AppContentInitialize(const AppContentInitParam* init_param,
                                        AppContentBootParam*       boot_param) {
 	PRINT_NAME();

@@ -29,13 +29,10 @@ constexpr PROPERTYKEY PKEY_INTERFACE_FRIENDLY_NAME = {
 constexpr const char* PAD_DEVICE_PATH = "VID_054C&PID_0CE6";
 
 // The endpoint's four channels: 0-1 play on the pad's speaker, 2-3 drive its haptic actuators.
-constexpr uint32_t SPEAKER_FIRST_CHANNEL = 0;
-constexpr uint32_t SPEAKER_CHANNELS      = 2;
 
 constexpr uint32_t ROUTE_SPEAKER   = 1U << 0U;
 constexpr uint32_t ROUTE_VIBRATION = 1U << 1U;
 
-IMMDevice*          g_device        = nullptr;
 IAudioClient*       g_client        = nullptr;
 IAudioRenderClient* g_render        = nullptr;
 WAVEFORMATEX*       g_mix           = nullptr;
@@ -496,7 +493,8 @@ bool Open(bool speaker) {
 
 		std::printf("DualSense: stream open: %u Hz, %u ch, buffer %u frames, gains %.2f/%.2f "
 		            "(vibration/speaker)\n",
-		            g_mix->nSamplesPerSec, g_mix->nChannels, g_buffer_frames,
+		            static_cast<unsigned>(g_mix->nSamplesPerSec),
+		            static_cast<unsigned>(g_mix->nChannels), g_buffer_frames,
 		            static_cast<double>(g_gain), static_cast<double>(g_speaker_gain));
 	}
 
