@@ -32,6 +32,12 @@
 //                                  route's digital gain the loudest moments then reach full scale
 //                                  inside the controller, where the pad's small amplifier and
 //                                  speaker clip - reported in play as tearing.
+//   KYTY_DUALSENSE_SPEAKER_VOLUME=0..100  the controller's own volume (default: 100). Lowering it
+//                                  leaves its amplifier more headroom, and the gain above takes over
+//                                  the loudness.
+//   KYTY_DUALSENSE_SPEAKER_LIMITER=0|1  a soft limiter above 0.8 on the speaker route (default: off):
+//                                  loud moments bend towards full scale instead of clamping, which is
+//                                  what the controller's amplifier then finds hard to take.
 //   KYTY_DUALSENSE_HAPTICS_LOG=1   prints what it finds and what it writes (default: off)
 namespace Libs::Controller::DualSenseHaptics {
 

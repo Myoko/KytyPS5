@@ -60,6 +60,13 @@ float      g_speaker_gain          = 8.0f;
 // moments to full scale inside the controller, where the pad's small amplifier and speaker clip -
 // heard as tearing. Off by default here, so the digital gain is the only level that adds.
 bool       g_speaker_preamp        = false;
+// The controller's own speaker volume (HID output report byte 5, 0..100). Lowering it leaves the
+// pad's amplifier more headroom, and this route's digital gain can take over the loudness.
+uint32_t   g_speaker_volume        = 100;
+// A soft limiter above 0.8 on the speaker route only: it keeps loud moments from reaching full
+// scale, where the controller's amplifier clips (heard as tearing). Off by default - it colours
+// what it touches, and the gain knobs are the first thing to try.
+bool       g_speaker_limiter       = false;
 
 // What the routes actually did, so a log can tell clipping from silence and from a stalled endpoint.
 uint64_t   g_speaker_writes        = 0;
@@ -94,7 +101,7 @@ bool RouteSpeaker(bool speaker) {
 	if (speaker) {
 		report[0] |= 0x20; // speaker volume valid
 		report[1]  = 0x80; // audio control 2 valid
-		report[5]  = 0x64; // speaker volume, 100 of 100
+		report[5]  = static_cast<uint8_t>(g_speaker_volume > 100 ? 100 : g_speaker_volume);
 		report[7]  = 0x30; // output path: right channel to the speaker, headphones muted
 		report[37] = g_speaker_preamp ? 0x02 : 0x00; // speaker preamp, +6 dB when asked for
 	}
@@ -201,17 +208,24 @@ void ReadSettingsFile() {
 			ParseChannels(value, &g_speaker_first_channel, &g_speaker_channel_count, &g_all_channels);
 		} else if (key == "speaker_preamp") {
 			g_speaker_preamp = value != "0" && Lowered(value) != "false" && Lowered(value) != "no";
+		} else if (key == "speaker_volume") {
+			const auto volume = std::strtoul(value.c_str(), nullptr, 10);
+			if (volume <= 100) {
+				g_speaker_volume = static_cast<uint32_t>(volume);
+			}
+		} else if (key == "speaker_limiter") {
+			g_speaker_limiter = value != "0" && Lowered(value) != "false" && Lowered(value) != "no";
 		}
 	}
 	std::fclose(file);
 
 	std::printf("DualSense: dualsense-haptics.txt: %s, vibration gain %.2f on channels %u-%u, "
-	            "speaker gain %.2f on channels %u-%u, preamp %s%s\n",
+	            "speaker gain %.2f on channels %u-%u, preamp %s, volume %u, limiter %s%s\n",
 	            g_enabled ? "on" : "off", static_cast<double>(g_gain), g_first_channel,
 	            g_first_channel + g_channel_count - 1u, static_cast<double>(g_speaker_gain),
 	            g_speaker_first_channel, g_speaker_first_channel + g_speaker_channel_count - 1u,
-	            g_speaker_preamp ? "on (+6 dB)" : "off",
-	            g_all_channels ? ", all channels" : "");
+	            g_speaker_preamp ? "on (+6 dB)" : "off", g_speaker_volume,
+	            g_speaker_limiter ? "on" : "off", g_all_channels ? ", all channels" : "");
 }
 
 void ReadSettings() {
@@ -273,6 +287,17 @@ void ReadSettings() {
 	// default: with this route's digital gain the loudest moments then clip inside the controller).
 	if (const char* value = std::getenv("KYTY_DUALSENSE_SPEAKER_PREAMP"); value != nullptr) {
 		g_speaker_preamp = std::string(value) != "0";
+	}
+	// KYTY_DUALSENSE_SPEAKER_VOLUME=0..100 is the controller's own volume, and
+	// KYTY_DUALSENSE_SPEAKER_LIMITER=1 a soft limiter above 0.8 on the speaker route.
+	if (const char* value = std::getenv("KYTY_DUALSENSE_SPEAKER_VOLUME"); value != nullptr) {
+		const auto volume = std::strtoul(value, nullptr, 10);
+		if (volume <= 100) {
+			g_speaker_volume = static_cast<uint32_t>(volume);
+		}
+	}
+	if (const char* value = std::getenv("KYTY_DUALSENSE_SPEAKER_LIMITER"); value != nullptr) {
+		g_speaker_limiter = std::string(value) != "0";
 	}
 	if (const char* value = std::getenv("KYTY_DUALSENSE_HAPTICS_LOG"); value != nullptr) {
 		g_log = std::string(value) != "0";
@@ -601,6 +626,17 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 					g_speaker_clips++;
 				} else {
 					g_vibration_clips++;
+				}
+			}
+			if (speaker && g_speaker_limiter) {
+				// Soft knee above 0.8: what would clamp at full scale bends towards it instead, so the
+				// controller's own amplifier sees a peak it can take.
+				constexpr float knee     = 0.8f;
+				const auto      magnitude = value < 0.0f ? -value : value;
+				if (magnitude > knee) {
+					const auto excess = (magnitude - knee) / (1.0f - knee);
+					value = (value < 0.0f ? -1.0f : 1.0f) *
+					        (knee + (1.0f - knee) * (excess / (1.0f + excess)));
 				}
 			}
 			if (value > 1.0f) {
