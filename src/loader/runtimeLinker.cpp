@@ -35,8 +35,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fmt/format.h>
 #include <memory>
+#include <system_error>
 #include <vector>
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
@@ -1474,6 +1476,26 @@ void RuntimeLinker::RelocateAll() {
 
 	for (auto* p: m_programs) {
 		Relocate(p);
+	}
+
+	// What every loaded program imports, once, beside the emulator in _Dump\import_symbols.txt. The
+	// guest's own import table is the only place that says which system functions a game asks for
+	// (libSceNpCppWebApi's, for one), and the loader otherwise reports only the ones it could not
+	// resolve. Written through std::printf so the log names the file.
+	{
+		static bool dumped = false;
+		if (!dumped) {
+			dumped = true;
+			const std::string folder = "_Dump";
+			std::error_code   error;
+			std::filesystem::create_directories(folder, error);
+			for (auto* p: m_programs) {
+				if (p->import_symbols != nullptr) {
+					p->import_symbols->DbgDump(folder, "import_symbols.txt");
+				}
+			}
+			std::printf("Runtime linker: import symbols dumped to _Dump\\import_symbols.txt\n");
+		}
 	}
 
 	m_relocated = true;
