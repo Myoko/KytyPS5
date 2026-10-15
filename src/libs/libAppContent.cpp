@@ -93,11 +93,6 @@ int KYTY_SYSV_ABI AppContentInitialize(const AppContentInitParam* init_param,
                                        AppContentBootParam*       boot_param) {
 	PRINT_NAME();
 
-	// printf, not LOGF: this line is the canary that says a game uses AppContent at all, and shows
-	// the add-on directory it will look in.
-	std::printf("AppContent: initialized; add-on content is looked for in %s\n",
-	            AddcontRoot().string().c_str());
-
 	LOGF("\t init_param = 0x%016" PRIx64 "\n"
 	     "\t boot_param = 0x%016" PRIx64 "\n",
 	     reinterpret_cast<uint64_t>(init_param), reinterpret_cast<uint64_t>(boot_param));
@@ -111,6 +106,11 @@ int KYTY_SYSV_ABI AppContentInitialize(const AppContentInitParam* init_param,
 	} else {
 		LOGF("\t TITLE_ID missing\n");
 	}
+
+	// printf, not LOGF: this line is the canary that says a game uses AppContent at all. It comes
+	// after the title id is known, because that is what the add-on directory is named.
+	std::printf("AppContent: initialized; add-on content is looked for in %s\n",
+	            AddcontRoot().string().c_str());
 
 	return OK;
 }
