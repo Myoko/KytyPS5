@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -508,6 +509,20 @@ static int SceneFreeFloor() {
 	return floor;
 }
 
+// Frame generation above 60 Hz: the game's frames too keep 60 (KYTY_FRAMEGEN_BASE=<Hz>: another rate, 0: none). DLSS-G
+// paces the frames it generates from the intervals between the game's own; on the 120 Hz vblanks a game between 60 and
+// 120 fps flipped after one vblank or two by turns (8.3 or 16.7 ms, 3-25 ms with late vblanks; at 60 Hz 16.7 +- 0.3 ms),
+// and its frames stuttered (issue #29).
+static int FrameGenFloor() {
+	static const int floor = [] {
+		const char* value = std::getenv("KYTY_FRAMEGEN_BASE");
+		const int   base  = value != nullptr ? std::max(0, std::atoi(value)) : 60;
+		if (base == 0) return 0;
+		return std::max(0, static_cast<int>(std::lround(static_cast<double>(Config::GetVblankFrequency()) / base)) - 1);
+	}();
+	return floor;
+}
+
 // `floor`: at least floor + 1 vblanks since the last flip (beyond the game's own flip rate).
 static bool IsFlipDueLocked(const VideoOutConfig& cfg, uint64_t generation, int floor) {
 	if (!cfg.opened || cfg.closing || cfg.generation != generation) {
@@ -969,12 +984,38 @@ void FlipQueue::Cancel(VideoOutConfig& cfg) {
 	cfg.flip_status.gcQueueNum     = 0;
 }
 
+// KYTY_LOW_LATENCY=1 (off by default): a frame's flip is prepared only once the frames before it that wait for a vblank
+// were shown. A game faster than the display otherwise keeps about two frames queued (~30 ms from its flip to the
+// present at 60 Hz); held to one, input shows a frame sooner, but a frame late for its vblank is no longer covered by
+// a queued one. (At most 50 ms: a paused or closing port does not hold the GPU thread.)
+static bool LowLatency() {
+	static const bool on = [] {
+		const char* value = std::getenv("KYTY_LOW_LATENCY");
+		return value != nullptr && std::atoi(value) != 0;
+	}();
+	return on;
+}
+
 void FlipQueue::Prepare(uint64_t request_id, Graphics::CommandBuffer& buffer) {
 	VideoOutConfig* cfg        = nullptr;
 	uint64_t        generation = 0;
 	int             index      = 0;
 	{
 		Common::LockGuard lock(m_mutex);
+		if (LowLatency()) {
+			const auto waiting = [&] {
+				return std::any_of(m_requests.begin(), m_requests.end(), [&](const auto& r) {
+					return r.id < request_id && (r.state == RequestState::Ready || r.state == RequestState::Presenting);
+				});
+			};
+			const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+			while (waiting()) {
+				const auto now = std::chrono::steady_clock::now();
+				if (now >= until) break;
+				m_done_cond_var.WaitFor(&m_mutex,
+				                        static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::microseconds>(until - now).count()));
+			}
+		}
 		auto request = std::find_if(m_requests.begin(), m_requests.end(),
 		                            [request_id](const auto& r) { return r.id == request_id; });
 		if (request == m_requests.end()) {
@@ -1158,6 +1199,7 @@ bool FlipQueue::Flip(uint32_t micros) {
 	if (r.frame != nullptr) {
 		if (Graphics::Presenter::FlipRateApplies(*r.frame)) floor = FlipRateFloor();
 		if (!Graphics::Presenter::IsSceneFrame(*r.frame)) floor = std::max(floor, SceneFreeFloor());
+		if (Graphics::Presenter::GeneratesFrames()) floor = std::max(floor, FrameGenFloor());
 	}
 	if (!IsFlipDueLocked(*r.cfg, r.generation, floor)) {
 		r.cfg->mutex.Unlock();
