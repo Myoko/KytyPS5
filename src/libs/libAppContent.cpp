@@ -15,8 +15,6 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <map>
-#include <mutex>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -266,11 +264,10 @@ static std::string EntitlementText(const NpUnifiedEntitlementLabel* label) {
 	return text;
 }
 
-// What is mounted where, so an unmount frees its folder again. One lock, because a guest may mount
-// from more than one thread.
-static std::mutex                         g_mounted_mutex;
-static std::map<std::string, std::string> g_mounted;
-static std::atomic<uint32_t>              g_next_mount_point {0};
+// Mount points are handed out in order. Only a folder that answers to the label mounts, so nothing
+// else about a mount needs remembering: the guest hands its own mount point back to unmount, and a
+// later mount of the same label finds the same folder again.
+static std::atomic<uint32_t> g_next_mount_point {0};
 
 int KYTY_SYSV_ABI AppContentAddcontMount(uint32_t                         service_label,
                                          const NpUnifiedEntitlementLabel* entitlement_label,
@@ -307,10 +304,6 @@ int KYTY_SYSV_ABI AppContentAddcontMount(uint32_t                         servic
 
 	const auto point = "/addcont" + std::to_string(g_next_mount_point.fetch_add(1));
 	LibKernel::FileSystem::Mount(chosen, point);
-	{
-		std::lock_guard<std::mutex> lock(g_mounted_mutex);
-		g_mounted[point] = chosen.string();
-	}
 
 	std::printf("AppContent: add-on '%s' -> %s (mounted at %s)\n", label.c_str(),
 	            chosen.string().c_str(), point.c_str());
@@ -333,10 +326,6 @@ int KYTY_SYSV_ABI AppContentAddcontUnmount(const AppContentMountPoint* mount_poi
 	}
 
 	LibKernel::FileSystem::Umount(mount_point->data);
-	{
-		std::lock_guard<std::mutex> lock(g_mounted_mutex);
-		g_mounted.erase(mount_point->data);
-	}
 
 	std::printf("AppContent: add-on unmounted (%s)\n", mount_point->data);
 
