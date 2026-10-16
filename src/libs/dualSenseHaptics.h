@@ -21,17 +21,18 @@
 //                                  (default: 23, the actuator pair)
 //   KYTY_DUALSENSE_HAPTICS_GAIN=<float>         applied to the vibration samples (default: 1.0)
 //   KYTY_DUALSENSE_SPEAKER_CHANNELS=01|23|all   the same for the pad speaker (default: 01)
-//   KYTY_DUALSENSE_SPEAKER_GAIN=<float>         0..64 (default: 8.0, +18 dB). What the guest sends
+//   KYTY_DUALSENSE_SPEAKER_GAIN=<float>         0..64 (default: 4.0, +12 dB). What the guest sends
 //                                  to a pad speaker port is quiet - Demon's Souls peaks at about
-//                                  -40 dB - and the controller's own amplifier then buries it in
-//                                  its noise floor, so the digital gain is what makes it clear.
-//                                  8 is clear, 16 borderline, 32 clips (4.0 is what
-//                                  github.com/Jetsku/KytyPS5's launcher gives at 200%).
-//   KYTY_DUALSENSE_SPEAKER_PREAMP=0|1  the controller's own +6 dB speaker preamp (default: off).
-//                                  github.com/Jetsku/KytyPS5 and Linux both send it, but with this
-//                                  route's digital gain the loudest moments then reach full scale
-//                                  inside the controller, where the pad's small amplifier and
-//                                  speaker clip - reported in play as tearing.
+//                                  -40 dB - so some digital gain is what makes it clear. Past 4.0 the
+//                                  loudest moments reach full scale inside the controller, once its
+//                                  own +6 dB preamp below is counted, and the pad's small amplifier
+//                                  clamps - heard in play as tearing. 4.0 measures about 0.98 of full
+//                                  scale at the loudest moment; the add-on known to play without
+//                                  tearing uses 1.0, which is clean but quiet.
+//   KYTY_DUALSENSE_SPEAKER_PREAMP=0|1  the controller's own +6 dB speaker preamp (default: on).
+//                                  github.com/Jetsku/KytyPS5 sends it, Linux does too, and so does
+//                                  that add-on - so it is the preamp plus too much gain, not the
+//                                  preamp alone, that clips. Turn it off to buy 6 dB of headroom.
 //   KYTY_DUALSENSE_SPEAKER_VOLUME=0..100  the controller's own volume (default: 100). Lowering it
 //                                  leaves its amplifier more headroom, and the gain above takes over
 //                                  the loudness.

@@ -47,16 +47,17 @@ float      g_gain     = 4.0f; // the tested setting: 1.0 leaves the actuators fa
 bool       g_all_channels  = false;
 uint32_t   g_first_channel = 2; // the actuator pair; KYTY_DUALSENSE_HAPTICS_CHANNELS overrides it
 uint32_t   g_channel_count = 2;
-// The speaker route has its own channels and gain: the pad's speaker is small, so its port often
-// needs more level than the actuators, and which pair carries it is worth an experiment.
+// The speaker route has its own channels and gain. 4.0 is the measured safe level: the loudest pad
+// speaker moments peak around 0.49 there, and with the controller's own +6 dB preamp that is 0.98 of
+// full scale inside the pad - at 8.0 the same peak reaches full scale and the pad's amplifier clips.
 uint32_t   g_speaker_first_channel = 0;
 uint32_t   g_speaker_channel_count = 2;
-float      g_speaker_gain          = 8.0f;
+float      g_speaker_gain          = 4.0f;
 // The controller's own +6 dB speaker preamp (HID output report byte 37). github.com/Jetsku/KytyPS5
-// sends it, and Linux does too, but together with this route's digital gain it can push the loudest
-// moments to full scale inside the controller, where the pad's small amplifier and speaker clip -
-// heard as tearing. Off by default here, so the digital gain is the only level that adds.
-bool       g_speaker_preamp        = false;
+// sends it, Linux does too, and so does the DualSense add-on that is known to play without tearing -
+// all with a digital gain of 1.0. The tearing came from this route's own gain, not from the preamp, so
+// it is on by default and the gain above is what has to stay inside the scale.
+bool       g_speaker_preamp        = true;
 // The controller's own speaker volume (HID output report byte 5, 0..100). Lowering it leaves the
 // pad's amplifier more headroom, and this route's digital gain can take over the loudness.
 uint32_t   g_speaker_volume        = 100;
