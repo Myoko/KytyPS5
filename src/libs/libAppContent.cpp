@@ -177,8 +177,10 @@ int KYTY_SYSV_ABI AppContentDownloadDataGetAvailableSpaceKb(const AppContentMoun
 	return GetAvailableSpaceKb(mount_point, available_space_kb);
 }
 
+} // namespace AppContent
+
 // The add-on directory itself is shared with the entitlement side in libNet, so both answer from one
-// pairing: see libs/addcont.h. This is where it is read.
+// pairing: see libs/addcont.h. This is where it is read and implemented, in Libs::Addcont.
 namespace Addcont {
 
 std::filesystem::path Directory(const std::string& title_id) {
@@ -221,8 +223,8 @@ static std::string FolderLabel(const std::filesystem::path& folder) {
 	const auto end   = label.find_last_not_of(" \t\r\n");
 	label            = begin == std::string::npos ? std::string() : label.substr(begin, end - begin + 1);
 
-	if (label.size() > Addcont::LABEL_SIZE) {
-		label.resize(Addcont::LABEL_SIZE);
+	if (label.size() > LABEL_SIZE) {
+		label.resize(LABEL_SIZE);
 	}
 	return label;
 }
@@ -253,6 +255,8 @@ std::vector<Folder> Folders(const std::string& title_id) {
 }
 
 } // namespace Addcont
+
+namespace AppContent {
 
 static std::string EntitlementText(const NpUnifiedEntitlementLabel* label) {
 	std::string text;
