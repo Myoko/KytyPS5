@@ -127,8 +127,12 @@ function Get-PlayCommand {
 	if ($settings.ratio -in '21:9', '32:9') { $arguments += @('-Aspect', $settings.ratio) }
 	# Presents wait for the display's refresh (Vulkan FIFO): no tearing, and G-SYNC/FreeSync displays keep adapting.
 	if ($settings.vsync) { $arguments += @('-PresentMode', 'Fifo') }
-	# Demon's Souls' own settings for what a frame draws (run-windows.ps1 -Quality): simpler shadows and distant detail.
-	if ($settings.quality -in 'low', 'lowest') { $arguments += @('-Quality', $settings.quality) }
+# Demon's Souls' own settings for what a frame draws (run-windows.ps1 -Quality): simpler shadows and distant detail;
+# and smaller textures (run-windows.ps1 -TextureReduce: Low 1, Lowest 2; Standard leaves it to the emulator: 1 below
+# 12 GB of video memory, else 0).
+if ($settings.quality -in 'low', 'lowest') {
+	$arguments += @('-Quality', $settings.quality, '-TextureReduce', $(if ($settings.quality -eq 'lowest') { 2 } else { 1 }))
+}
 	# HDR10 output when Windows HDR is on for the display; SDR otherwise.
 	if ($settings.hdr) { $arguments += '-Hdr' }
 	if ($frameGenAvailable -and [int]$settings.framegen -ge 2) {
@@ -270,8 +274,10 @@ $quality = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle =
 $quality.Items.AddRange($qualities)
 $quality.SelectedItem = ($qualities | Where-Object { ($_ -split ' ')[0] -eq [string]$settings.quality } | Select-Object -First 1)
 if ($quality.SelectedIndex -lt 0) { $quality.SelectedIndex = 0 }
-$qualityNote = New-Object System.Windows.Forms.Label -Property @{ Text = '更简单的阴影与远景细节；CPU 受限时更快'; AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
-Add-Row '' @($quality, $qualityNote)
+$qualityNote = New-Object System.Windows.Forms.Label -Property @{ Text = '更简单的阴影与细节、更小的纹理；弱机上更快'; AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
+$qualityTips = New-Object System.Windows.Forms.ToolTip
+$qualityTips.SetToolTip($quality, "标准：PS5 的画面。显存不足 12 GB 时，大纹理省掉最大的一级（每边减半）以便放得下。`n低：更简单的阴影与远景细节，纹理每边减半。`n最低：再简化一档，纹理每边减为四分之一。")
+Add-Row '画质' @($quality, $qualityNote)
 $frameGen = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 160; Enabled = $frameGenAvailable }
 $frameGen.Items.AddRange($frameGens)
 $frameGen.SelectedItem = if ($frameGenAvailable -and [int]$settings.framegen -ge 2) { "$([int]$settings.framegen)x" } else { 'Off' }
