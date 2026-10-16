@@ -50,6 +50,7 @@ fork's `KYTY_*` names; the ideas carry over to any HLE PS5 emulator. Title-speci
 | Long play | Per-area sweeps of address-keyed caches; kernel ranges in trees; blocked range sets; 256 KiB translation caches; map/unmap OS calls outside the address-space lock | revisit stalls 0.3-0.8 s gone; walk 58 -> 70; lock holds 0.53 -> 0.04 s | the game cuts memory finer every load (9K -> 51K mappings) |
 | Stutter | Free-range search under a shared lock; kept file handles + positional reads + background read-through of small streamed audio | >100 ms frames 8-12 -> 0; 1% low 5.9 -> 44.6 | lock convoys and synchronous disk reads, not CPU work |
 | | Streaming without re-creation: pools kept on partial unmap, dirty ranges only, pooled detile scratch, binary-searched interval queries, no GPU finish on unmap | worst frame 200 -> 113 ms | a new VMA block per detile was a 2.5 s freeze |
+| | Windows partial unmaps parked in their view (no system call; the view released whole once emptied, split only if something is mapped over a parked range; pages trimmed from the working set on a thread of their own) | 1-1 walk 1% low 35 -> 49, longest frame 43 -> 22 ms | splitting cost 0.05 ms per MiB of the VIEW on the game's job threads; a log showed the game maps over <1% of freed ranges within 1 s |
 
 ## Dead ends (do not retry without a new argument)
 
@@ -72,6 +73,7 @@ fork's `KYTY_*` names; the ideas carry over to any HLE PS5 emulator. Title-speci
 | Render thread pinned alone to one core; strict pinning | 1% lows worse | it cannot escape preemption |
 | Table multi-draw; written-V# obtain memo | 11% eligible; ~1% (built twice) | |
 | Chunked views for partial unmaps; prefault backing on map; keep textures across full unmaps | hold time same; +21 s, +6 GB; no gain | |
+| Faster uploads (parallel or overlapped write-protection calls) | causal slope of frame time to upload waits 0.05-0.27 | the waits sit on the recording worker before submit, off the critical path; VirtualProtect contends across threads (7 threads 2.6x slower per call) |
 | Shader objects, pipeline libraries, DX12 | slower or <=3% | bottleneck is CPU translation |
 | Changing emitted SPIR-V for a speedup (fast format paths, padding) | forbidden | every user's caches miss: cold HUD 56 -> 105-218 s |
 
@@ -81,8 +83,10 @@ fork's `KYTY_*` names; the ideas carry over to any HLE PS5 emulator. Title-speci
   downgrade pairs/frame cost 3.5-5%; upgrades and same-protection calls are free). A partial unmap of a file view =
   whole view unmapped + remainder remapped (~0.33 us/page, a crash window if trackers' protection is not restored
   under the lock). A view mapped read-only can never become writable; VirtualProtect cannot span views. First touch
-  through a second view of a section costs ~1.2 us/page, serialized per process. Exception dispatch uses ~5 KiB of the
-  faulting thread's stack (guest fibers!). ReadFile into protected pages fails silently.
+  through a second view of a section costs ~1.2 us/page, serialized per process. VirtualProtect to no-access and
+  VirtualUnlock of resident view pages both cost ~0.5 us per 4 KiB page and both drop them from the working set (a
+  range left mapped stays counted in use). Exception dispatch uses ~5 KiB of the faulting thread's stack (guest
+  fibers!). ReadFile into protected pages fails silently.
 - **NVIDIA**: vkQueuePresentKHR holds a device-wide lock (wait for the GPU before presenting); a VkPipelineCache is
   copied whole into the heap; every VkShaderModule's SPIR-V is kept; pipeline binaries embed a per-process zstd
   dictionary (build stores from many small shards); image/view creation can stall ~5 ms in the driver; Streamline
@@ -99,5 +103,10 @@ fork's `KYTY_*` names; the ideas carry over to any HLE PS5 emulator. Title-speci
 - What stalls is a specialization key the prefetch lacks (0.1-0.5 s re-translation on the render thread), not a
   missing SPIR-V. Measure coverage per stage at the key level; normalize key fields the module ignores (recorded
   coverage CS 92.3 -> 97.5%, PS 93.9 -> 98.6%); a full playthrough's recording covers effects met once.
+- Recorded play is what gets used: with a recorded tier in the store, two 1-1 walks each used ~2,200 pipelines,
+  ~2,000 of them recorded-tier and 1 (then 0) from the statically guessed tier (the rest: native variants built at
+  run time). Compile the recorded tier first ("ready to play"), merge every
+  recording source (shipped hints + this PC's), and skip guessed variants of shaders it covers (a fifth of compile
+  time; laptop from scratch 2:36 -> 1:48 h, ready to play at 0:59).
 - Compile cost multipliers: wave64 on a 32-wide GPU (every instruction twice, x2.3), runtime format decode as nested
   switches (up to 9.5 MB SPIR-V), EXEC predication.
