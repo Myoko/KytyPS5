@@ -15,11 +15,14 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
+#include <mutex>
 #include <string>
 #include <system_error>
 #include <vector>
 
 #include "kernel/fileSystem.h"
+#include "libs/addcont.h"
 
 namespace Libs {
 
@@ -86,9 +89,6 @@ static bool ResolveTitleId(std::string* title_id) {
 	return false;
 }
 
-// Defined with the add-on mounting below; the initialization only names the directory.
-static std::filesystem::path AddcontRoot();
-
 int KYTY_SYSV_ABI AppContentInitialize(const AppContentInitParam* init_param,
                                        AppContentBootParam*       boot_param) {
 	PRINT_NAME();
@@ -110,7 +110,7 @@ int KYTY_SYSV_ABI AppContentInitialize(const AppContentInitParam* init_param,
 	// printf, not LOGF: this line is the canary that says a game uses AppContent at all. It comes
 	// after the title id is known, because that is what the add-on directory is named.
 	std::printf("AppContent: initialized; add-on content is looked for in %s\n",
-	            AddcontRoot().string().c_str());
+	            Addcont::Directory(g_title_id).string().c_str());
 
 	return OK;
 }
@@ -177,20 +177,82 @@ int KYTY_SYSV_ABI AppContentDownloadDataGetAvailableSpaceKb(const AppContentMoun
 	return GetAvailableSpaceKb(mount_point, available_space_kb);
 }
 
-// Add-on content (DLC) is kept beside the emulator, one directory per add-on:
-//
-//   Content\<title id>\<anything>\
-//       sce_sys\param.json      the add-on's own, as it comes out of the package
-//       ...                     the add-on's files
-//
-// The guest asks for each one by its entitlement label and gets a mount point back (the guest's
-// AppContentMountPoint holds sixteen bytes, so the points are short). A directory named like the
-// label, or whose param.json mentions it, is taken for that label; a dump's label often differs from
-// the store's, so a label that matches nothing takes the next directory in name order - the pairing
-// is logged, and renaming the directory fixes it.
-static std::filesystem::path AddcontRoot() {
-	return std::filesystem::path("Content") / g_title_id;
+// The add-on directory itself is shared with the entitlement side in libNet, so both answer from one
+// pairing: see libs/addcont.h. This is where it is read.
+namespace Addcont {
+
+std::filesystem::path Directory(const std::string& title_id) {
+	return std::filesystem::path("Content") / title_id;
 }
+
+static std::string ContentId(const std::filesystem::path& folder) {
+	std::ifstream param(folder / "sce_sys" / "param.json");
+	if (!param) {
+		return {};
+	}
+	const std::string text((std::istreambuf_iterator<char>(param)), std::istreambuf_iterator<char>());
+
+	const auto key = text.find("\"contentId\"");
+	if (key == std::string::npos) {
+		return {};
+	}
+	const auto colon = text.find(':', key);
+	const auto first = colon == std::string::npos ? std::string::npos : text.find('"', colon + 1);
+	const auto last  = first == std::string::npos ? std::string::npos : text.find('"', first + 1);
+	if (first == std::string::npos || last == std::string::npos) {
+		return {};
+	}
+	return text.substr(first + 1, last - first - 1);
+}
+
+// The entitlement label a folder answers to: the last dash-separated part of its contentId, which is
+// what the guest asks about, or the folder's own name when there is no readable param.json, so a
+// dump can simply be renamed to the label it carries. Cut to the guest's label field, so the mount
+// and the entitlement list always speak of the same sixteen characters.
+static std::string FolderLabel(const std::filesystem::path& folder) {
+	const auto content_id = ContentId(folder);
+	const auto dash       = content_id.rfind('-');
+
+	auto label = (dash != std::string::npos && dash + 1 < content_id.size())
+	                 ? content_id.substr(dash + 1)
+	                 : folder.filename().string();
+
+	const auto begin = label.find_first_not_of(" \t\r\n");
+	const auto end   = label.find_last_not_of(" \t\r\n");
+	label            = begin == std::string::npos ? std::string() : label.substr(begin, end - begin + 1);
+
+	if (label.size() > Addcont::LABEL_SIZE) {
+		label.resize(Addcont::LABEL_SIZE);
+	}
+	return label;
+}
+
+std::vector<Folder> Folders(const std::string& title_id) {
+	std::vector<Folder> addons;
+
+	std::error_code error;
+	const auto      root = Directory(title_id);
+	if (!std::filesystem::is_directory(root, error)) {
+		return addons;
+	}
+	std::vector<std::filesystem::path> paths;
+	for (const auto& entry: std::filesystem::directory_iterator(root, error)) {
+		if (entry.is_directory(error)) {
+			paths.push_back(entry.path());
+		}
+	}
+	std::sort(paths.begin(), paths.end());
+
+	for (const auto& path: paths) {
+		const auto label = FolderLabel(path);
+		if (!label.empty()) {
+			addons.push_back({label, path});
+		}
+	}
+	return addons;
+}
+
+} // namespace Addcont
 
 static std::string EntitlementText(const NpUnifiedEntitlementLabel* label) {
 	std::string text;
@@ -200,37 +262,11 @@ static std::string EntitlementText(const NpUnifiedEntitlementLabel* label) {
 	return text;
 }
 
-static std::vector<std::filesystem::path> AddcontFolders() {
-	std::vector<std::filesystem::path> folders;
-
-	std::error_code error;
-	const auto      root = AddcontRoot();
-	if (!std::filesystem::is_directory(root, error)) {
-		return folders;
-	}
-	for (const auto& entry: std::filesystem::directory_iterator(root, error)) {
-		if (entry.is_directory(error)) {
-			folders.push_back(entry.path());
-		}
-	}
-	std::sort(folders.begin(), folders.end());
-	return folders;
-}
-
-static bool FolderMentionsLabel(const std::filesystem::path& folder, const std::string& label) {
-	if (label.empty()) {
-		return false;
-	}
-	if (folder.filename().string().find(label) != std::string::npos) {
-		return true;
-	}
-	std::ifstream param(folder / "sce_sys" / "param.json");
-	if (!param) {
-		return false;
-	}
-	const std::string text((std::istreambuf_iterator<char>(param)), std::istreambuf_iterator<char>());
-	return text.find(label) != std::string::npos;
-}
+// What is mounted where, so an unmount frees its folder again. One lock, because a guest may mount
+// from more than one thread.
+static std::mutex                         g_mounted_mutex;
+static std::map<std::string, std::string> g_mounted;
+static std::atomic<uint32_t>              g_next_mount_point {0};
 
 int KYTY_SYSV_ABI AppContentAddcontMount(uint32_t                         service_label,
                                          const NpUnifiedEntitlementLabel* entitlement_label,
@@ -243,38 +279,34 @@ int KYTY_SYSV_ABI AppContentAddcontMount(uint32_t                         servic
 
 	std::memset(mount_point->data, 0, sizeof(mount_point->data));
 
-	// The console's LOGF is silent in the release configuration, so these report through printf.
-	static std::vector<std::string> mounted;
-	static std::atomic<uint32_t>    next_point {0};
+	const auto label = EntitlementText(entitlement_label);
 
-	const auto label   = EntitlementText(entitlement_label);
-	const auto folders = AddcontFolders();
+	// Only a folder that answers to this label mounts, which is the same pairing the entitlement list
+	// in libNet answers from: a mount never carries another add-on's files, and a label that matches
+	// nothing says which directory to rename instead.
+	const auto folders = Addcont::Folders(g_title_id);
 
 	std::filesystem::path chosen;
 	for (const auto& folder: folders) {
-		if (FolderMentionsLabel(folder, label)) {
-			chosen = folder;
+		if (folder.label == label) {
+			chosen = folder.path;
 			break;
 		}
 	}
-	if (chosen.empty()) {
-		for (const auto& folder: folders) {
-			if (std::find(mounted.begin(), mounted.end(), folder.string()) == mounted.end()) {
-				chosen = folder;
-				break;
-			}
-		}
-	}
 
 	if (chosen.empty()) {
+		// printf, not LOGF: the console's LOGF is silent in the release configuration.
 		std::printf("AppContent: no add-on for '%s' under %s\n", label.c_str(),
-		            AddcontRoot().string().c_str());
+		            Addcont::Directory(g_title_id).string().c_str());
 		return APP_CONTENT_ERROR_DRM_NO_ENTITLEMENT;
 	}
 
-	const auto point = "/addcont" + std::to_string(next_point.fetch_add(1));
+	const auto point = "/addcont" + std::to_string(g_next_mount_point.fetch_add(1));
 	LibKernel::FileSystem::Mount(chosen, point);
-	mounted.push_back(chosen.string());
+	{
+		std::lock_guard<std::mutex> lock(g_mounted_mutex);
+		g_mounted[point] = chosen.string();
+	}
 
 	std::printf("AppContent: add-on '%s' -> %s (mounted at %s)\n", label.c_str(),
 	            chosen.string().c_str(), point.c_str());
@@ -297,6 +329,11 @@ int KYTY_SYSV_ABI AppContentAddcontUnmount(const AppContentMountPoint* mount_poi
 	}
 
 	LibKernel::FileSystem::Umount(mount_point->data);
+	{
+		std::lock_guard<std::mutex> lock(g_mounted_mutex);
+		g_mounted.erase(mount_point->data);
+	}
+
 	std::printf("AppContent: add-on unmounted (%s)\n", mount_point->data);
 
 	return OK;

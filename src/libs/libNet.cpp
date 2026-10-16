@@ -5,6 +5,7 @@
 #include "libs/errno.h"
 #include "libs/libs.h"
 #include "libs/network.h"
+#include "libs/addcont.h"
 #include "loader/symbolDatabase.h"
 #include "loader/systemContent.h"
 
@@ -12,11 +13,9 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <map>
 #include <mutex>
 #include <string>
-#include <system_error>
 #include <vector>
 
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
@@ -1548,13 +1547,10 @@ static constexpr NpEntitlementAccessAddcontEntitlementInfo NP_ENTITLEMENT_ACCESS
 };
 
 // The add-ons the guest may be told it owns: the entries this port has always had, plus every add-on
-// kept beside the emulator in
-//
-//   Content\<title id>\<anything>\sce_sys\param.json
-//
-// whose contentId's last dash-separated part is the entitlement label (sixteen characters, which is
-// what the guest asks about) - the same directory sceAppContentAddcontMount serves, so a game that
-// finds its add-on content there is also told it owns it. Built once, on the first question.
+// kept beside the emulator, read through the one pairing in libs/addcont.h that the mount in
+// libAppContent also answers from - so a label is never unowned here and mounted there, and a game
+// that put its add-on content in Content\<title id>\ is told it owns it. Built once, on the first
+// question.
 static const std::vector<NpEntitlementAccessAddcontEntitlementInfo>& AddcontEntitlements() {
 	static std::vector<NpEntitlementAccessAddcontEntitlementInfo> entitlements;
 	static std::once_flag                                         once;
@@ -1569,52 +1565,30 @@ static const std::vector<NpEntitlementAccessAddcontEntitlementInfo>& AddcontEnti
 			std::printf("NpEntitlementAccess: no title id; only the built-in add-on list is answered\n");
 			return;
 		}
-		std::error_code error;
-		const auto      root = std::filesystem::path("Content") / title_id;
-		if (!std::filesystem::is_directory(root, error)) {
-			std::printf("NpEntitlementAccess: %s is not a directory; only the built-in add-on list is "
+
+		// The same pairing the mount in libAppContent serves: one label per folder, read the same way,
+		// so a label is never unowned here and mounted there.
+		const auto folders = Addcont::Folders(title_id);
+		if (folders.empty()) {
+			std::printf("NpEntitlementAccess: %s holds no add-on; only the built-in add-on list is "
 			            "answered\n",
-			            root.string().c_str());
+			            Addcont::Directory(title_id).string().c_str());
 			return;
 		}
-		std::printf("NpEntitlementAccess: reading add-ons from %s\n", root.string().c_str());
-		for (const auto& dir: std::filesystem::directory_iterator(root, error)) {
-			if (!dir.is_directory(error)) {
-				continue;
-			}
-			std::ifstream param(dir.path() / "sce_sys" / "param.json");
-			if (!param) {
-				continue;
-			}
-			const std::string text((std::istreambuf_iterator<char>(param)),
-			                       std::istreambuf_iterator<char>());
-			const auto        key = text.find("\"contentId\"");
-			if (key == std::string::npos) {
-				continue;
-			}
-			const auto colon = text.find(':', key);
-			const auto first = colon == std::string::npos ? std::string::npos : text.find('"', colon + 1);
-			const auto last  = first == std::string::npos ? std::string::npos : text.find('"', first + 1);
-			if (first == std::string::npos || last == std::string::npos) {
-				continue;
-			}
-			const auto content_id = text.substr(first + 1, last - first - 1);
-			const auto dash       = content_id.rfind('-');
-			if (dash == std::string::npos || dash + 1 >= content_id.size()) {
-				continue;
-			}
-			const auto label = content_id.substr(dash + 1);
+		std::printf("NpEntitlementAccess: reading add-ons from %s\n",
+		            Addcont::Directory(title_id).string().c_str());
 
+		for (const auto& folder: folders) {
 			NpEntitlementAccessAddcontEntitlementInfo info {};
 			std::snprintf(info.entitlement_label.data, sizeof(info.entitlement_label.data), "%s",
-			              label.c_str());
+			              folder.label.c_str());
 			info.package_type    = NP_ENTITLEMENT_ACCESS_ADDON_LIST[0].package_type;
 			info.download_status = NP_ENTITLEMENT_ACCESS_ADDON_LIST[0].download_status;
 			entitlements.push_back(info);
 
 			// printf, not LOGF: the console's LOGF is silent in the release configuration.
-			std::printf("NpEntitlementAccess: add-on '%s' reported as owned (%s)\n", label.c_str(),
-			            content_id.c_str());
+			std::printf("NpEntitlementAccess: add-on '%s' reported as owned (%s)\n",
+			            folder.label.c_str(), folder.path.string().c_str());
 		}
 	});
 
