@@ -4,6 +4,9 @@
 # they are kept in launcher-settings.json next to this script. -DryRun prints the commands without a window.
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
+# cmd.exe by its full path: Start-Process with a bare "cmd" opens whatever "cmd" it finds first, and a file of that
+# name without an extension (in the working folder or on the PATH) made Windows ask which app should open it (issue #47).
+$cmd = if ($env:ComSpec -and (Test-Path -LiteralPath $env:ComSpec)) { $env:ComSpec } else { Join-Path ([Environment]::SystemDirectory) 'cmd.exe' }
 $settingsPath = Join-Path $root 'launcher-settings.json'
 $languages = '日语', '英语（美国）', '法语（法国）', '西班牙语（西班牙）', '德语', '意大利语', '荷兰语',
 	'葡萄牙语（葡萄牙）', '俄语', '韩语', '中文（繁体）', '中文（简体）', '芬兰语', '瑞典语',
@@ -127,7 +130,7 @@ function Get-PlayCommand {
 	if ($settings.ratio -in '21:9', '32:9') { $arguments += @('-Aspect', $settings.ratio) }
 	# Presents wait for the display's refresh (Vulkan FIFO): no tearing, and G-SYNC/FreeSync displays keep adapting.
 	if ($settings.vsync) { $arguments += @('-PresentMode', 'Fifo') }
-# Demon's Souls' own settings for what a frame draws (run-windows.ps1 -Quality): simpler shadows and distant detail;
+# Demon's Souls' own settings for what a frame draws (run-windows.ps1 -Quality): shorter shadows, simpler distant detail;
 # and smaller textures (run-windows.ps1 -TextureReduce: Low 1, Lowest 2; Standard leaves it to the emulator: 1 below
 # 12 GB of video memory, else 0).
 if ($settings.quality -in 'low', 'lowest') {
@@ -274,9 +277,9 @@ $quality = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle =
 $quality.Items.AddRange($qualities)
 $quality.SelectedItem = ($qualities | Where-Object { ($_ -split ' ')[0] -eq [string]$settings.quality } | Select-Object -First 1)
 if ($quality.SelectedIndex -lt 0) { $quality.SelectedIndex = 0 }
-$qualityNote = New-Object System.Windows.Forms.Label -Property @{ Text = '更简单的阴影与细节、更小的纹理；弱机上更快'; AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
+$qualityNote = New-Object System.Windows.Forms.Label -Property @{ Text = '更短的阴影、更简的细节、更小的纹理；弱机上更快'; AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
 $qualityTips = New-Object System.Windows.Forms.ToolTip
-$qualityTips.SetToolTip($quality, "标准：PS5 的画面。显存不足 12 GB 时，大纹理省掉最大的一级（每边减半）以便放得下。`n低：更简单的阴影与远景细节，纹理每边减半。`n最低：再简化一档，纹理每边减为四分之一。")
+$qualityTips.SetToolTip($quality, "标准：PS5 的画面。显存不足 12 GB 时，大纹理省掉最大的一级（每边减半）以便放得下。`n低：更短的太阳阴影、更简单的远景细节，纹理每边减半。`n最低：阴影更短，且不再有环境遮蔽与火把阴影，纹理每边减为四分之一。")
 Add-Row '画质' @($quality, $qualityNote)
 $frameGen = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 160; Enabled = $frameGenAvailable }
 $frameGen.Items.AddRange($frameGens)
@@ -336,7 +339,7 @@ $readme = New-Object System.Windows.Forms.Button -Property @{ Text = '说明 (RE
 $buttons.Controls.AddRange(@($play, $precompile, $logs, $readme))
 $share.Add_Click({
 	Read-Form
-	Start-Process cmd -ArgumentList "/s /c `"$(Get-PrecompileCommand '-ExportHints')`"" -WorkingDirectory $root
+	Start-Process $cmd -ArgumentList "/s /c `"$(Get-PrecompileCommand '-ExportHints')`"" -WorkingDirectory $root
 })
 $grid.Controls.Add($buttons)
 $grid.SetColumnSpan($buttons, 2)
@@ -368,12 +371,12 @@ function Read-Form {
 }
 $play.Add_Click({
 	Read-Form
-	Start-Process cmd -ArgumentList "/v:on /s /c `"$(Get-PlayCommand)`"" -WorkingDirectory $root
+	Start-Process $cmd -ArgumentList "/v:on /s /c `"$(Get-PlayCommand)`"" -WorkingDirectory $root
 	$form.Close()
 })
 $precompile.Add_Click({
 	Read-Form
-	Start-Process cmd -ArgumentList "/s /c `"$(Get-PrecompileCommand)`"" -WorkingDirectory $root
+	Start-Process $cmd -ArgumentList "/s /c `"$(Get-PrecompileCommand)`"" -WorkingDirectory $root
 })
 $logs.Add_Click({
 	$folder = if (Test-Path "$root\_Build") { "$root\_Build\run-logs" } else { "$root\logs" }
