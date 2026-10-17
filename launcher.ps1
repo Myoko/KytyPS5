@@ -316,7 +316,7 @@ $hud = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'Dr
 $hud.Items.AddRange($overlays)
 # (An older launcher saved true for the frame rate.)
 $hud.SelectedIndex = [Math]::Max(0, [Math]::Min($overlays.Count - 1, [int]$settings.hud))
-$hudNote = New-Object System.Windows.Forms.Label -Property @{ Text = '右上角：帧率与帧时间；详细：GPU、CPU、内存'; AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
+$hudNote = New-Object System.Windows.Forms.Label -Property @{ Text = '右上角：帧率与帧时间；详细：GPU、CPU、内存。游戏内按 F8 切换'; AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
 Add-Row '覆盖层' @($hud, $hudNote)
 $ecores = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '只用能效核预编译（更慢，但电脑保持流畅）'; AutoSize = $true
 	Checked = ([bool]$settings.ecores -and $efficiencyMask -ne 0); Enabled = ($efficiencyMask -ne 0) }
