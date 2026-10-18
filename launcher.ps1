@@ -18,7 +18,10 @@ $languages = '日语', '英语（美国）', '法语（法国）', '西班牙语
 $resolutions = '1280x720', '1920x1080', '2560x1440', '3840x2160', '2560x1080', '3440x1440', '3840x1600', '5120x2160',
 	'3840x1080', '5120x1440'
 # The height Demon's Souls renders its 3D at (run-windows.ps1 -RenderHeight); its output and UI stay 3840x2160.
-$renderHeights = '1440 (PS5)', '1296', '1152', '1080', '900'
+$renderHeights = '2160 (native 4K)', '1800', '1620', '1512 (PS5 Pro)', '1440 (PS5)', '1296', '1152', '1080', '900'
+# What makes the 3840x2160 image of the 3D (run-windows.ps1 -Upscaler): the game's TAA and stretch (the PS5's), or DLSS in
+# place of Sony's PS5 Pro upscaler on the game's PS5 Pro path (NVIDIA's Streamline runtime, as frame generation).
+$upscalers = '游戏自带 (PS5)', 'DLSS（PS5 Pro 路径）'
 # Demon's Souls' own settings for what a frame draws (run-windows.ps1 -Quality): simpler shadows and distant detail.
 $qualities = 'Standard (PS5)', 'Low', 'Lowest'
 # DLSS frame generation (run-windows.ps1 -FrameGen: the generated frames per rendered one, the multiplier less one).
@@ -27,7 +30,7 @@ $frameGens = '关闭', '2x', '3x', '4x', '5x', '6x'
 $overlays = '关闭', '帧率', '详细'
 
 $settings = [ordered]@{ game = ''; resolution = '2560x1440'; fullscreen = $false; aspect = $true; language = 1; redzone = $true;
-	ecores = $false; cheats = $true; fps120 = $false; render = 1440; ratio = '16:9'; quality = 'standard'; vsync = $false; hdr = $false; framegen = 0; hud = 0; streamline = ''; safegpu = $false }
+	ecores = $false; cheats = $true; fps120 = $false; render = 1440; ratio = '16:9'; quality = 'standard'; vsync = $false; hdr = $false; framegen = 0; hud = 0; streamline = ''; safegpu = $false; upscaler = '' }
 if (Test-Path $settingsPath) {
 	$saved = Get-Content $settingsPath -Raw | ConvertFrom-Json
 	foreach ($property in $saved.PSObject.Properties) { if ($settings.Contains($property.Name)) { $settings[$property.Name] = $property.Value } }
@@ -129,7 +132,9 @@ function Get-PlayCommand {
 	if ($settings.fullscreen) { $arguments += '-Fullscreen'; if ($settings.aspect) { $arguments += '-AspectFit' } }
 	if (!$settings.redzone) { $arguments += '-NoRedZone' }
 	if ($settings.fps120) { $arguments += '-Fps120' }
-	if ([int]$settings.render -gt 0 -and [int]$settings.render -ne 1440) { $arguments += @('-RenderHeight', [int]$settings.render) }
+	$dlss = $frameGenAvailable -and $settings.upscaler -eq 'dlss'
+	# (With DLSS 1440 is passed too: the PS5 Pro path's own height is 1512.)
+	if ([int]$settings.render -gt 0 -and ([int]$settings.render -ne 1440 -or $dlss)) { $arguments += @('-RenderHeight', [int]$settings.render) }
 	if ($settings.ratio -in '21:9', '32:9') { $arguments += @('-Aspect', $settings.ratio) }
 	# Presents wait for the display's refresh (Vulkan FIFO): no tearing, and G-SYNC/FreeSync displays keep adapting.
 	if ($settings.vsync) { $arguments += @('-PresentMode', 'Fifo') }
@@ -141,9 +146,9 @@ if ($settings.quality -in 'low', 'lowest') {
 }
 	# HDR10 output when Windows HDR is on for the display; SDR otherwise.
 	if ($settings.hdr) { $arguments += '-Hdr' }
-	if ($frameGenAvailable -and [int]$settings.framegen -ge 2) {
-		$arguments += @('-FrameGen', ([int]$settings.framegen - 1), '-StreamlineDir', "`"$streamline`"")
-	}
+	if ($frameGenAvailable -and [int]$settings.framegen -ge 2) { $arguments += @('-FrameGen', ([int]$settings.framegen - 1)) }
+	if ($dlss) { $arguments += @('-Upscaler', 'dlss') }
+	if ($frameGenAvailable -and ([int]$settings.framegen -ge 2 -or $dlss)) { $arguments += @('-StreamlineDir', "`"$streamline`"") }
 	# The emulator's panel (KYTY_FPS_HUD) at the top right of the game image: the frame rate and frame times, or with
 	# the GPU, processor and memory too.
 	# Switches of the config, one -Set argument (run-windows.ps1 splits it at the commas).
@@ -270,9 +275,24 @@ Add-Row '' @($hdr)
 $render = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 160 }
 $render.Items.AddRange($renderHeights)
 $render.SelectedItem = ($renderHeights | Where-Object { ($_ -split ' ')[0] -eq [string][int]$settings.render } | Select-Object -First 1)
-if ($render.SelectedIndex -lt 0) { $render.SelectedIndex = 0 }
-$renderNote = New-Object System.Windows.Forms.Label -Property @{ Text = '《恶魔之魂》的 3D 渲染高度；越低越快、越模糊'; AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
+if ($render.SelectedIndex -lt 0) { $render.SelectedItem = '1440 (PS5)' }
+$renderNote = New-Object System.Windows.Forms.Label -Property @{ Text = '《恶魔之魂》的 3D；越高越清晰、越吃显卡'; AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
+$upscaler = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 160; Enabled = $frameGenAvailable }
+$upscaler.Items.AddRange($upscalers)
+$upscaler.SelectedIndex = if ($frameGenAvailable -and $settings.upscaler -eq 'dlss') { 1 } else { 0 }
+$upscalerNote = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
+function Update-UpscalerNote {
+	$upscalerNote.Text = if ($frameGenAvailable) { 'DLSS：NVIDIA RTX；1440 = 画质、1080 = 性能、2160 = DLAA' } else {
+		'需要 NVIDIA 的 Streamline SDK（在「帧生成」那里选它的文件夹）' }
+}
+Update-UpscalerNote
+(New-Object System.Windows.Forms.ToolTip -Property @{ AutoPopDelay = 30000 }).SetToolTip($upscaler,
+	"游戏自带：PS5 的性能模式 —— 3D 在设定高度由游戏自己的 TAA 抗锯齿，再拉伸到 4K。`n" +
+	"DLSS：走游戏自己的 PS5 Pro 模式，把索尼的上采样器（PSSR）换成 NVIDIA DLSS —— 3D 按设定高度渲染`n" +
+	"（1512 时是 PS5 Pro 的 2688x1512；最低 1080），由 DLSS 生成 3840x2160，再由游戏补完到 4K（泛光、景深、HUD）。`n" +
+	"比拉伸更清晰，代价是吃一些显卡性能。游戏内的电影模式仍是原生 4K、不走 DLSS。")
 Add-Row '渲染高度' @($render, $renderNote)
+Add-Row '上采样' @($upscaler, $upscalerNote)
 $ratios = '16:9 (PS5)', '21:9', '32:9'
 $ratio = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 160 }
 $ratio.Items.AddRange($ratios)
@@ -316,6 +336,8 @@ $frameGenFolder.Add_Click({
 	$settings.streamline = $dialog.SelectedPath
 	$script:streamline = $found
 	$script:frameGenAvailable = $true
+	$upscaler.Enabled = $true
+	Update-UpscalerNote
 	$frameGen.Enabled = $true
 	Update-FrameGenNote
 })
@@ -382,6 +404,7 @@ function Read-Form {
 	$settings.ratio      = ([string]$ratio.SelectedItem -split ' ')[0]
 	# (Kept as it was where the DLLs are missing.)
 	if ($frameGenAvailable) { $settings.framegen = if ($frameGen.SelectedIndex -gt 0) { $frameGen.SelectedIndex + 1 } else { 0 } }
+	if ($frameGenAvailable) { $settings.upscaler = if ($upscaler.SelectedIndex -eq 1) { 'dlss' } else { '' } }
 	$settings.ecores     = $ecores.Checked
 	$settings.cheats     = $cheats.Checked
 	Save-Settings
