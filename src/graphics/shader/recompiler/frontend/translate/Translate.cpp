@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <optional>
@@ -15,6 +16,51 @@
 #include <utility>
 
 namespace Libs::Graphics::ShaderRecompiler::Frontend {
+
+static std::atomic<uint32_t> g_translator_features {TranslatorFeatures};
+
+void SetTranslatorFeatures(uint32_t features) {
+	g_translator_features.store(features & TranslatorFeatures, std::memory_order_relaxed);
+}
+
+uint32_t TranslatorFeatureSet() {
+	// (KYTY_LANE_LOCAL_COOP=0/1: the cooperative halves off or on, whatever the store was made with.)
+	static const int cooperative = [] {
+		const char* value = std::getenv("KYTY_LANE_LOCAL_COOP");
+		return value == nullptr ? -1 : std::string_view(value) != "0" ? 1 : 0;
+	}();
+	auto features = g_translator_features.load(std::memory_order_relaxed);
+	if (cooperative >= 0)
+		features = cooperative != 0 ? features | TranslatorFeatureCooperativeHalves : features & ~TranslatorFeatureCooperativeHalves;
+	return features;
+}
+
+// KYTY_LANE_LOCAL_COOP_SKIP=<hash>[,<hash>...]: those programs without the cooperative halves; KYTY_LANE_LOCAL_COOP_RANGE=
+// <lo>-<hi> (hex): only programs whose hash is in [lo, hi] with them, to bisect for a slow one (an RTX 3080 Laptop, NVIDIA
+// 566.07, ran 1-1's courtyard at 3-4 fps with them, 16-33 without). Diagnostics: a program left out translates as before
+// the cooperative halves, which a store stamped with them does not hold (compiled at first use, or the driver's cache).
+static bool CooperativeLeftOut(uint64_t hash) {
+	struct Rules {
+		std::vector<uint64_t> skip;
+		uint64_t              lo = 0, hi = UINT64_MAX;
+	};
+	static const Rules rules = [] {
+		Rules parsed;
+		for (const char* at = std::getenv("KYTY_LANE_LOCAL_COOP_SKIP"); at != nullptr && *at != '\0';) {
+			char* end = nullptr;
+			parsed.skip.push_back(std::strtoull(at, &end, 16));
+			if (end == at || (*end != ',' && *end != ';')) break;
+			at = end + 1;
+		}
+		if (const char* range = std::getenv("KYTY_LANE_LOCAL_COOP_RANGE"); range != nullptr && *range != '\0') {
+			char* end = nullptr;
+			parsed.lo = std::strtoull(range, &end, 16);
+			if (end != nullptr && *end == '-') parsed.hi = std::strtoull(end + 1, nullptr, 16);
+		}
+		return parsed;
+	}();
+	return hash < rules.lo || hash > rules.hi || std::ranges::find(rules.skip, hash) != rules.skip.end();
+}
 
 const Decoder::Operand& Translator::SourceAt(const Decoder::Instruction& inst, uint32_t index) {
 	switch (index) {
@@ -962,12 +1008,11 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 			return value == nullptr || std::string_view(value) != "0";
 		}();
 		static const bool log = std::getenv("KYTY_LANE_LOCAL_LOG") != nullptr;
-		// Cooperative halves (KYTY_LANE_LOCAL_COOP=0: off): a group of exactly one wave on 32-wide subgroups, its halves
-		// the workgroup's two subgroups, may exchange lanes through workgroup memory (LaneLocal.cpp).
-		static const bool cooperative_enabled = [] {
-			const char* value = std::getenv("KYTY_LANE_LOCAL_COOP");
-			return value == nullptr || std::string_view(value) != "0";
-		}();
+		// Cooperative halves: a group of exactly one wave on 32-wide subgroups, its halves the workgroup's two subgroups,
+		// may exchange lanes through workgroup memory (LaneLocal.cpp). Where the static pipeline store was made with them
+		// (SetTranslatorFeatures; KYTY_LANE_LOCAL_COOP=0/1 decides otherwise).
+		const bool cooperative_enabled =
+		    (TranslatorFeatureSet() & TranslatorFeatureCooperativeHalves) != 0 && !CooperativeLeftOut(options.shader_hash);
 		const auto* group = options.compute;
 		const bool  one_wave =
 		    group != nullptr && group->host_subgroup_size == 32u &&

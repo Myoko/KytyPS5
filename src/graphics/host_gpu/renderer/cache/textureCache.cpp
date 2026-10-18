@@ -383,12 +383,29 @@ bool TextureCache::SafeToDownload(const Image& image) {
 	return !m_buffer_cache.HasGpuDirtyBytes(range.address, range.size);
 }
 
-ImageId TextureCache::InsertImage(const ImageInfo& info) {
-	const auto id = m_slot_images.insert(m_graphics, m_scheduler, info);
+// Collector runs (flips) before memory an image could not be made for is asked for again.
+constexpr uint64_t FailedRetryTicks = 30;
+
+ImageId TextureCache::InsertImage(const ImageInfo& info, bool may_fail) {
+	const auto id = m_slot_images.insert(m_graphics, m_scheduler, info, may_fail);
+	if (m_slot_images[id].CreateFailed()) {
+		RetireImage(id); // (never registered)
+		if (m_failed_images.size() >= 16) m_failed_images.erase(m_failed_images.begin());
+		m_failed_images.push_back({info.data.address, info.data.size, m_gc_tick});
+		m_failed_tick = m_gc_tick + 1;
+		return {};
+	}
 	if (!info.data.Empty()) {
 		RegisterImage(id);
 	}
 	return id;
+}
+
+bool TextureCache::RecentlyFailed(const ImageInfo& info) const {
+	return std::ranges::any_of(m_failed_images, [&](const FailedImage& failed) {
+		return failed.address == info.data.address && info.data.size >= failed.size &&
+		       m_gc_tick < failed.tick + FailedRetryTicks;
+	});
 }
 
 void TextureCache::StampRegistrationPages(const Image& image, uint64_t epoch) {
@@ -1963,6 +1980,24 @@ void TextureCache::InitializeImage(ImageId id) {
 			uploaded          = UploadImageChunked(image, &ranges);
 			if (uploaded) image.staged_ring = nullptr;
 		}
+		// CPU writes over known parts of it, and GPU buffer writes over known parts or none: the subresources over either
+		// alone. The partial upload above takes no image with buffer writes and stages guest bytes alone: a texture pool's
+		// range over memory the GPU writes too (issue #49: 1 GB of 1024x1024 slots) went up whole when the game streamed a
+		// texture into it, 190-360 ms frames. The sources are the whole upload's (one for all of it below ChunkedUploadMin,
+		// a piece at a time past it): asked for pieces, the buffer cache made and joined buffers inside the image's range
+		// again and again (an 8 GB laptop's GPU faults in the culling chain came 3 times in 4 tours with that, 10-18).
+		if (!uploaded && image.IsPartiallyCpuDirty() && !image.IsMaybeCpuDirty() &&
+		    kyty_local_partial_image_dirty_mode.load(std::memory_order_relaxed) == 1 &&
+		    (!image.IsBufferModified() || (!image.BufferModifiedRanges().empty() &&
+		                                   kyty_local_buffer_ranges_mode.load(std::memory_order_relaxed) != 0))) {
+			auto ranges = image.CpuDirtyRanges();
+			if (image.IsBufferModified()) {
+				for (const auto& [begin, end]: image.BufferModifiedRanges()) Image::AddRange(ranges, begin, end);
+			}
+			uploaded = image.info.data.size >= ChunkedUploadMin ? UploadImageChunked(image, &ranges)
+			                                                    : UploadImageSubresources(image, ranges);
+			if (uploaded) image.staged_ring = nullptr;
+		}
 		if (!uploaded && UploadImageChunked(image)) {
 			uploaded            = true;
 			image.staged_ring   = nullptr;
@@ -2219,6 +2254,61 @@ bool TextureCache::UploadDepthPartial(Image& image, uint32_t first_layer, uint32
 	LiveCounters::Add(LiveCounters::PartialUploads);
 	LiveCounters::Add(LiveCounters::PartialUploadBytes, total);
 	LogPartialUpload(image, pieces.size(), total);
+	return true;
+}
+
+// The subresources over `ranges` alone, from the source a whole upload of the image takes (ObtainBufferForImage over all
+// of it: the buffer cache sees the same request), detiled only where the ranges are.
+bool TextureCache::UploadImageSubresources(Image& image, const std::vector<std::pair<uint64_t, uint64_t>>& ranges) {
+	const auto& info    = image.info;
+	const auto  binding = UploadBinding(image);
+	if (binding == BindingType::DepthTarget || info.IsVolume()) {
+		return false;
+	}
+	auto& cached = m_partial_plans[image.serial];
+	if (cached.plan == nullptr || cached.binding != binding) {
+		cached.plan    = std::make_shared<TextureTransferPlan>(BuildTextureTransfer(image, binding, TransferDirection::Upload));
+		cached.binding = binding;
+	}
+	const auto& plan = *cached.plan;
+	if (!plan.valid || plan.swap_bgra16 || plan.tiles.empty() || plan.tiles.size() != plan.regions.size()) {
+		return false;
+	}
+	std::vector<GpuTileInfo>         tiles;
+	std::vector<vk::BufferImageCopy> regions;
+	uint64_t                         linear_total = 0;
+	for (size_t index = 0; index < plan.tiles.size(); index++) {
+		auto       tile   = plan.tiles[index];
+		auto       region = plan.regions[index];
+		const auto begin  = info.data.address + tile.tiled_offset;
+		if (!IntersectsRanges(ranges, begin, begin + tile.tiled_size)) {
+			continue;
+		}
+		if (region.bufferOffset < tile.linear_offset) {
+			return false;
+		}
+		const auto linear_offset = (linear_total + 255) & ~uint64_t {255};
+		region.bufferOffset      = linear_offset + (region.bufferOffset - tile.linear_offset);
+		tile.linear_offset       = linear_offset;
+		linear_total             = linear_offset + tile.linear_size;
+		tiles.push_back(tile);
+		regions.push_back(region);
+	}
+	LiveCounters::Add(LiveCounters::PartialUploads);
+	if (tiles.empty()) {
+		return true; // (only padding between subresources)
+	}
+	const auto [source, source_offset] = m_buffer_cache.ObtainBufferForImage(info.data.address, info.data.size);
+	if (source == nullptr) {
+		EXIT("TextureCache: failed to obtain image upload source\n");
+	}
+	const auto linear = m_tiler.Detile(source->Handle(), source_offset, info.data.size, linear_total, tiles,
+	                                   source->Usage() == MemoryUsage::Upload);
+	for (auto& region: regions) {
+		region.bufferOffset += linear.offset;
+	}
+	image.Upload(regions, linear.buffer, linear.offset, linear.size);
+	LiveCounters::Add(LiveCounters::PartialUploadBytes, linear_total);
 	return true;
 }
 
@@ -2792,7 +2882,118 @@ bool TextureCache::HoldsImage(const ImageInfo& info) {
 	return held;
 }
 
-ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
+// descriptors.cpp HoldLayerRange: `info` holds the layers of a one-level array a sampled view reads, slices one after
+// another. An image of the same shape whose layers lie on the same grid of slices holds the same texture in the same
+// bytes, so it can serve the view: one holding all these layers (`info` becomes its own, `first` the view's first layer
+// in it), or else the ones over part of them grow into one image of all their layers, made once: their layers copied on
+// the GPU, the others uploaded, and they go. The game's texture pools are sampled through views from a few first layers
+// to a last one that grows as more streams in: each became an image of its own (0.8-3.6 GB a piece on a 16 GB RX 9070,
+// with the whole pool's beside them), each larger last layer a new image uploaded whole beside the old one (3.2 s
+// frames), until the GPU's memory was full and the emulator exited (issue #49). Without such images `info` stays.
+void TextureCache::HoldLayers(ImageInfo& info, uint32_t& first) {
+	first             = 0;
+	const auto layers = info.resources.layers;
+	if (info.data.Empty() || layers == 0 || info.resources.levels != 1 || info.data.size % layers != 0 ||
+	    info.mip_layout[0].offset != 0 || info.mip_layout[0].size != info.data.size) {
+		return;
+	}
+	const uint64_t slice   = info.data.size / layers;
+	const auto     on_grid = [&](const ImageInfo& held) {
+		return held.resources.levels == 1 && held.resources.layers != 0 &&
+		       held.data.size == slice * held.resources.layers && held.samples == info.samples && held.type == info.type &&
+		       held.pixel_format == info.pixel_format && held.guest_format == info.guest_format &&
+		       held.extent == info.extent && held.pitch == info.pitch && held.bytes_per_block == info.bytes_per_block &&
+		       held.tile_mode == info.tile_mode && held.bgra16 == info.bgra16 && !held.HasMetadata() &&
+		       !held.HasStencil() && held.mip_layout[0].offset == 0 && held.mip_layout[0].size == held.data.size &&
+		       held.mip_layout[0].pitch == info.mip_layout[0].pitch &&
+		       held.mip_layout[0].height == info.mip_layout[0].height &&
+		       (std::max(held.data.address, info.data.address) - std::min(held.data.address, info.data.address)) % slice ==
+		           0;
+	};
+	const auto           view_address = info.data.address;
+	ImageInfo            grown        = info;
+	std::vector<ImageId> parts;
+	{
+		std::scoped_lock lock {m_lock};
+		// (One holding them all is over their first page: the lookup of every draw that binds them looks there alone.)
+		ImageId                   holder {};
+		ImagePageTable::PageRange pages {};
+		if (!ImagePageTable::TryGetPageRange(info.data.address, info.data.size, pages)) return;
+		if (const auto* owners = m_image_page_table.Find(pages.first)) {
+			owners->ForEach([&](ImageId id) {
+				const auto* image = m_slot_images.try_get(id);
+				if (image == nullptr || !image->registered || !on_grid(image->info) ||
+				    image->info.data.address > info.data.address || image->info.data.End() < info.data.End()) {
+					return;
+				}
+				if (!holder || image->info.data.size < m_slot_images[holder].info.data.size) holder = id;
+			});
+		}
+		if (holder) {
+			info  = m_slot_images[holder].info;
+			first = static_cast<uint32_t>((view_address - info.data.address) / slice);
+			return;
+		}
+		uint64_t begin = info.data.address;
+		uint64_t end   = info.data.End();
+		for (const auto id: FindImagesInRegion(info.data.address, info.data.size, false)) {
+			const auto* image = m_slot_images.try_get(id);
+			if (image == nullptr || !image->registered || !on_grid(image->info) || !GuestTexture(*image)) continue;
+			parts.push_back(id);
+			begin = std::min(begin, image->info.data.address);
+			end   = std::max(end, image->info.data.End());
+		}
+		if (parts.empty()) return;
+		grown.data               = {begin, end - begin};
+		grown.resources.layers   = static_cast<uint32_t>((end - begin) / slice);
+		grown.mip_layout[0].size = grown.data.size;
+		if ((end - begin) / slice > m_graphics.GetPhysicalDeviceProperties().limits.maxImageArrayLayers ||
+		    RecentlyFailed(grown)) {
+			return;
+		}
+	}
+	// (Guest memory current before its bytes are uploaded, as FindImage does.)
+	m_buffer_cache.DrainGuestReadback(grown.data.address, grown.data.size);
+	std::scoped_lock lock {m_lock};
+	const auto       id = InsertImage(grown, true);
+	if (!id) return;
+	if (const auto* part = m_slot_images.try_get(parts.front())) m_slot_images[id].usage = part->usage;
+	DeferredImageProtects protects {m_buffer_cache, m_page_manager};
+	protects.Track([&] { TrackImage(id); });
+	std::vector<std::pair<uint64_t, uint64_t>> uploads {{grown.data.address, grown.data.End()}};
+	for (const auto part: parts) {
+		const auto* image = m_slot_images.try_get(part);
+		if (image == nullptr || !image->registered) continue;
+		CopyImageMip(id, part, 0, static_cast<uint32_t>((image->info.data.address - grown.data.address) / slice));
+		// (One whose pages a write may have touched since gives its layers from guest memory instead.)
+		if (const auto& copied = m_slot_images[part]; !copied.IsCpuDirty()) {
+			Image::SubtractRange(uploads, copied.info.data.address, copied.info.data.End());
+		}
+	}
+	// The layers no image held: uploaded alone. (Otherwise it stays dirty as made, and its first use uploads all of it.)
+	if (auto& image = m_slot_images[id]; uploads.empty() || UploadImageChunked(image, &uploads)) {
+		image.staged_ring = nullptr;
+		if (image.IsCpuDirty()) FinishRefresh(image);
+	}
+	for (const auto part: parts) {
+		auto* image = m_slot_images.try_get(part);
+		if (image == nullptr || !image->registered) continue;
+		if (image->binding.is_bound || image->binding.is_target) image->binding.needs_rebind = true;
+		FreeImage(part, "layer-range");
+	}
+	static std::atomic<uint32_t> reports {0};
+	if (reports.fetch_add(1, std::memory_order_relaxed) < 32) {
+		std::printf("TextureCache: layers 0x%llx+0x%llx (%u) held with %zu image(s) beside them as one of %u layers "
+		            "(0x%llx)\n",
+		            static_cast<unsigned long long>(view_address), static_cast<unsigned long long>(info.data.size), layers,
+		            parts.size(), grown.resources.layers, static_cast<unsigned long long>(grown.data.address));
+		std::fflush(stdout);
+	}
+	info  = grown;
+	first = static_cast<uint32_t>((view_address - grown.data.address) / slice);
+}
+
+ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format, bool may_fail) {
 	size_t         slow_candidates = 0;
 	SlowLog::Scope slow([&](double ms) {
 		std::printf("SLOW FindImage %.1f ms addr=0x%llx size=0x%llx type=%u fmt=%u %ux%ux%u levels=%u layers=%u "
@@ -2891,7 +3092,10 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_format) {
 			}
 		}
 		if (!result) {
-			result               = InsertImage(desc.info);
+			// (No image: the caller binds a null one. Memory it could not have is not asked for at every draw.)
+			if (may_fail && RecentlyFailed(desc.info)) return {};
+			result = InsertImage(desc.info, may_fail);
+			if (!result) return {};
 			auto& inserted       = m_slot_images[result];
 			inserted.guest_alias = m_alias_insert;
 			m_alias_insert       = false;
@@ -4186,9 +4390,12 @@ void TextureCache::RunGarbageCollector() {
 	// come back after a few seconds (160 flips: 5-7 MB of uploads a frame instead of 0.2-1.7, 1% low 47 -> 27 fps).
 	constexpr uint64_t StaleTicks   = 600;
 	constexpr size_t   MaxDeletions = 40;
+	// For a while after the GPU could not make an image (InsertImage), images unused for FailedRetryTicks go too: the
+	// superseded ones whose memory it needs (issue #49: a 16 GB GPU full of texture-pool images).
+	const uint64_t stale_ticks = m_failed_tick != 0 && tick < m_failed_tick + StaleTicks ? FailedRetryTicks : StaleTicks;
 	// Less the room game buffers in use that got system memory need back (BufferCache::MoveSpilledBufferBack).
 	const uint64_t collect_above = m_trigger_gc_memory - std::min(m_trigger_gc_memory, m_buffer_cache.SpilledRoom());
-	if (m_total_used_memory < collect_above || tick < StaleTicks) {
+	if (m_total_used_memory < collect_above || tick < stale_ticks) {
 		return;
 	}
 	// An image the collector keeps (a depth image with its stencil association; one the GPU wrote, tiled: no download
@@ -4197,7 +4404,7 @@ void TextureCache::RunGarbageCollector() {
 	// deletes its stencil association too, so the traversal ends first.
 	std::vector<ImageId> candidates;
 	candidates.reserve(MaxDeletions);
-	m_lru_cache.ForEachItemBelow(tick - StaleTicks, [&](ImageId id) {
+	m_lru_cache.ForEachItemBelow(tick - stale_ticks, [&](ImageId id) {
 		const auto* owner = m_slot_images.try_get(id);
 		if (owner == nullptr || !owner->registered || owner->depth_id ||
 		    (owner->IsGpuModified() && owner->info.IsTiled() && SafeToDownload(*owner))) {

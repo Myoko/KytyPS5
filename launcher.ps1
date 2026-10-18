@@ -7,6 +7,9 @@ $root = $PSScriptRoot
 # cmd.exe by its full path: Start-Process with a bare "cmd" opens whatever "cmd" it finds first, and a file of that
 # name without an extension (in the working folder or on the PATH) made Windows ask which app should open it (issue #47).
 $cmd = if ($env:ComSpec -and (Test-Path -LiteralPath $env:ComSpec)) { $env:ComSpec } else { Join-Path ([Environment]::SystemDirectory) 'cmd.exe' }
+# Windows PowerShell by its path too: on a PC whose PATH lacks its folder, cmd.exe did not know "powershell" (issue #55).
+$powershellExe = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+$powershellCommand = if (Test-Path -LiteralPath $powershellExe) { "`"$powershellExe`"" } else { 'powershell' }
 $settingsPath = Join-Path $root 'launcher-settings.json'
 $languages = '日语', '英语（美国）', '法语（法国）', '西班牙语（西班牙）', '德语', '意大利语', '荷兰语',
 	'葡萄牙语（葡萄牙）', '俄语', '韩语', '中文（繁体）', '中文（简体）', '芬兰语', '瑞典语',
@@ -24,7 +27,7 @@ $frameGens = '关闭', '2x', '3x', '4x', '5x', '6x'
 $overlays = '关闭', '帧率', '详细'
 
 $settings = [ordered]@{ game = ''; resolution = '2560x1440'; fullscreen = $false; aspect = $true; language = 1; redzone = $true;
-	ecores = $false; cheats = $true; fps120 = $false; render = 1440; ratio = '16:9'; quality = 'standard'; vsync = $false; hdr = $false; framegen = 0; hud = 0; streamline = '' }
+	ecores = $false; cheats = $true; fps120 = $false; render = 1440; ratio = '16:9'; quality = 'standard'; vsync = $false; hdr = $false; framegen = 0; hud = 0; streamline = ''; safegpu = $false }
 if (Test-Path $settingsPath) {
 	$saved = Get-Content $settingsPath -Raw | ConvertFrom-Json
 	foreach ($property in $saved.PSObject.Properties) { if ($settings.Contains($property.Name)) { $settings[$property.Name] = $property.Value } }
@@ -143,20 +146,25 @@ if ($settings.quality -in 'low', 'lowest') {
 	}
 	# The emulator's panel (KYTY_FPS_HUD) at the top right of the game image: the frame rate and frame times, or with
 	# the GPU, processor and memory too.
-	if ([int]$settings.hud -ge 1) { $arguments += @('-Set', "KYTY_FPS_HUD=$([Math]::Min([int]$settings.hud, 2))") }
+	# Switches of the config, one -Set argument (run-windows.ps1 splits it at the commas).
+	$sets = @()
+	if ([int]$settings.hud -ge 1) { $sets += "KYTY_FPS_HUD=$([Math]::Min([int]$settings.hud, 2))" }
+	# Safe GPU mode: no overlapping compute dispatches (KYTY_COMPUTE_CHAIN=0).
+	if ($settings.safegpu) { $sets += 'KYTY_COMPUTE_CHAIN=0' }
+	if ($sets.Count) { $arguments += @('-Set', ($sets -join ',')) }
 	if ($settings.game) { $arguments += @('-Game', "`"$($settings.game)`"") }
 	# run-windows.ps1 passes --game-patch only for -Patch, and the emulator rejects it twice, so the
 	# file is added here rather than left to the emulator's own _Patches lookup.
 	if ($settings.cheats) { $patch = Get-CheatFile $settings.game; if ($patch) { $arguments += @('-Patch', "`"$patch`"") } }
 	# The console stays for the live log; after a crash it waits for a key.
-	return 'powershell ' + ($arguments -join ' ') + ' & if !errorlevel! neq 0 pause'
+	return "$powershellCommand " + ($arguments -join ' ') + ' & if !errorlevel! neq 0 pause'
 }
 function Get-PrecompileCommand([string]$switch = '') {
 	$arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$root\precompile-windows.ps1`"")
 	if ($switch) { $arguments += $switch }
 	if ($settings.ecores -and $efficiencyMask -ne 0) { $arguments += @('-Affinity', $efficiencyMask) }
 	if ($settings.game) { $arguments += @('-Game', "`"$($settings.game)`"") }
-	return 'powershell ' + ($arguments -join ' ') + ' & pause'
+	return "$powershellCommand " + ($arguments -join ' ') + ' & pause'
 }
 function Save-Settings { $settings | ConvertTo-Json | Set-Content $settingsPath -Encoding UTF8 }
 if ($DryRun) {
@@ -318,6 +326,14 @@ $hud.Items.AddRange($overlays)
 $hud.SelectedIndex = [Math]::Max(0, [Math]::Min($overlays.Count - 1, [int]$settings.hud))
 $hudNote = New-Object System.Windows.Forms.Label -Property @{ Text = '右上角：帧率与帧时间；详细：GPU、CPU、内存。游戏内按 F8 切换'; AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
 Add-Row '覆盖层' @($hud, $hudNote)
+$safeGpuTip = "避免显卡挂死造成的崩溃与蓝屏：'device lost'、驱动重启时黑屏（TDR）、或 VIDEO_TDR_FAILURE 蓝屏。`n" +
+	"开启后模拟器把恶魔之魂的计算工作一步一步串行执行，不再让显卡重叠执行。`n" +
+	"代价是帧率约低 37%（笔记本 RTX 3080 在波雷塔利亚：27 → 17 fps）。`n" +
+	"它不能解决 MEMORY_MANAGEMENT 蓝屏（那是内存塞满，见 README）。`n" +
+	"如果游戏本来不出现这类崩溃就别开；更新显卡驱动也有帮助。"
+$safeGpu = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '安全 GPU 模式：避免显卡挂死导致的崩溃与蓝屏，但帧率约低 37%'; AutoSize = $true; Checked = [bool]$settings.safegpu }
+(New-Object System.Windows.Forms.ToolTip -Property @{ AutoPopDelay = 30000 }).SetToolTip($safeGpu, $safeGpuTip)
+Add-Row '安全 GPU 模式' @($safeGpu)
 $ecores = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '只用能效核预编译（更慢，但电脑保持流畅）'; AutoSize = $true
 	Checked = ([bool]$settings.ecores -and $efficiencyMask -ne 0); Enabled = ($efficiencyMask -ne 0) }
 Add-Row '' @($ecores)
@@ -360,6 +376,7 @@ function Read-Form {
 	$settings.vsync      = $vsync.Checked
 	$settings.hdr        = $hdr.Checked
 	$settings.hud        = $hud.SelectedIndex
+	$settings.safegpu    = $safeGpu.Checked
 	$settings.render     = [int](([string]$render.SelectedItem -split ' ')[0])
 	$settings.quality    = ([string]$quality.SelectedItem -split ' ')[0].ToLowerInvariant()
 	$settings.ratio      = ([string]$ratio.SelectedItem -split ' ')[0]
