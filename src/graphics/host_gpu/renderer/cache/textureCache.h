@@ -161,6 +161,8 @@ public:
 	void UnmapMemory(uint64_t address, uint64_t size);
 	void ProcessDownloadImages();
 	void RunGarbageCollector();
+	// RunGarbageCollector's line on the PC's memory, when it moved.
+	void LogPcMemory(uint64_t tick);
 	// The images no draw or dispatch used for a while go (RunGarbageCollector, once a flip).
 	void RetireStaleImages(uint64_t tick);
 	// The latest tick of a GPU-written image's download that will write guest memory overlapping
@@ -206,6 +208,8 @@ private:
 	using ImageEpochTable = MultiLevelPageTable<uint64_t, 20, 40, 10>;
 
 	[[nodiscard]] ImageId     InsertImage(const ImageInfo& info, bool may_fail = false);
+	// Room for an image that must exist, which the GPU could not make (InsertImage): the images freed. Caller holds m_lock.
+	size_t                    ReclaimImageMemory(uint64_t bytes, bool all);
 	// Images the GPU could not make (InsertImage's `may_fail`): their memory is not asked for again for FailedRetryTicks
 	// collector runs, and meanwhile the collector takes images unused for a shorter time (RunGarbageCollector).
 	struct FailedImage {
@@ -396,6 +400,9 @@ private:
 	uint64_t                                          m_trigger_gc_memory  = 0;
 	uint64_t                                          m_logged_video_memory = 0; // RunGarbageCollector's log line
 	uint64_t                                          m_logged_shared_memory = 0;
+	uint64_t                                          m_logged_working_set   = 0; // (and its line on the PC's memory)
+	uint64_t                                          m_logged_private       = 0;
+	bool                                              m_logged_short_of_ram  = false;
 	uint64_t         m_gc_tick                = 0;
 	std::atomic<uint64_t> m_frame {0};
 	struct PendingDownload {

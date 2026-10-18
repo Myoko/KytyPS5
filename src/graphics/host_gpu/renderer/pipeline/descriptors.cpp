@@ -1072,8 +1072,10 @@ TextureBinding RenderExecutor::ResolveTextureUncached(
 		                             width, height, desc.info.resources.layers, levels, static_cast<uint32_t>(format),
 		                             descriptor.BaseArray5(), address));
 	}
-	// (A sampled texture the GPU cannot make, its memory full: a null image, not the end of the emulator.)
-	auto id = texture_cache.FindImage(desc, shader_conversion, !storage);
+	// (A texture or storage image the GPU cannot make, its memory full: a null image, not the end of the emulator; a
+	// storage view loses its writes until the collector made room. Issue #53: a 320x180x61 storage image of the cinematic
+	// mode on a 16 GB RX 7800 XT whose video memory the 4K targets had filled.)
+	auto id = texture_cache.FindImage(desc, shader_conversion, true);
 	if (!id) {
 		return bind_null(fmt::format("no image could be made for the texture: {}x{} layers={} levels={} format={} "
 		                             "addr=0x{:016x} size=0x{:x}",
@@ -1366,6 +1368,16 @@ void RenderExecutor::RebindImages(PreparedBindings& prepared) {
 	}
 }
 
+// A dynamic storage binding's levels and the level of its view `mip`: a null image's (bind_null: no image could be made,
+// issue #53) one level stands for each level the shader picks. (Out of AcquireImages, whose control flow and so its PGO
+// profile stay as they were.)
+[[gnu::noinline]] static uint32_t DynamicStorageLevels(const TextureBinding& binding, uint32_t mip_count) {
+	return binding.desc.info.data.Empty() ? mip_count : binding.desc.view_info.level_count;
+}
+[[gnu::noinline]] static uint32_t DynamicStorageLevel(const TextureBinding& binding, uint32_t mip) {
+	return binding.desc.info.data.Empty() ? 0u : mip;
+}
+
 bool RenderExecutor::AcquireImages(PreparedBindings& prepared) {
 	const auto& program       = *prepared.runtime->program;
 	auto&       images        = prepared.images;
@@ -1378,11 +1390,11 @@ bool RenderExecutor::AcquireImages(PreparedBindings& prepared) {
 		const auto& resource = program.info.images[i];
 		if (resource.mip_mode == ShaderRecompiler::IR::ImageMipMode::DynamicStorage) {
 			EXIT_IF(resource.mip_count == 0u ||
-			        resource.mip_count != binding.desc.view_info.level_count);
+			        resource.mip_count != DynamicStorageLevels(binding, resource.mip_count));
 			binding.mip_views.reserve(resource.mip_count);
 			for (uint32_t mip = 0; mip < resource.mip_count; mip++) {
 				auto desc = binding.desc;
-				desc.view_info.base_level += mip;
+				desc.view_info.base_level += DynamicStorageLevel(binding, mip);
 				desc.view_info.level_count = 1;
 				binding.mip_views.push_back(texture_cache.FindTexture(binding.image_id, desc));
 			}
