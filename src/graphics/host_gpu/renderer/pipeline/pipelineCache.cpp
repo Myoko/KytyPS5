@@ -2250,7 +2250,7 @@ namespace {
 // The flips (EvictIdlePipelines) and what eviction did (ReportSession).
 std::atomic<uint32_t> g_pipeline_flip {1};
 struct {
-	std::atomic<uint64_t> kept {0}, evicted {0}, remade {0}, remake_us {0}, remake_max_us {0};
+	std::atomic<uint64_t> kept {0}, evicted {0}, remade {0}, remake_us {0}, remake_max_us {0}, scene {0};
 } g_pipeline_evictions;
 
 // KYTY_PIPELINE_EVICT: 0 keeps every pipeline, 2 (a test) evicts whatever the video memory in use; set, it evicts on any
@@ -2282,7 +2282,9 @@ const EvictSettings& PipelineEvictSettings() {
 bool KeepsRemake(GraphicContext& graphics, PipelineCache::Pipeline& pipeline, bool from_store) {
 	const auto& settings = PipelineEvictSettings();
 	pipeline.last_flip   = g_pipeline_flip.load(std::memory_order_relaxed);
-	if (!settings.on || (!settings.set && !graphics.small_video_memory) || !from_store) return false;
+	// (Where the game reports its worlds, on any GPU: the worlds it leaves take their pipelines along.)
+	const bool scenes = SceneTags::Generation() != 0;
+	if (!settings.on || (!settings.set && !graphics.small_video_memory && !scenes) || !from_store) return false;
 	g_pipeline_evictions.kept.fetch_add(1, std::memory_order_relaxed);
 	return true;
 }
@@ -2356,33 +2358,73 @@ void PipelineCache::EvictIdlePipelines() {
 	const uint32_t     flip         = g_pipeline_flip.fetch_add(1, std::memory_order_relaxed) + 1;
 	const auto         now          = std::chrono::steady_clock::now();
 	m_flip_times[flip % m_flip_times.size()] = now.time_since_epoch().count();
-	if (!settings.on || flip % CheckFlips != 0 || kyty_local_speculate_mode.load(std::memory_order_relaxed) != 0) return;
-	uint64_t video = 0, budget = 0;
-	m_evict_pressure = m_graphics.QueryLocalVideoMemory(&video, &budget) && (settings.always || video + EvictMargin >= budget);
-	if (!m_evict_pressure) return;
-	// The newest flip that began by the horizon among those the ring holds; none when even the oldest began after it.
-	const auto horizon = (now - settings.idle).time_since_epoch().count();
-	uint32_t   first   = flip - std::min<uint32_t>(flip - 1, static_cast<uint32_t>(m_flip_times.size() - 1)), last = flip;
-	if (m_flip_times[first % m_flip_times.size()] > horizon) return;
-	while (first < last) {
-		const uint32_t middle = first + (last - first + 1) / 2;
-		if (m_flip_times[middle % m_flip_times.size()] <= horizon) first = middle;
-		else last = middle - 1;
+	// A world the game left (SceneTags::Enter): once the one it went to was played for SceneSettle, the pipelines no
+	// binding used since the change - and none of the new world's recorded ones, which the warmup made for its places not
+	// reached yet - leave whatever the video memory, a pass a check until one finds none. Each held ~220 KB of the NVIDIA
+	// driver's RAM and video memory for its code, until the session ended. 16 GB policy, 1-1 -> five worlds -> 1-1, 60 s
+	// in each: the driver's pools 0.87 -> 2.01 GB kept, 0.84 -> 0.98 GB with those pipelines evicted (private 4.2 -> 2.8
+	// GB more); a pipeline evicted and bound again is made from the static store (~0.4 ms there). Where the warmup made
+	// every recorded pipeline (a world it did not know yet), those of the other worlds go too.
+	constexpr auto SceneSettle = std::chrono::seconds(60);
+	if (const auto generation = SceneTags::Generation(); generation != m_scene_generation) {
+		m_scene_generation = generation;
+		m_scene_flip       = flip;
+		m_scene_since      = now;
+		m_scene_swept      = false;
 	}
-	const uint32_t below   = last; // bound in an earlier flip: idle since then
-	size_t         evicted = 0;
-	const auto     evict   = [&](Pipeline& pipeline) {
+	if (!settings.on || flip % CheckFlips != 0 || kyty_local_speculate_mode.load(std::memory_order_relaxed) != 0) return;
+	const bool scene_left = !m_scene_swept && now - m_scene_since >= SceneSettle;
+	uint64_t video = 0, budget = 0;
+	const bool known = m_graphics.QueryLocalVideoMemory(&video, &budget);
+	m_evict_pressure = known && (settings.always || video + EvictMargin >= budget);
+	if (!m_evict_pressure && !scene_left) return;
+	// The newest flip that began by the horizon among those the ring holds; none when even the oldest began after it.
+	uint32_t below = 0; // bound in an earlier flip: idle since then
+	if (m_evict_pressure) {
+		const auto horizon = (now - settings.idle).time_since_epoch().count();
+		uint32_t   first   = flip - std::min<uint32_t>(flip - 1, static_cast<uint32_t>(m_flip_times.size() - 1)), last = flip;
+		if (m_flip_times[first % m_flip_times.size()] <= horizon) {
+			while (first < last) {
+				const uint32_t middle = first + (last - first + 1) / 2;
+				if (m_flip_times[middle % m_flip_times.size()] <= horizon) first = middle;
+				else last = middle - 1;
+			}
+			below = last;
+		}
+	}
+	std::unordered_set<uint64_t> scene_recipes;
+	if (scene_left) scene_recipes = SceneTags::Recipes(SceneTags::Current());
+	size_t     evicted = 0, left = 0;
+	const auto evict   = [&](Pipeline& pipeline) {
 		if (evicted == MaxEvictions || pipeline.pipeline == nullptr || pipeline.remake == nullptr || pipeline.unoptimized ||
-		    pipeline.optimized != nullptr || pipeline.last_flip >= below)
+		    pipeline.optimized != nullptr)
 			return;
+		const bool idle  = pipeline.last_flip < below;
+		const bool other = scene_left && pipeline.last_flip < m_scene_flip && !scene_recipes.contains(pipeline.recipe);
+		if (!idle && !other) return;
 		DeviceFault::ForgetPipeline(static_cast<VkPipeline>(pipeline.pipeline));
 		m_graphics.device.destroyPipeline(pipeline.pipeline, nullptr);
 		pipeline.pipeline = nullptr;
 		evicted++;
+		left += idle ? 0 : 1;
 	};
 	for (auto& [key, pipeline]: m_graphics_pipelines) evict(*pipeline);
 	for (auto& [id, pipeline]: m_compute_pipelines) evict(*pipeline);
-	if (evicted == 0) return;
+	if (scene_left && evicted < MaxEvictions) m_scene_swept = true;
+	g_pipeline_evictions.scene.fetch_add(left, std::memory_order_relaxed);
+	if (scene_left && m_scene_swept) {
+		std::printf("Pipelines of the worlds left (%s for %lld s): %llu evicted in all, %llu made again (%.0f ms)\n",
+		            SceneTags::Name(SceneTags::Current()).c_str(),
+		            static_cast<long long>(std::chrono::duration_cast<std::chrono::seconds>(now - m_scene_since).count()),
+		            static_cast<unsigned long long>(g_pipeline_evictions.scene.load(std::memory_order_relaxed)),
+		            static_cast<unsigned long long>(g_pipeline_evictions.remade.load(std::memory_order_relaxed)),
+		            static_cast<double>(g_pipeline_evictions.remake_us.load(std::memory_order_relaxed)) / 1000.0);
+		std::fflush(stdout);
+	}
+	if (evicted == left) {
+		(void)g_pipeline_evictions.evicted.fetch_add(evicted, std::memory_order_relaxed);
+		return;
+	}
 	const auto total = g_pipeline_evictions.evicted.fetch_add(evicted, std::memory_order_relaxed) + evicted;
 	// (A line at most every 30 s: the totals so far.)
 	static auto logged = std::chrono::steady_clock::time_point {};

@@ -471,7 +471,8 @@ private:
 	void            BuildOptimized(Pipeline& pipeline, std::function<void(Pipeline&)> build);
 	void            PromoteOptimized();
 	// At each flip: with the video memory in use near the GPU's budget, the pipelines no binding used for a while leave
-	// it (their handles destroyed; BindPipelineHandle makes one again from the static store when it is bound).
+	// it (their handles destroyed; BindPipelineHandle makes one again from the static store when it is bound); and a
+	// while after the game changed its world (SceneTags), those of the worlds it left.
 	void            EvictIdlePipelines();
 	// (EvictIdlePipelines) A graphics pipeline's inputs, as its remake keeps them.
 	struct GraphicsMakeInputs;
@@ -479,6 +480,12 @@ private:
 	// (EvictIdlePipelines) When each recent flip began (steady clock, by flip % size), and the video memory pressure.
 	std::array<int64_t, 32768> m_flip_times {};
 	bool                      m_evict_pressure = false;
+	// (EvictIdlePipelines) The world the game is in: its SceneTags generation, the flip and time it began, and whether
+	// the pipelines of the worlds before it went.
+	uint64_t                              m_scene_generation = 0;
+	uint32_t                              m_scene_flip       = 0;
+	std::chrono::steady_clock::time_point m_scene_since {};
+	bool                                  m_scene_swept = true;
 	void InitializeDriverCache();
 	vk::PipelineCache LoadDriverCache(const std::filesystem::path& file_path, uint64_t limit, size_t& loaded_size);
 	bool SaveDriverCache(vk::PipelineCache cache, const std::filesystem::path& file_path, size_t& saved_size);
