@@ -272,8 +272,37 @@ $vsync = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '垂直同
 Add-Row '' @($vsync)
 $hdr = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'HDR（需先在 Windows 显示设置里打开"使用 HDR"）'; AutoSize = $true; Checked = [bool]$settings.hdr }
 Add-Row '' @($hdr)
+# 当前画面比例的 3D 宽高比（与 run-windows.ps1 -Aspect 一致）。
+function Get-RatioAspect {
+	switch ((($ratio.SelectedItem -split ' ')[0])) {
+		'21:9' { 64.0 / 27.0 }
+		'32:9' { 32.0 / 9.0 }
+		default { 16.0 / 9.0 }
+	}
+}
+# 该比例下游戏渲染目标显存能容纳的最高渲染高度：瓦片数不超过 3840x2160 所用的（超过会开机崩或画面变红）。
+function Get-MaxRenderHeight {
+	$aspectValue = Get-RatioAspect
+	for ($h = 2160; $h -ge 720; $h -= 8) {
+		$w = [Math]::Floor($h * $aspectValue / 8.0 + 0.5) * 8
+		$fits = $true
+		foreach ($tile in @(@(256, 128), @(128, 128), @(128, 64), @(64, 64))) {
+			$tiles = [Math]::Ceiling($w / $tile[0]) * [Math]::Ceiling($h / $tile[1])
+			if ($tiles -gt [Math]::Ceiling(3840 / $tile[0]) * [Math]::Ceiling(2160 / $tile[1])) { $fits = $false }
+		}
+		if ($fits) { return $h }
+	}
+	720
+}
+# 只把当前比例允许的渲染高度放进下拉列表。
+function Fill-RenderHeights {
+	$most = Get-MaxRenderHeight
+	$allowed = @($renderHeights | Where-Object { [int](($_ -split ' ')[0]) -le $most })
+	$render.Items.Clear()
+	$render.Items.AddRange($allowed)
+}
 $render = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 160 }
-$render.Items.AddRange($renderHeights)
+	Fill-RenderHeights
 $render.SelectedItem = ($renderHeights | Where-Object { ($_ -split ' ')[0] -eq [string][int]$settings.render } | Select-Object -First 1)
 if ($render.SelectedIndex -lt 0) { $render.SelectedItem = '1440 (PS5)' }
 $renderNote = New-Object System.Windows.Forms.Label -Property @{ Text = '《恶魔之魂》的 3D；越高越清晰、越吃显卡'; AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
@@ -298,6 +327,11 @@ $ratio = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = '
 $ratio.Items.AddRange($ratios)
 $ratio.SelectedItem = ($ratios | Where-Object { ($_ -split ' ')[0] -eq [string]$settings.ratio } | Select-Object -First 1)
 if ($ratio.SelectedIndex -lt 0) { $ratio.SelectedIndex = 0 }
+$ratio.Add_SelectedIndexChanged({
+	$kept = [string]$render.SelectedItem
+	Fill-RenderHeights
+	$render.SelectedItem = if ($render.Items -contains $kept) { $kept } else { $render.Items[0] }
+})
 $ratioNote = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0'
 	Text = '3D 画面更宽（两侧看得更多）；HUD 保持形状、菜单会被拉伸、过场保持 16:9' }
 Add-Row '画面比例' @($ratio, $ratioNote)
