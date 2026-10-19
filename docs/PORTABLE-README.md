@@ -93,6 +93,11 @@ sharper picture); 1440 is its Quality, 1512 the PS5 Pro's own 2688x1512, 2160 DL
 NVIDIA's Streamline runtime as for frame generation below: on a PC without an NVIDIA RTX graphics card (AMD,
 Intel, GeForce GTX) the launcher keeps this row and frame generation off, and the game's own TAA makes the
 picture at its own render height. The in-game "Cinematic" mode stays native 4K without DLSS.
+With an "Aspect ratio" wider than 16:9, DLSS makes the picture at its full width: 5120x2160 at 21:9 (from
+2560x1080 at render height 1080), and the game finishes it at that size, with the HUD at the screen's edges,
+instead of a 3840x2160 picture widened on the screen. On an RTX 5090 at Boletaria's start that ran at 64.5 fps,
+the game's TAA at 21:9 at 59.3. Screens without the 3D (movies, the title, loading) show at 16:9 with black
+bars, as before.
 "Frame generation" (DLSS, 2x to 6x; NVIDIA RTX 40 or newer, 3x and up RTX 50) uses NVIDIA's Streamline
 runtime, which this package does not include: download the Streamline SDK (a release zip from
 https://github.com/NVIDIA-RTX/Streamline/releases), unpack it and choose its folder with the launcher's
@@ -211,6 +216,7 @@ Default keyboard layout:
 | F7 | Camera with the mouse (press again to release the mouse) |
 | Space | **Pause / resume the emulation** (careful not to hit it by accident) |
 | F8 | The emulator's overlay: Off, Frame rate, Detailed (the launcher's "Overlay" is where it starts) |
+| F9 | **Debug snapshot**: pauses the game and saves the picture on screen and where you are (`_DebugSnapshots\<date-time>\`: `screen.png`, `info.txt` with the position, the run's log and the switches); F9 again resumes. Attach the folder to an issue when something looks wrong |
 | F11, Alt+Enter | Toggle full screen |
 
 The keyboard has no L2 / R2 by default: use a gamepad when you need them.
