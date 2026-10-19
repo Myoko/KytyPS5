@@ -94,7 +94,12 @@ public:
 	[[nodiscard]] const Buffer* GetLodStatsBuffer() const noexcept { return &m_lod_stats_buffer; }
 	void ReportLodStats(void* dst, uint32_t size, bool reset);
 	[[nodiscard]] const Buffer* GetGdsBuffer() const noexcept { return &m_gds_buffer; }
-	[[nodiscard]] Buffer* GetBdaPageTableBuffer() noexcept { return &m_bda_pagetable_buffer; }
+	// The BDA page table descriptor writes take (the newest: GrowBdaTable). A set made with it records
+	// BdaTableGeneration() read before it, and is made again once that moved.
+	[[nodiscard]] Buffer* GetBdaPageTableBuffer() noexcept { return m_bda_table.load(std::memory_order_acquire); }
+	[[nodiscard]] static uint64_t BdaTableGeneration() noexcept {
+		return s_bda_table_generation.load(std::memory_order_acquire);
+	}
 	[[nodiscard]] Buffer* GetFaultBuffer() noexcept { return m_fault_manager.GetFaultBuffer(); }
 	// `refillable`: set when the bytes went to the staging ring by the upload worker (RefillImageStaging may copy them
 	// again while the upload is unsubmitted).
@@ -262,6 +267,10 @@ private:
 	}
 	[[nodiscard]] static std::pair<uint64_t, uint64_t> DownloadEnvelope(const DownloadCopy& copy);
 	void WriteDataBuffer(Buffer& buffer, uint64_t address, const void* source, uint64_t size);
+	// The BDA page tables' entries [first, first + count): written (`entries`) or cleared (null), in every table that
+	// holds them (m_bda_tables). GrowBdaTable: a table with `entries` entries at least replaces the newest.
+	void WriteBdaEntries(uint64_t first, uint64_t count, const vk::DeviceAddress* entries);
+	void GrowBdaTable(uint64_t entries);
 	// GPU thread: InvalidateMemoryForWrite's work where GPU-written bytes are in the range.
 	void DiscardGpuWrites(uint64_t vaddr, uint64_t size);
 	void TouchBuffer(const Buffer& buffer);
@@ -313,7 +322,12 @@ private:
 	FaultManager                                      m_fault_manager;
 	Buffer                                            m_gds_buffer;
 	Buffer                                            m_lod_stats_buffer;
-	Buffer                                            m_bda_pagetable_buffer;
+	// The BDA page tables: the newest last (m_bda_table), the ones it replaced kept and written alike - sets made before
+	// it grew may still read them, never a freed buffer or a stale entry (GrowBdaTable).
+	std::vector<std::unique_ptr<Buffer>>              m_bda_tables;
+	std::atomic<Buffer*>                              m_bda_table {nullptr};
+	bool                                              m_bda_zeroed = false; // the first table (WriteBdaEntries)
+	static inline std::atomic<uint64_t>               s_bda_table_generation {0};
 	Common::SlotVector<Buffer>                        m_slot_buffers;
 	Common::LeastRecentlyUsedCache<BufferId, uint64_t> m_lru_cache;
 	BufferMap                                         m_buffers;
