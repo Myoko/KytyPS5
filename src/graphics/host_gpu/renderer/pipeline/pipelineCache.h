@@ -22,6 +22,7 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Libs::Graphics {
@@ -199,6 +200,10 @@ public:
 		// to make it again (a pipeline the static store gave: made again from it; null: never evicted).
 		mutable uint32_t                                       last_flip = 0;
 		std::shared_ptr<const std::function<void(Pipeline&)>> remake;
+		// Its warmup recipe (LocalShaderWarmup::RecipeKey; 0: none, a native variant), and the scene generation it was
+		// last bound in (local/scene-tags.h: noted once per scene).
+		uint64_t         recipe      = 0;
+		mutable uint64_t scene_noted = 0;
 #ifdef KYTY_LOCAL_VULKAN_RECORDING
 		// Immutable encoding plan; queued packets keep their own shared ownership.
 		mutable std::shared_ptr<const LocalDescriptorPlan> local_descriptor_plan;
@@ -447,6 +452,16 @@ private:
 	void              StartShaderPrefetch(std::vector<std::vector<uint32_t>> recorded_inputs);
 	std::thread       m_warmup_thread;
 	std::atomic<bool> m_warmup_stop {false};
+	// The warmup by scene (local/scene-tags.h, KYTY_SCENE_WARMUP): the recording's file (its .scenes beside it), whether
+	// it is on, and what it made. WarmScene: the pipelines of `scene` (every recorded one for a scene not known yet), from
+	// the warmup's own records (`in_memory`, the first scene) or the recording read again; SceneLoop: those of each scene
+	// the game loads later, until m_warmup_stop.
+	std::filesystem::path        m_warmup_path;
+	bool                         m_scene_warmup     = false;
+	bool                         m_scene_warmed_all = false;
+	std::unordered_set<uint32_t> m_scenes_warmed;
+	void                         WarmScene(uint32_t scene, uint64_t compute_video, bool in_memory);
+	void                         SceneLoop(uint64_t compute_video);
 	// Pipelines made where first needed (CreateGraphicsPipeline, CreateComputePipeline), and the time it took.
 	uint64_t m_render_pipelines   = 0;
 	double   m_render_pipeline_ms = 0.0;
@@ -472,7 +487,8 @@ private:
 	void              MainPipelineDone();
 	void InitializeStaticCache(bool create);
 	// The recorded pipelines; compute ones, newest first, while they took less than `compute_video` bytes of video memory.
-	void WarmPipelines(uint64_t compute_video, bool background);
+	// `only`: of these recipes alone (LocalShaderWarmup::RecipeKey), none the cache has.
+	void WarmPipelines(uint64_t compute_video, bool background, const std::unordered_set<uint64_t>* only = nullptr);
 #ifdef KYTY_STATIC_PRECOMPILE
 	bool SaveStaticCache(vk::PipelineCache cache, const std::filesystem::path& path);
 	static bool MergeBinaryShards(GraphicContext& graphics, bool prune, bool keep_shards);
