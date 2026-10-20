@@ -85,6 +85,9 @@ public:
 
 	template <bool track>
 	void UpdatePageWatchers(uint64_t vaddr, uint64_t size);
+	// Read watchers (no access while any is set) over whole pages, as the memory tracker's for GPU-written ranges.
+	template <bool track>
+	void UpdateReadWatchers(uint64_t vaddr, uint64_t size);
 	template <bool track, bool is_read = false>
 	void UpdatePageWatchersForRegion(uint64_t base_addr, RegionBits& mask);
 

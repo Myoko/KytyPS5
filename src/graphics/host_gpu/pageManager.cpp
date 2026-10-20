@@ -634,6 +634,14 @@ void PageManager::UpdatePageWatchers(uint64_t vaddr, uint64_t size) {
 template void PageManager::UpdatePageWatchers<true>(uint64_t, uint64_t);
 template void PageManager::UpdatePageWatchers<false>(uint64_t, uint64_t);
 
+template <bool track>
+void PageManager::UpdateReadWatchers(uint64_t vaddr, uint64_t size) {
+	m_impl->UpdatePageWatchers<track, true>(vaddr, size);
+}
+
+template void PageManager::UpdateReadWatchers<true>(uint64_t, uint64_t);
+template void PageManager::UpdateReadWatchers<false>(uint64_t, uint64_t);
+
 void PageManager::DeferReadProtection(bool on) noexcept {
 	if (!on) {
 		Impl::FlushReadProtect();
