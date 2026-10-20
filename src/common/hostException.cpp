@@ -97,12 +97,15 @@ void SetGuardPageHandler(GuardPageHandler handler) {
 	g_guard_page_handler.store(handler, std::memory_order_release);
 }
 
-// RunOnGuestStack (pthread.cpp) runs guest code with the TEB's StackBase and StackLimit zeroed (__chkstk never probes
-// the guest's memory). Windows cannot dispatch an exception to the frames' handlers there: it marks the stack invalid
-// and ends the process with the exception's code, whatever a frame would have done with it.
+// RunOnGuestStack (pthread.cpp) runs guest code with the TEB's stack range set to the guest stacks' region
+// (KYTY_GUEST_TEB_STACK_RANGE_ASM; zeros where the host stack is not above it). Windows cannot dispatch an exception
+// through the guest frames there (guest code has no unwind data): the process ends with the exception's code, whatever
+// a frame would have done with it.
 static bool OnGuestStack() {
-	const auto* tib = reinterpret_cast<const NT_TIB*>(NtCurrentTeb());
-	return tib->StackBase == nullptr && tib->StackLimit == nullptr;
+	const auto* tib   = reinterpret_cast<const NT_TIB*>(NtCurrentTeb());
+	const auto  base  = reinterpret_cast<uint64_t>(tib->StackBase);
+	const auto  limit = reinterpret_cast<uint64_t>(tib->StackLimit);
+	return (base == 0 && limit == 0) || (base == GuestStacksHigh && limit == GuestStacksLow);
 }
 
 // "module+0xoffset" of a code address (or the bare address).

@@ -73,6 +73,25 @@ bool GraphicContext::CreateAllocator() {
 	if (memory_budget_ext_enabled) {
 		info.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
 	}
+	// VMA's blocks: 64 MiB on a GPU with less than 13 GiB of video memory (KYTY_SIMULATE_VRAM_MB counts), VMA's 256 MiB
+	// on bigger ones. Such a GPU runs past its budget and the driver keeps part of the game's memory in system memory: 1-1
+	// tours with 8 GB, each order once: walk 70.0 vs 67.4 and 72.2 vs 69.6 fps, spin 68.3 vs 65.9 and 71.4 vs 69.1, the
+	// route's later two thirds 2-6% faster in both (the free space inside the blocks no smaller, 787 vs 545 MiB at the
+	// end: it is where the driver puts the smaller blocks). KYTY_VMA_BLOCK_MB=<n>: n MiB.
+	{
+		uint64_t video = 0;
+		for (uint32_t heap = 0; heap < physical_device_memory_properties.memoryHeapCount; heap++)
+			if (physical_device_memory_properties.memoryHeaps[heap].flags & vk::MemoryHeapFlagBits::eDeviceLocal)
+				video = std::max<uint64_t>(video, physical_device_memory_properties.memoryHeaps[heap].size);
+		if (const char* simulate = std::getenv("KYTY_SIMULATE_VRAM_MB"); simulate != nullptr && *simulate != '\0')
+			video = std::min<uint64_t>(video, std::strtoull(simulate, nullptr, 10) << 20u);
+		const char* text = std::getenv("KYTY_VMA_BLOCK_MB");
+		if (text != nullptr && std::strtoull(text, nullptr, 10) > 0) {
+			info.preferredLargeHeapBlockSize = std::strtoull(text, nullptr, 10) << 20u;
+		} else if (video != 0 && video < (uint64_t {13} << 30u)) {
+			info.preferredLargeHeapBlockSize = uint64_t {64} << 20u;
+		}
+	}
 	// KYTY_VRAM_LIMIT_MB=<n>: video memory as on a GPU with n MiB (VMA's heap size limit): its budget,
 	// and allocations past it failing, for tests of memory pressure on smaller GPUs.
 	std::array<VkDeviceSize, VK_MAX_MEMORY_HEAPS> heap_limits {};

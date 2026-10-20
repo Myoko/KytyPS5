@@ -9,6 +9,7 @@
 #include "async-upload.h"
 #include "parallel-pages.h"
 #include "readback-queue.h"
+#include "fresh-memory.h"
 #ifdef KYTY_LOCAL_VULKAN_RECORDING
 #include "vulkan-recording.h"
 #endif
@@ -53,6 +54,7 @@ extern volatile std::atomic_uint32_t kyty_local_frame_pipeline_mode;
 #include "graphics/host_gpu/vulkanCommon.h"
 #include "kernel/memory.h"
 
+#include <tuple>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -2152,6 +2154,32 @@ void BufferCache::FlushPrologueCopies(vk::CommandBuffer command) {
 // guest view that faulted re-entered the tracker from the callback (another tracker's page protection: the fault
 // handler read GPU data back) and ended the emulator (10-12, Tower of Latria, third visit). Bytes not readable at all (no
 // mapping) are uploaded as zeros, reported.
+// An async upload of `size` backing-view bytes from `source` into staging `target` (guest `vaddr`): the fresh memory
+// in it (src/local/fresh-memory.h, bytes nobody wrote) filled with zeros here instead of read by the worker, whose read
+// made those pages resident.
+static void PushUploadCopy(uint8_t* target, const uint8_t* source, uint64_t size, uint64_t vaddr) {
+	thread_local std::vector<std::tuple<uint64_t, uint64_t, bool>> runs;
+	runs.clear();
+	bool any_fresh = false;
+	if (FreshMemory::ForEachBackingRun(source, size,
+	                                   [&](uint64_t offset, uint64_t bytes, bool fresh) {
+		                                   runs.emplace_back(offset, bytes, fresh);
+		                                   any_fresh = any_fresh || fresh;
+	                                   }) &&
+	    any_fresh) {
+		for (const auto& [offset, bytes, fresh]: runs) {
+			if (fresh) {
+				std::memset(target + offset, 0, bytes);
+				FreshMemory::Get()->zero_upload_bytes.fetch_add(bytes, std::memory_order_relaxed);
+			} else {
+				AsyncUpload::Get().Push(target + offset, source + offset, bytes, vaddr + offset);
+			}
+		}
+		return;
+	}
+	AsyncUpload::Get().Push(target, source, size, vaddr);
+}
+
 static void ReadUploadSource(uint8_t* destination, uint64_t address, uint64_t size) {
 	if (Libs::LibKernel::Memory::TryReadBackingToHost(address, destination, size)) return;
 #if defined(_WIN32)
@@ -2218,7 +2246,7 @@ vk::Buffer BufferCache::UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> c
 			const auto address = buffer.CpuAddress() + copy.dstOffset;
 			const auto* source = async ? LibKernel::Memory::TryGetBackingPointer(address, copy.size) : nullptr;
 			if (source != nullptr) {
-				AsyncUpload::Get().Push(mapped + copy.srcOffset, source, copy.size, address);
+				PushUploadCopy(mapped + copy.srcOffset, source, copy.size, address);
 			} else {
 				ReadUploadSource(mapped + copy.srcOffset, address, copy.size);
 			}
@@ -2504,14 +2532,14 @@ bool BufferCache::PushImageStagingCopies(uint8_t* staging, uint64_t vaddr, uint6
 	const StagingPiece whole {vaddr, size, 0};
 	QueueImageProtects({&whole, 1}, true);
 	if (const auto* source = Libs::LibKernel::Memory::TryGetBackingPointer(vaddr, size)) {
-		AsyncUpload::Get().Push(staging, source, size, vaddr);
+		PushUploadCopy(staging, source, size, vaddr);
 		return true;
 	}
 	if (Libs::LibKernel::Memory::TryGetBackingPieces(vaddr, size, m_backing_pieces)) {
 		// Large images usually span several guest mappings.
 		uint64_t offset = 0;
 		for (const auto& [piece, bytes]: m_backing_pieces) {
-			AsyncUpload::Get().Push(staging + offset, piece, bytes, vaddr + offset);
+			PushUploadCopy(staging + offset, piece, bytes, vaddr + offset);
 			offset += bytes;
 		}
 		return true;
@@ -2583,14 +2611,14 @@ std::pair<Buffer*, uint64_t> BufferCache::StageImagePieces(const std::vector<Sta
 		auto* target = staging + piece.offset;
 		if (async) {
 			if (const auto* source = Libs::LibKernel::Memory::TryGetBackingPointer(piece.vaddr, piece.size)) {
-				AsyncUpload::Get().Push(target, source, piece.size, piece.vaddr);
+				PushUploadCopy(target, source, piece.size, piece.vaddr);
 				queued = true;
 				continue;
 			}
 			if (Libs::LibKernel::Memory::TryGetBackingPieces(piece.vaddr, piece.size, m_backing_pieces)) {
 				uint64_t offset = 0;
 				for (const auto& [source, bytes]: m_backing_pieces) {
-					AsyncUpload::Get().Push(target + offset, source, bytes, piece.vaddr + offset);
+					PushUploadCopy(target + offset, source, bytes, piece.vaddr + offset);
 					offset += bytes;
 				}
 				queued = true;

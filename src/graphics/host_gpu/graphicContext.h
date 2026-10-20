@@ -17,6 +17,7 @@ namespace Libs::Graphics {
 struct VulkanImage;
 class PipelineBinaries;
 class PipelineBinaryWriter;
+class PlayedPipelines;
 class PipelineCacheBlobs;
 class PipelineCacheBlobWriter;
 
@@ -64,6 +65,8 @@ struct GraphicContext {
 	bool                               pipeline_binary_internal_cache        = true;
 	const PipelineBinaries*            pipeline_binaries                     = nullptr;
 	PipelineBinaryWriter*              pipeline_binary_writer                = nullptr;
+	// Pipelines compiled in earlier sessions' play, and this one's kept (pipelineBinaries.h).
+	PlayedPipelines*                   played_pipelines                      = nullptr;
 	// Without pipeline binaries: the static precompile's pipelines as each one's own pipeline cache data, keyed by
 	// its identity (pipelineCacheBlobs.h); in the precompile, its output.
 	const PipelineCacheBlobs*          pipeline_blobs                        = nullptr;
