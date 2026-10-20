@@ -4230,7 +4230,9 @@ void TextureCache::OffloadScan(uint64_t tick) {
 			covered += piece;
 			at += piece;
 		}
-		if (covered != end - begin) continue;
+		// (Two images of one scan over the same pages, aliases of a format: the first one only. A range's pages are one
+		// image's.)
+		if (covered != end - begin || TextureOffload::Taken(begin, end - begin, image.serial)) continue;
 		// (Pending upload jobs read its backing first. Known before its protection: a fault on its pages finds it; a
 		// game thread's waits for the render thread, which drops its pages first.)
 		auto mark = Clock::now();
@@ -4308,6 +4310,10 @@ void TextureCache::OffloadScan(uint64_t tick) {
 			// The image's whole pages against guest memory's backing bytes, a mapping at a time.
 			bool     equal = true, known = true;
 			uint64_t first = 0;
+			// (Not over another image's range taken since (a texture streamed in where an offloaded one was): its bytes
+			// are gone, a read of them a miss and zeros, "differs" for the kind. Discards run on this thread: none during
+			// the compare.)
+			if (TextureOffload::Overlaps(item.begin, item.end - item.begin)) equal = known = false;
 			for (uint64_t at = item.begin; at < item.end && equal;) {
 				const auto  mapping_end = Libs::LibKernel::Memory::BackingMappingEnd(at);
 				const auto  piece       = mapping_end > at ? std::min(mapping_end, item.end) - at : 0;

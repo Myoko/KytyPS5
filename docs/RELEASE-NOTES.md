@@ -1,5 +1,26 @@
 ## New in this build
 
+v20261020b fixes a crash of v20261020 on PCs with 16 GB of RAM. Everything new in v20261020 (further below) is in it
+too.
+
+- **Crash on PCs with 16 GB of RAM (issue #91):** v20261020's new memory saving for textures (on by default with 20 GB
+  of RAM or less) could end the emulator with "PageManager fatal: read-watcher overflow" while a level loaded. Fixed;
+  the saving stays on. If you added `-Set KYTY_TEXTURE_OFFLOAD=0` to get around the crash, you can remove it again.
+- **Four shaders that ended the emulator:** four of the game's pixel shaders could not be translated, and the emulator
+  stopped where the game drew with one of them (an automated tour hit one in the Valley of Defilement). They translate
+  now, and the precompile builds them.
+- **More shaders precompiled:** automated tours through all six worlds, fighting and killing every enemy (bosses too),
+  added 153 shader programs and 580 pipelines to the hints. Among them are three large Shrine of Storms shaders that
+  froze the game for up to 40 s the first time they were needed. The launcher offers the precompile again at the first
+  start; only the new part is compiled.
+- **Linux with AMD graphics:** the emulator's main thread asked the graphics driver about 2,000 times a frame how far
+  the GPU had got. On Linux each question is a system call (about 9 µs on RADV). Questions whose answer is already known
+  are skipped now, and where a question is slow, a separate thread follows the GPU instead (`KYTY_TIMELINE_WATCHER=0`
+  turns it off). Not measured on Linux yet: reports are welcome in issue #80.
+- **Thanks** to @ededaelita1-afk for the crash report and to @yazuc for the Linux profiles.
+
+## New in v20261020
+
 - **Less memory on 16 GB PCs and 8 GB graphics cards:**
   - Game memory nothing ever wrote is no longer read when the GPU first uses it, only taken as zeros: 0.7-1.4 GB less
     RAM in use on a 16 GB PC (`KYTY_FRESH_MEMORY=0` turns it off).
@@ -34,6 +55,16 @@
 - **Thanks** to @nerdjb for the Linux port fixes and the Linux package, and to everyone who sent logs and tests.
 
 ## 本版本的变化
+
+v20261020b 修正了 v20261020 在 16 GB 内存电脑上的一个崩溃。v20261020 的所有新内容（见下方）也都包含在内。
+
+- **16 GB 内存电脑上的崩溃（issue #91）：** v20261020 新增的纹理省内存功能（内存 20 GB 及以下默认开启）可能在加载关卡时让模拟器以 "PageManager fatal: read-watcher overflow" 退出。已修正，该功能保持开启。如果你为了绕过崩溃加了 `-Set KYTY_TEXTURE_OFFLOAD=0`，现在可以去掉了。
+- **会让模拟器退出的四个着色器：** 游戏里有四个像素着色器无法翻译，游戏用到它们的地方模拟器就会停止（自动测试在污秽谷（Valley of Defilement）遇到了其中一个）。现在它们可以正常翻译，预编译也会生成它们。
+- **预编译的着色器更多了：** 自动测试跑遍了全部六个世界，与每个敌人（包括 Boss）战斗并击杀，提示里多了 153 个着色器程序和 580 个管线。其中包括风暴神殿（Shrine of Storms）的三个大型着色器，它们第一次用到时会让游戏卡住最长约 40 秒。第一次启动时启动器会再次提示预编译，只会编译新增的部分。
+- **Linux 和 AMD 显卡：** 模拟器主线程每帧向显卡驱动询问 GPU 进度约 2,000 次。在 Linux 上每次询问都是一次系统调用（RADV 上约 9 微秒）。现在已知答案的询问会被跳过；询问较慢时，改由一个单独的线程跟踪 GPU 进度（`KYTY_TIMELINE_WATCHER=0` 可关闭）。尚未在 Linux 上实测，欢迎在 issue #80 反馈。
+- **感谢** @ededaelita1-afk 报告崩溃，感谢 @yazuc 提供 Linux 性能分析数据。
+
+## v20261020 的变化
 
 - **16 GB 内存的电脑和 8 GB 显卡占用更少：**
   - 游戏从未写过的内存，在 GPU 第一次使用时不再去读取，直接当作全零：16 GB 内存的电脑上少用 0.7-1.4 GB 内存（`KYTY_FRESH_MEMORY=0` 可关闭）。
