@@ -126,6 +126,139 @@ function Get-CheatFile([string]$game) {
 	} catch {}
 	return ''
 }
+# ── 金手指（_Patches\<title id>.json）────────────────────────────────────────────
+# The engine already honours mods[].enabled (src/loader/gamePatch.cpp reads it), so the launcher can
+# turn each entry on and off on its own instead of only passing or not passing the whole file.
+function Read-CheatFile([string]$file) {
+	# The file is UTF-8 and its names are Chinese. Get-Content would read it as ANSI, which turns some
+	# characters into '?' and can break the JSON's quotes, so it is read with the encoding it was
+	# written in.
+	return [System.IO.File]::ReadAllText($file, [System.Text.Encoding]::UTF8)
+}
+
+function Get-CheatData([string]$file) {
+	return (Read-CheatFile $file | ConvertFrom-Json)
+}
+
+function Get-CheatCounts([string]$file) {
+	$counts = @{ on = 0; total = 0 }
+	if (!$file -or !(Test-Path -LiteralPath $file)) { return $counts }
+	try {
+		$mods = @((Get-CheatData $file).mods)
+		$counts.total = $mods.Count
+		foreach ($mod in $mods) {
+			if ($mod.enabled -ne $false) { $counts.on++ }
+		}
+	} catch {}
+	return $counts
+}
+
+function Save-CheatMods([string]$file, [string]$before, [bool[]]$wanted) {
+	# Refuse to write over a file that changed while the dialog was open.
+	if ((Read-CheatFile $file) -ne $before) { return 'file-changed' }
+	$data = Read-CheatFile $file | ConvertFrom-Json
+	$mods = @($data.mods)
+	if ($mods.Count -ne $wanted.Count) { return 'count-changed' }
+	for ($i = 0; $i -lt $mods.Count; $i++) {
+		$mods[$i] | Add-Member -NotePropertyName enabled -NotePropertyValue ([bool]$wanted[$i]) -Force
+	}
+	$data.mods = $mods
+	$json = $data | ConvertTo-Json -Depth 32
+	Copy-Item -LiteralPath $file -Destination ($file + '.bak') -Force
+	[System.IO.File]::WriteAllText($file, $json, (New-Object System.Text.UTF8Encoding($false)))
+	# Read the file back: if it no longer holds the same names and flags, put the backup back.
+	try {
+		$check = @((Read-CheatFile $file | ConvertFrom-Json).mods)
+		if ($check.Count -ne $mods.Count) { throw 'count' }
+		for ($i = 0; $i -lt $check.Count; $i++) {
+			if ([string]$check[$i].name -ne [string]$mods[$i].name) { throw 'name' }
+			if ([bool]$check[$i].enabled -ne [bool]$wanted[$i]) { throw 'enabled' }
+		}
+	} catch {
+		Copy-Item -LiteralPath ($file + '.bak') -Destination $file -Force
+		return 'verify-failed'
+	}
+	return ''
+}
+
+function Show-CheatDialog([string]$file) {
+	$data = $null
+	try { $data = Get-CheatData $file } catch {
+		[void][System.Windows.Forms.MessageBox]::Show("读不出金手指文件：`n$file`n`n$($_.Exception.Message)", '金手指')
+		return
+	}
+	$mods = @($data.mods)
+	if ($mods.Count -eq 0) {
+		[void][System.Windows.Forms.MessageBox]::Show("这个文件里没有金手指条目：`n$file", '金手指')
+		return
+	}
+	$before = Read-CheatFile $file
+
+	$cheatForm = New-Object System.Windows.Forms.Form -Property @{
+		Text = '金手指 - ' + $(if ($data.name) { [string]$data.name } else { [string]$data.id })
+		StartPosition = 'CenterParent'
+		FormBorderStyle = 'FixedDialog'
+		MaximizeBox = $false
+		MinimizeBox = $false
+		ClientSize = New-Object System.Drawing.Size(600, 480)
+		Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
+	}
+	$cheatList = New-Object System.Windows.Forms.CheckedListBox -Property @{
+		Location = New-Object System.Drawing.Point(12, 12)
+		Size = New-Object System.Drawing.Size(576, 330)
+		CheckOnClick = $true
+	}
+	foreach ($mod in $mods) { [void]$cheatList.Items.Add([string]$mod.name, ($mod.enabled -ne $false)) }
+	$cheatForm.Controls.Add($cheatList)
+
+	$cheatDesc = New-Object System.Windows.Forms.TextBox -Property @{
+		Location = New-Object System.Drawing.Point(12, 348)
+		Size = New-Object System.Drawing.Size(576, 78)
+		Multiline = $true
+		ReadOnly = $true
+		ScrollBars = 'Vertical'
+	}
+	$cheatForm.Controls.Add($cheatDesc)
+
+	# Event handlers run in their own scope, so what they read is kept in the script's.
+	$script:cheatDialogList = $cheatList
+	$script:cheatDialogDesc = $cheatDesc
+	$script:cheatDialogMods = $mods
+	$cheatList.Add_SelectedIndexChanged({
+		$index = $script:cheatDialogList.SelectedIndex
+		if ($index -ge 0) {
+			$script:cheatDialogDesc.Text = [string]$script:cheatDialogMods[$index].description
+		}
+	})
+
+	$all = New-Object System.Windows.Forms.Button -Property @{ Text = '全选'; Location = New-Object System.Drawing.Point(12, 436); Size = New-Object System.Drawing.Size(90, 28) }
+	$all.Add_Click({
+		for ($i = 0; $i -lt $script:cheatDialogList.Items.Count; $i++) { $script:cheatDialogList.SetItemChecked($i, $true) }
+	})
+	$none = New-Object System.Windows.Forms.Button -Property @{ Text = '全不选'; Location = New-Object System.Drawing.Point(110, 436); Size = New-Object System.Drawing.Size(90, 28) }
+	$none.Add_Click({
+		for ($i = 0; $i -lt $script:cheatDialogList.Items.Count; $i++) { $script:cheatDialogList.SetItemChecked($i, $false) }
+	})
+	$ok = New-Object System.Windows.Forms.Button -Property @{ Text = '确定'; Location = New-Object System.Drawing.Point(408, 436); Size = New-Object System.Drawing.Size(90, 28); DialogResult = 'OK' }
+	$cancel = New-Object System.Windows.Forms.Button -Property @{ Text = '取消'; Location = New-Object System.Drawing.Point(504, 436); Size = New-Object System.Drawing.Size(90, 28); DialogResult = 'Cancel' }
+	$cheatForm.Controls.AddRange(@($all, $none, $ok, $cancel))
+	$cheatForm.AcceptButton = $ok
+	$cheatForm.CancelButton = $cancel
+
+	if ($cheatForm.ShowDialog($form) -ne 'OK') { return }
+
+	$wanted = @()
+	foreach ($i in 0..($mods.Count - 1)) { $wanted += [bool]$cheatList.GetItemChecked($i) }
+	$result = Save-CheatMods $file $before $wanted
+	if ($result -eq 'file-changed') {
+		[void][System.Windows.Forms.MessageBox]::Show('金手指文件在对话框打开期间被改动过，这次没有写入。', '金手指')
+	} elseif ($result -eq 'count-changed') {
+		[void][System.Windows.Forms.MessageBox]::Show('金手指条目数量对不上，这次没有写入。', '金手指')
+	} elseif ($result -eq 'verify-failed') {
+		[void][System.Windows.Forms.MessageBox]::Show('写入后校验失败，已自动还原备份文件。', '金手指')
+	}
+}
+
 function Get-PlayCommand {
 	$size = $settings.resolution -split 'x'
 	# -Prompt is left out. Its version dialog has no don't-ask-again - only the precompile offer reads
@@ -240,7 +373,10 @@ function Update-Title {
 	# The cheat line is about the folder as it is being typed, not about the last saved setting.
 	if ($cheatNote) {
 		$patch = Get-CheatFile $game.Text.Trim()
-		$cheatNote.Text = if ($patch) { '套用 ' + [System.IO.Path]::GetFileName($patch) } else { '此处没有 _Patches\<title id>.json' }
+		$cheatCounts = if ($patch) { Get-CheatCounts $patch } else { $null }
+		$cheatNote.Text = if ($patch) {
+			'套用 ' + [System.IO.Path]::GetFileName($patch) + "（$($cheatCounts.on)/$($cheatCounts.total) 条启用）"
+		} else { '此处没有 _Patches\<title id>.json' }
 	}
 }
 $browse.Add_Click({
@@ -407,7 +543,17 @@ $ecores = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '只用�
 Add-Row '' @($ecores)
 $cheats = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '金手指 (_Patches\<title id>.json)'; AutoSize = $true
 	Checked = [bool]$settings.cheats }
-Add-Row '' @($cheats)
+$cheatButton = New-Object System.Windows.Forms.Button -Property @{ Text = '选择...'; AutoSize = $true }
+$cheatButton.Add_Click({
+	$cheatFile = Get-CheatFile $game.Text.Trim()
+	if (!$cheatFile) {
+		[void][System.Windows.Forms.MessageBox]::Show('没有找到 _Patches\<title id>.json。', '金手指')
+		return
+	}
+	Show-CheatDialog $cheatFile
+	Update-Title
+})
+Add-Row '' @($cheats, $cheatButton)
 $cheatNote = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray' }
 Add-Row '' @($cheatNote)
 Update-Title
