@@ -234,8 +234,9 @@ The shortest way to a Release build of the emulator (without the Qt launcher):
    powershell -ExecutionPolicy Bypass -File .\run-windows.ps1 -Game "D:\Games\PPSA01341-app0"
    ```
 
-   The emulator switches come from `run-windows.json`; `-DryRun` prints the environment and the
-   command, `-Fullscreen`, `-Width`/`-Height` and the others are listed at the top of the script.
+   The emulator's switches default to the release settings (`src/local/performance-switches.h`;
+   `-Set KYTY_NAME=value` changes one); `-DryRun` prints the environment and the command,
+   `-Fullscreen`, `-Width`/`-Height` and the others are listed at the top of the script.
    A ZArchive of the folder (`-Game D:\Games\PPSA01341-app0.zar`) works too, read without extracting
    it; `.\build-windows.cmd zarchive_tool` builds the packer, `_Build\windows\3rdparty\zarchive.exe
    <folder> <file.zar>`.

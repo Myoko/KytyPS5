@@ -3,7 +3,7 @@
 // The specializations a seed is compiled with: every resource bound to a plain descriptor of the kind
 // the shader declares (an image of the declared dimension and the numeric class its use suggests
 // (PredictImageNumericClasses), a buffer without stride, and where a
-// store packs a format, the one most of them use: one 32-bit integer), and with portable modules each
+// store packs a format, the one most of them use: one 32-bit integer), and each
 // indirect image table, whose size is the game's data, in turn in its plain form (one texture) and
 // padded to 2, 4, 8 and 16 candidates (BuildResourceSpecialization), for programs with at most two
 // tables; a vertex or pixel shader's two tables (texture sets sampled twice) with the same size.
@@ -58,7 +58,7 @@ SeedSpecializations(const ShaderRecompiler::IR::Program& program) {
 		}
 		return out;
 	};
-	if (tables.empty() || tables.size() > 2 || !ShaderRecompiler::IR::PortableShaders()) {
+	if (tables.empty() || tables.size() > 2) {
 		return with_volumes_as_2d({plain});
 	}
 	constexpr uint32_t sizes[] = {1, 2, 4, 8, 16};
@@ -153,7 +153,7 @@ static void PortableIndirectTables(const ShaderRecompiler::IR::Program&         
                                    ShaderRecompiler::IR::ResourceSpecialization& specialization) {
 	using ShaderRecompiler::IR::ImageResource;
 	const auto base = program.info.images.size();
-	if (!ShaderRecompiler::IR::PortableShaders() || specialization.images.size() <= base) return;
+	if (specialization.images.size() <= base) return;
 	std::vector<ShaderRecompiler::IR::ResourceSpecialization::Image> images(specialization.images.begin(),
 	                                                                         specialization.images.begin() + base);
 	uint32_t active = 0;

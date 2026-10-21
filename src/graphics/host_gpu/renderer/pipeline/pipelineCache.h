@@ -543,10 +543,6 @@ vk::Pipeline BindPipelineHandle(const PipelineCache::Pipeline& pipeline);
 std::span<const char> ZstdPack(const void* data, size_t bytes, int level = 1);
 bool                  ZstdUnpack(std::span<const char> packed, void* out, size_t bytes);
 void NotePipelineKeyModule(vk::ShaderModule module, uint64_t shader_hash, uint64_t spirv_hash, size_t spirv_bytes = 0);
-// (KYTY_INLINE_KEY_CHECK) Each module's SPIR-V kept, so that every pipeline key is compared with the key of the same
-// pipeline given its shaders' SPIR-V inline (VK_KHR_maintenance5): what a store keyed by the first needs of the second.
-bool InlineKeyCheck();
-void NoteInlineSpirv(vk::ShaderModule module, const std::vector<uint32_t>& spirv);
 // The descriptor set and pipeline layouts the pipelines share (one pair per binding set, shaders.cpp): destroyed after
 // every pipeline that uses them.
 void DestroySharedLayouts(vk::Device device);

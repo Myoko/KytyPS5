@@ -45,7 +45,7 @@ CPUs ...". To leave everything to Windows instead: `run.cmd -Set KYTY_RECORDING_
 The game starts with the table path: most draws and compute dispatches read their resources straight
 from GPU memory instead of descriptor sets the emulator builds for each of them (Boletaria standing
 about 45 → 50–53 fps). The first visit to an area compiles its pipelines in the background, so the
-gain grows as you play. To start without it: `run.cmd -Set KYTY_TABLE_XPR=,KYTY_TABLE_DISPATCH=`.
+gain grows as you play. To start without it: `run.cmd -Set KYTY_TABLE_XPR=0,KYTY_TABLE_DISPATCH=0`.
 
 ## Where to put the game files
 
@@ -294,7 +294,7 @@ The keyboard has no L2 / R2 by default: use a gamepad when you need them.
 | `game-path.txt` | The remembered game location |
 | `seeds-<title>_<version>.seeds` | The list of shaders the first launch collects from the game files (one per game version) (it contains the game's shader code: do not share it), for the precompile |
 | `hinted-<title>_<version>.seeds` | The recorded play of the package's hints and of your own play with the code of your game files (made by each precompile, from `released-<title>_<version>.seeds` and `recorded-play-<title>_<version>.hints`; the `.seeds` files contain the game's shader code: do not share them) |
-| `launch.json` | The emulator's switches; normally left alone |
+| `launch.json` | The emulator's command line and extra switches; normally left alone |
 | `launcher-settings.json` | The launcher's settings |
 | `_DebugSnapshots` | The F9 debug snapshots (picture, position, log), to attach to an issue |
 
