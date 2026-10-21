@@ -30,7 +30,7 @@ $frameGens = '关闭', '2x', '3x', '4x', '5x', '6x'
 $overlays = '关闭', '帧率', '详细'
 
 $settings = [ordered]@{ game = ''; resolution = '2560x1440'; fullscreen = $false; aspect = $true; language = 1; redzone = $true;
-	ecores = $false; cheats = $true; fps120 = $false; render = 1440; ratio = '16:9'; quality = 'standard'; vsync = $false; hdr = $false; framegen = 0; hud = 0; streamline = ''; safegpu = $false; upscaler = '' }
+	ecores = $false; cheats = $true; fps120 = $false; render = 1440; ratio = '16:9'; quality = 'standard'; vsync = $false; hdr = $false; framegen = 0; hud = 0; streamline = ''; safegpu = $false; upscaler = ''; fsr = $false }
 if (Test-Path $settingsPath) {
 	$saved = Get-Content $settingsPath -Raw | ConvertFrom-Json
 	foreach ($property in $saved.PSObject.Properties) { if ($settings.Contains($property.Name)) { $settings[$property.Name] = $property.Value } }
@@ -102,6 +102,10 @@ function Resolve-Streamline {
 }
 $streamline = Resolve-Streamline
 $frameGenAvailable = [bool]$streamline
+# FSR 3.1 frame generation (run-windows -Fsr), any GPU: AMD's signed amd_fidelityfx_vk.dll next to the emulator.
+$fsrDll = Join-Path (Split-Path $exe) 'amd_fidelityfx_vk.dll'
+$fsrAvailable = (Test-Path -LiteralPath $fsrDll) -and
+	((Get-AuthenticodeSignature -LiteralPath $fsrDll).SignerCertificate.Subject -match 'O=Advanced Micro Devices')
 
 # The emulator's own launcher (src/launcher) applies _Patches\<title id>.json by itself; run-windows.ps1
 # passes one only when told to, so the title id is read here the way the title label reads it and the
@@ -146,9 +150,11 @@ if ($settings.quality -in 'low', 'lowest') {
 }
 	# HDR10 output when Windows HDR is on for the display; SDR otherwise.
 	if ($settings.hdr) { $arguments += '-Hdr' }
-	if ($frameGenAvailable -and [int]$settings.framegen -ge 2) { $arguments += @('-FrameGen', ([int]$settings.framegen - 1)) }
+	$fsrOn = $fsrAvailable -and $settings.fsr
+	if ($fsrOn) { $arguments += '-Fsr' }
+	if (!$fsrOn -and $frameGenAvailable -and [int]$settings.framegen -ge 2) { $arguments += @('-FrameGen', ([int]$settings.framegen - 1)) }
 	if ($dlss) { $arguments += @('-Upscaler', 'dlss') }
-	if ($frameGenAvailable -and ([int]$settings.framegen -ge 2 -or $dlss)) { $arguments += @('-StreamlineDir', "`"$streamline`"") }
+	if ($frameGenAvailable -and ((!$fsrOn -and [int]$settings.framegen -ge 2) -or $dlss)) { $arguments += @('-StreamlineDir', "`"$streamline`"") }
 	# The emulator's panel (KYTY_FPS_HUD) at the top right of the game image: the frame rate and frame times, or with
 	# the GPU, processor and memory too.
 	# Switches of the config, one -Set argument (run-windows.ps1 splits it at the commas).
@@ -375,6 +381,12 @@ $frameGenFolder.Add_Click({
 	$frameGen.Enabled = $true
 	Update-FrameGenNote
 })
+$fsr = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'AMD FSR 3 帧生成（2x，任何显卡；替代 DLSS）'; AutoSize = $true
+	Checked = ($fsrAvailable -and [bool]$settings.fsr); Enabled = $fsrAvailable }
+(New-Object System.Windows.Forms.ToolTip).SetToolTip($fsr, "AMD FidelityFX FSR 3.1：在游戏的两帧之间生成一帧，用它的深度和运动信息。`n" +
+	"开了垂直同步时，显示帧数受显示器刷新率限制（60 Hz 显示器下游戏按 30 fps 跑）。`n" +
+	"需要把 amd_fidelityfx_vk.dll 放在模拟器旁边。")
+Add-Row '' @($fsr)
 Add-Row '帧生成' @($frameGen, $frameGenFolder, $frameGenNote)
 $hud = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 160 }
 $hud.Items.AddRange($overlays)
@@ -438,6 +450,7 @@ function Read-Form {
 	$settings.ratio      = ([string]$ratio.SelectedItem -split ' ')[0]
 	# (Kept as it was where the DLLs are missing.)
 	if ($frameGenAvailable) { $settings.framegen = if ($frameGen.SelectedIndex -gt 0) { $frameGen.SelectedIndex + 1 } else { 0 } }
+	if ($fsrAvailable) { $settings.fsr = $fsr.Checked }
 	if ($frameGenAvailable) { $settings.upscaler = if ($upscaler.SelectedIndex -eq 1) { 'dlss' } else { '' } }
 	$settings.ecores     = $ecores.Checked
 	$settings.cheats     = $cheats.Checked

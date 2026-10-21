@@ -113,6 +113,11 @@ runtime, which this package does not include: download the Streamline SDK (a rel
 https://github.com/NVIDIA-RTX/Streamline/releases), unpack it and choose its folder with the launcher's
 "Streamline..." button (only files signed by NVIDIA are loaded). The frames shown are the game's times the
 multiplier; with VSync they are capped at the display's refresh rate (a 60 Hz display at 2x runs the game at 30 fps).
+"FSR 3.1 frame generation" (2x, any graphics card, AMD included; `run.cmd -Fsr`) uses AMD's FidelityFX runtime,
+which this package does not include either: take `amd_fidelityfx_vk.dll` from the FidelityFX SDK 1.1.4
+(`PrebuiltSignedDLL` in https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/v1.1.4) and put it next to
+`kyty_emulator.exe` (only a DLL signed by AMD is loaded); the launcher's FSR checkbox is enabled then. It takes the place of
+DLSS frame generation.
 "Overlay" (Off by default) shows the emulator's own panel at the top right of the game image: "Frame rate"
 the frames per second and a graph of the last frames' times (60 and 30 fps lines, hitches in red, the 1% low
 and the longest frame of the last 10 seconds); "Detailed" adds the render thread's time in each frame (orange),

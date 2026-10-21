@@ -247,6 +247,11 @@ package is built that way by [`.github/workflows/build.yml`](.github/workflows/b
 release (pushes build nothing). [`.github/workflows/build-linux.yml`](.github/workflows/build-linux.yml)
 builds the Linux package the same way (a `v*` tag adds it to that tag's release).
 
+AMD FSR 3.1 frame generation (2x, any GPU without DLSS frame generation; `run-windows.ps1 -Fsr`, a launcher
+checkbox) is built in when AMD FidelityFX SDK 1.1.4's API headers (`ffx-api/include`, MIT) are unpacked into
+`_Build\deps\fidelityfx\include` before configuring. At run time it needs AMD's signed `amd_fidelityfx_vk.dll` next
+to the emulator. The release build fetches the headers itself (as Streamline's); the DLL is not in the package.
+
 ### Build requirements (Windows)
 
 - Git
@@ -486,7 +491,8 @@ Code from these contributors is part of this branch. Thank you!
   ([#19](https://github.com/chenxiao07/KytyPS5/pull/19)).
 - [@MikeSee0](https://github.com/MikeSee0): Windows build tool selection ([#39](https://github.com/chenxiao07/KytyPS5/pull/39)).
 - [@iSamigor](https://github.com/iSamigor): AMD pipeline cache keys and unwritten color targets
-  ([#41](https://github.com/chenxiao07/KytyPS5/pull/41)).
+  ([#41](https://github.com/chenxiao07/KytyPS5/pull/41)), AMD FSR 3.1 frame generation and the volumes' variants of
+  recorded compute shaders in the precompile ([#96](https://github.com/chenxiao07/KytyPS5/pull/96)).
 - [@Vorshim92](https://github.com/Vorshim92): GPU buffers back in video memory ([#44](https://github.com/chenxiao07/KytyPS5/pull/44)),
   HUD-less frame generation ([#72](https://github.com/chenxiao07/KytyPS5/pull/72)), save bookkeeping after a power cut
   ([#74](https://github.com/chenxiao07/KytyPS5/pull/74)).
