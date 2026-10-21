@@ -13,11 +13,9 @@
 
 #include <algorithm>
 #include <atomic>
-#include <map>
 #include <mutex>
 #include <regex>
 #include <set>
-#include <sstream>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -268,93 +266,6 @@ std::vector<Folder> Folders(const std::string& title_id) {
 		}
 	}
 	return addons;
-}
-
-std::vector<LocalEntitlement> LocalEntitlements(const std::string& title_id) {
-	std::vector<LocalEntitlement> result;
-	if (title_id.size() != 9) {
-		return result;
-	}
-	std::ifstream file("dlc_emu.ini", std::ios::binary);
-	if (!file) {
-		return result;
-	}
-	// A handful of keys at most; anything larger is not a file of ours to read.
-	std::string contents((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-	if (contents.size() > 64 * 1024) {
-		return result;
-	}
-
-	const auto trim = [](std::string value) {
-		const auto first = value.find_first_not_of(" \t\r\n");
-		if (first == std::string::npos) {
-			return std::string {};
-		}
-		const auto last = value.find_last_not_of(" \t\r\n");
-		return value.substr(first, last - first + 1);
-	};
-
-	std::set<std::string>              labels;
-	std::map<std::string, std::string> fields;
-	bool                               psal    = false;
-	bool                               invalid = false;
-	const auto                         flush   = [&] {
-        const auto id      = fields.find("content_id");
-        const auto status  = fields.find("download_status");
-        const auto service = fields.find("service_label");
-        if (!psal || invalid || id == fields.end() || status == fields.end() ||
-            status->second != "NO_EXTRA_DATA") {
-            return;
-        }
-        // Only the platform service carries add-ons here.
-        if (service != fields.end() && service->second != "0") {
-            return;
-        }
-        if (!IsContentId(id->second, title_id)) {
-            return;
-        }
-        const auto entitlement_label = id->second.substr(20);
-        if (labels.insert(entitlement_label).second) {
-            result.push_back({id->second, entitlement_label});
-        }
-	};
-
-	std::istringstream stream(contents);
-	std::string        line;
-	while (std::getline(stream, line)) {
-		line = trim(line);
-		if (line.empty() || line[0] == '#' || line[0] == ';') {
-			continue;
-		}
-		if (line[0] == '[') {
-			flush();
-			fields.clear();
-			invalid = false;
-			psal    = line == "[PSAL]";
-			continue;
-		}
-		if (!psal) {
-			continue;
-		}
-		const auto equals = line.find('=');
-		if (equals == std::string::npos) {
-			invalid = true;
-			continue;
-		}
-		const auto key   = trim(line.substr(0, equals));
-		const auto value = trim(line.substr(equals + 1));
-		// Unknown keys could change what ownership means here; they are not ignored silently.
-		if (key != "content_id" && key != "download_status" && key != "service_label" &&
-		    key != "entitlement_key") {
-			invalid = true;
-			continue;
-		}
-		if (!fields.emplace(key, value).second) {
-			invalid = true;
-		}
-	}
-	flush();
-	return result;
 }
 
 } // namespace Addcont} // namespace Addcont
