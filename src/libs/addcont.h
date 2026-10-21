@@ -25,16 +25,7 @@ namespace Libs {
 // param.json is not that is treated as having no param.json at all, which leaves the folder-name
 // fallback above in charge.
 //
-// Content the game should be told it owns although no folder holds its files - a deluxe edition's
-// extras, say - is declared in dlc_emu.ini beside the emulator (the same place as Content\):
-//
-//     [PSAL]
-//     content_id=UP0001-PPSA01341_00-XXXXXXXXXXXXXXXX
-//     download_status=NO_EXTRA_DATA
-//     service_label=0
-//
-// Only complete, title-matched declarations are read, unknown keys make a section invalid, and a
-// label that a folder already answers to is not declared twice.
+
 namespace Addcont {
 
 // The guest's entitlement label field holds sixteen characters, so a folder's label is cut to those
@@ -47,11 +38,6 @@ struct Folder {
 	std::filesystem::path path;
 };
 
-// An add-on the game owns without its files being present, declared in dlc_emu.ini.
-struct LocalEntitlement {
-	std::string content_id;
-	std::string label;
-};
 
 // Content\<title id>\, where the add-ons of a title are looked for.
 std::filesystem::path Directory(const std::string& title_id);
@@ -59,8 +45,6 @@ std::filesystem::path Directory(const std::string& title_id);
 // The add-ons of that directory, each with the label it answers to, in name order, one per label.
 std::vector<Folder> Folders(const std::string& title_id);
 
-// The license-only add-ons dlc_emu.ini declares for this title, one per label.
-std::vector<LocalEntitlement> LocalEntitlements(const std::string& title_id);
 
 } // namespace Addcont
 
