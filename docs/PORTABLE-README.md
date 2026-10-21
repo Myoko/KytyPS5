@@ -61,6 +61,26 @@ folder (usually named `PPSA01341-app0`).
   too, read without extracting it: choose it with the launcher's `.zar...` button, or run
   `run.cmd -Game "D:\Games\PPSA01341-app0.zar"`. Pack it with `zarchive.exe <folder> <file.zar>`
   (ZArchive, https://github.com/Exzap/ZArchive/releases). The folder stays the main way.
+- On a hard disk (HDD): pack the game into a `.zar` there and keep the emulator folder (with its
+  `_PipelineCache`, about 6 GB) on an SSD. Unpacked on a busy hard disk, every small read of the game
+  waited 100-500 ms: long area loads and freezes while walking; packed, with the emulator on the SSD, it
+  ran at full speed ([#91](https://github.com/chenxiao07/KytyPS5/issues/91)).
+
+### Add-on content (DLC)
+
+- Add-ons with files of their own: one folder each in `Content\PPSA01341\` inside the emulator folder,
+  holding the add-on's unpacked files (with its `sce_sys\param.json`). The game is told it owns them.
+- Add-ons without files (a deluxe edition's extras, say): one section each in `dlc_emu.ini` in the
+  emulator folder, with the add-on's content id:
+
+  ```ini
+  [PSAL]
+  content_id=EP9000-PPSA01341_00-XXXXXXXXXXXXXXXX
+  download_status=NO_EXTRA_DATA
+  service_label=0
+  ```
+
+- The run log lists each add-on the game is told it owns (`NpEntitlementAccess: ... reported as owned`).
 
 ## Starting the game
 
@@ -167,7 +187,7 @@ shortcut):
 | `-Game <folder>` | The game folder (or a `.zar` archive of it) |
 | `-Language 11` | The console language, as the PS5 numbers them (0 Japanese, 1 English (US), 11 Chinese (Simplified), ...; the launcher lists them) |
 | `-RenderHeight 1080` | The height the game renders its 3D at (720–1440, default 1440 as on the PS5): lower is faster on a slow graphics card and less sharp |
-| `-Aspect 21:9` | The 3D rendered wider (`21:9` or `32:9`) for ultrawide displays; the HUD keeps its shape at the sides; in-game menus, movies and loading screens are stretched to the width |
+| `-Aspect 21:9` | The 3D rendered wider (`21:9` or `32:9`) for ultrawide displays; the HUD keeps its shape at the sides; in-game menus, movies and loading screens are stretched to the width (with `-AspectFit` too: movies, the title and loading screens keep their 16:9, with black bars at the sides) |
 | `-Quality low` | How much the game draws: `low` or `lowest` (shorter shadows, simpler distant detail), faster where the processor limits the frame rate |
 | `-TextureReduce 2` | Large textures without their largest levels: `1` half the size per side (the default with less than 12 GB of video memory), `2` a quarter, `0` whole |
 | `-Fps120` | The game's frame rate up to 120 fps instead of 60 (the launcher's "Up to 120 fps") |
@@ -275,12 +295,33 @@ Default keyboard layout:
 | Enter | OPTIONS |
 | Backspace / Tab | Left / right half of the touch pad |
 | F7 | Camera with the mouse (press again to release the mouse) |
-| Space | **Pause / resume the emulation** (careful not to hit it by accident) |
+| Space, Pause | **Pause / resume the emulation** (careful not to hit Space by accident; once your own keys give Space to the game, only Pause) |
 | F8 | The emulator's overlay: Off, Frame rate, Detailed (the launcher's "Overlay" is where it starts) |
 | F9 | **Debug snapshot**: pauses the game and saves the picture on screen and where you are (`_DebugSnapshots\<date-time>\`: `screen.png`, `info.txt` with the position, the run's log and the switches); F9 again resumes. Attach the folder to an issue when something looks wrong |
 | F11, Alt+Enter | Toggle full screen |
 
 The keyboard has no L2 / R2 by default: use a gamepad when you need them.
+
+### Your own keys
+
+Add `"--keymap", "<control>=<key>"` pairs to the `"command"` list in `launch.json` (after `"kyty_emulator.exe"`).
+With any of them, only your own keys work on the keyboard (none of the layout above):
+
+```json
+"--keymap", "LeftStickUp=W",
+"--keymap", "Circle=Space",
+"--keymap", "L1=Left Shift",
+"--keymap", "R1=Mouse:Left",
+"--keymap", "MouseSensitivity=1.5",
+```
+
+- Controls: `Cross Circle Square Triangle L1 R1 L2 R2 L3 R3 Options Up Down Left Right TouchPad TouchPadRight`,
+  `LeftStickUp/Down/Left/Right`, `RightStickUp/Down/Left/Right`.
+- Keys: their names on the keyboard (`E`, `Tab`, `Space`, `Escape`, `Left Shift`, `Left Ctrl`, `Return`, ...; also
+  written without the space, as `LeftShift`), or `Mouse:Left`, `Mouse:Right`, `Mouse:Middle`, `Mouse:X1`, `Mouse:X2`.
+- F7, F8, F9 and F11 stay the emulator's. A line it cannot use is skipped, and the run log says which and why
+  (`Input mapping skipped: ...`).
+- An update's `launch.json` replaces yours: keep a copy of your lines.
 
 ## Files and folders
 
@@ -297,6 +338,7 @@ The keyboard has no L2 / R2 by default: use a gamepad when you need them.
 | `launch.json` | The emulator's command line and extra switches; normally left alone |
 | `launcher-settings.json` | The launcher's settings |
 | `_DebugSnapshots` | The F9 debug snapshots (picture, position, log), to attach to an issue |
+| `Content\<title>`, `dlc_emu.ini` | Add-on content (DLC), if you add it (see "Add-on content") |
 
 ## Updating to a newer package
 

@@ -31,7 +31,8 @@
 #                                            (720-1440; its 4K output and UI stay): faster where the GPU limits
 #   .\run-windows.ps1 -Aspect 21:9           Demon's Souls renders its 3D wider (21:9 = 64:27, up to 32:9; 3416x1440
 #                                            at 21:9), seeing more to the sides; shown at that aspect (the HUD at
-#                                            its sides unstretched; menus and movies stretched)
+#                                            its sides unstretched; menus and movies stretched, or with -AspectFit
+#                                            movies, the title and loading screens kept at 16:9 with black bars)
 #   .\run-windows.ps1 -Quality low            Demon's Souls draws less (low / lowest: shorter shadows and
 #                                            distant detail): faster where the CPU limits
 #   .\run-windows.ps1 -TextureReduce 1       large textures without their largest level: half the size per side

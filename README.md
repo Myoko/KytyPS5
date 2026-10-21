@@ -487,7 +487,8 @@ Code from these contributors is part of this branch. Thank you!
   ([#3](https://github.com/chenxiao07/KytyPS5/pull/3); its commits carry the author name "CachyOS", mapped in `.mailmap`).
 - [@Myoko](https://github.com/Myoko): DualSense haptics and a resizable window ([#18](https://github.com/chenxiao07/KytyPS5/pull/18)),
   add-on content ([#25](https://github.com/chenxiao07/KytyPS5/pull/25)), CJK text in the save dialogs
-  ([#75](https://github.com/chenxiao07/KytyPS5/pull/75)).
+  ([#75](https://github.com/chenxiao07/KytyPS5/pull/75)), license-only add-ons and checked add-on ids
+  ([#104](https://github.com/chenxiao07/KytyPS5/pull/104)).
 - [@todojuegos67-bot](https://github.com/todojuegos67-bot): wave OR in pixel shaders, the water in Demon's Souls
   ([#19](https://github.com/chenxiao07/KytyPS5/pull/19)).
 - [@MikeSee0](https://github.com/MikeSee0): Windows build tool selection ([#39](https://github.com/chenxiao07/KytyPS5/pull/39)).
@@ -498,3 +499,4 @@ Code from these contributors is part of this branch. Thank you!
   HUD-less frame generation ([#72](https://github.com/chenxiao07/KytyPS5/pull/72)), save bookkeeping after a power cut
   ([#74](https://github.com/chenxiao07/KytyPS5/pull/74)).
 - [@Sandermand](https://github.com/Sandermand): AudioOut2 catch-up ([#68](https://github.com/chenxiao07/KytyPS5/pull/68)).
+- [@intellq](https://github.com/intellq): Demon's Souls' own 1080p output ([#103](https://github.com/chenxiao07/KytyPS5/pull/103)).

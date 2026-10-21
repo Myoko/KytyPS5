@@ -248,7 +248,11 @@ static void GameEventKeyboard(WindowLoopState& game, const EventKeyboard& key) {
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS || KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 	if (key.down) {
 		switch (key.key_code) {
-			case SDLK_SPACE: SetPause(game, !game.paused.load(std::memory_order_acquire)); break;
+			// Space pauses and resumes, unless the keymap gives it to the game; the Pause key always does.
+			case SDLK_SPACE:
+				if (!HostInputMapsKey(SDLK_SPACE)) SetPause(game, !game.paused.load(std::memory_order_acquire));
+				break;
+			case SDLK_PAUSE: SetPause(game, !game.paused.load(std::memory_order_acquire)); break;
 			// F9: a debug snapshot of the picture shown (src/local/debug-snapshot.h), the game paused; F9 again resumes.
 			case SDLK_F9:
 				if (!key.repeat) {

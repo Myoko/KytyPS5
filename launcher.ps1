@@ -266,7 +266,11 @@ function Get-PlayCommand {
 	# on every launch. The precompile has its own button below, so nothing is lost.
 	$arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$root\run-windows.ps1`"", '-Follow',
 		'-Width', $size[0], '-Height', $size[1], '-Language', $settings.language)
-	if ($settings.fullscreen) { $arguments += '-Fullscreen'; if ($settings.aspect) { $arguments += '-AspectFit' } }
+	# (-AspectFit with 21:9 or 32:9 would keep movies and menus at 16:9: the launcher's wider ratios fill the screen.)
+	if ($settings.fullscreen) {
+		$arguments += '-Fullscreen'
+		if ($settings.aspect -and $settings.ratio -notin '21:9', '32:9') { $arguments += '-AspectFit' }
+	}
 	if (!$settings.redzone) { $arguments += '-NoRedZone' }
 	if ($settings.fps120) { $arguments += '-Fps120' }
 	$dlss = $frameGenAvailable -and $settings.upscaler -eq 'dlss'
