@@ -38,6 +38,7 @@ namespace AppContent {
 constexpr uint32_t APP_CONTENT_APPPARAM_SKU_FLAG_FULL   = 3;
 constexpr int      APP_CONTENT_ERROR_PARAMETER          = -2133262334; /* 0x80D90002 */
 constexpr int      APP_CONTENT_ERROR_NOT_MOUNTED        = -2133262332; /* 0x80D90004 */
+constexpr int      APP_CONTENT_ERROR_MOUNT_FULL         = -2133262330; /* 0x80D90006 */
 constexpr int      APP_CONTENT_ERROR_DRM_NO_ENTITLEMENT = -2133262329; /* 0x80D90007 */
 
 static std::string g_title_id;
