@@ -259,6 +259,21 @@ function Show-CheatDialog([string]$file) {
 	}
 }
 
+function Read-GameParam([string]$game) {
+	if (!$game) { return $null }
+	if (Test-Path -LiteralPath "$game\sce_sys\param.json") { return Get-Content -LiteralPath "$game\sce_sys\param.json" -Raw -Encoding UTF8 | ConvertFrom-Json }
+	$tool = @("$root\kyty_shader_precompile.exe", "$root\_Build\windows\kyty_shader_precompile.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+	if ($game -notmatch '\.zar$' -or !(Test-Path -LiteralPath $game -PathType Leaf) -or !$tool) { return $null }
+	$copy = [IO.Path]::GetTempFileName()
+	try {
+		& $tool --game $game --param $copy 2>$null | Out-Null
+		if ($LASTEXITCODE -eq 0) { return Get-Content -LiteralPath $copy -Raw -Encoding UTF8 | ConvertFrom-Json }
+	} catch {
+	} finally {
+		Remove-Item -LiteralPath $copy -ErrorAction SilentlyContinue
+	}
+	return $null
+}
 function Get-PlayCommand {
 	$size = $settings.resolution -split 'x'
 	# -Prompt is left out. Its version dialog has no don't-ask-again - only the precompile offer reads
@@ -350,21 +365,6 @@ Add-Row '游戏目录' @($game, $browse, $browseZar)
 $title = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray' }
 Add-Row '' @($title)
 # A game: its folder (eboot.bin and sce_sys) or the folder packed into a ZArchive (a .zar file).
-function Read-GameParam([string]$game) {
-	if (!$game) { return $null }
-	if (Test-Path -LiteralPath "$game\sce_sys\param.json") { return Get-Content -LiteralPath "$game\sce_sys\param.json" -Raw -Encoding UTF8 | ConvertFrom-Json }
-	$tool = @("$root\kyty_shader_precompile.exe", "$root\_Build\windows\kyty_shader_precompile.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
-	if ($game -notmatch '\.zar$' -or !(Test-Path -LiteralPath $game -PathType Leaf) -or !$tool) { return $null }
-	$copy = [IO.Path]::GetTempFileName()
-	try {
-		& $tool --game $game --param $copy 2>$null | Out-Null
-		if ($LASTEXITCODE -eq 0) { return Get-Content -LiteralPath $copy -Raw -Encoding UTF8 | ConvertFrom-Json }
-	} catch {
-	} finally {
-		Remove-Item -LiteralPath $copy -ErrorAction SilentlyContinue
-	}
-	return $null
-}
 function Update-Title {
 	$title.Text = '请选择含 eboot.bin 与 sce_sys 的游戏目录（游戏转储），或它的 .zar 打包档'
 	try {
