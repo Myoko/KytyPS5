@@ -54,6 +54,18 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(zstd zarchive_source)
 
+# Opus: the DualSense's Bluetooth link carries the pad speaker as Opus packets inside HID reports (there is no
+# USB audio endpoint over Bluetooth), so src/libs/dualSenseBluetooth.cpp encodes them with this.
+set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+	opus
+	GIT_REPOSITORY https://github.com/xiph/opus.git
+	GIT_TAG v1.5.2
+	GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(opus)
+
 add_library(zarchive STATIC
 	"${zarchive_source_SOURCE_DIR}/src/zarchivereader.cpp"
 	"${zarchive_source_SOURCE_DIR}/src/zarchivewriter.cpp"
