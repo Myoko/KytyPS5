@@ -68,8 +68,8 @@ sealed class Commands {
 		var frameGen = S.Int("framegen");
 		if (!fsrOn && context.FrameGenAvailable && frameGen >= 2) arguments.AddRange(new[] { "-FrameGen", Number(frameGen - 1) });
 		if (dlss) arguments.AddRange(new[] { "-Upscaler", "dlss" });
-		// (DLSS makes the 4K output: the 1080p output only with the game's own upscale.)
-		if (!dlss && S.Str("output") == "1080p") arguments.Add("-HdOutput");
+		// (With DLSS too: its PS5 Pro path then makes the 1080p output, the 3D at most 1080 high.)
+		if (S.Str("output") == "1080p") arguments.Add("-HdOutput");
 		if (context.FrameGenAvailable && ((!fsrOn && frameGen >= 2) || dlss)) arguments.AddRange(new[] { "-StreamlineDir", Quote(context.Streamline) });
 		var sets = new List<string>();
 		// The emulator's panel at the top right of the game image: the frame rate and frame times, or with the GPU,

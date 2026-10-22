@@ -21,7 +21,7 @@ $resolutionsByRatio = @{
 	'21:9' = '2560x1080', '3440x1440', '3840x1600', '5120x2160'
 	'32:9' = '3840x1080', '5120x1440', '7680x2160' }
 # The height Demon's Souls renders its 3D at (run-windows.ps1 -RenderHeight); its output and UI stay 3840x2160.
-$renderHeights = '2160 (native 4K)', '1800', '1620', '1512 (PS5 Pro)', '1440 (PS5)', '1296', '1152', '1080', '900'
+$renderHeights = '2160 (native 4K)', '1800', '1620', '1512 (PS5 Pro)', '1440 (PS5)', '1296', '1152', '1080', '900', '720'
 # What makes the 3840x2160 image of the 3D (run-windows.ps1 -Upscaler): the game's TAA and stretch (the PS5's), or DLSS in
 # place of Sony's PS5 Pro upscaler on the game's PS5 Pro path (NVIDIA's Streamline runtime, as frame generation).
 $upscalers = 'Game (PS5)', 'DLSS (PS5 Pro path)'
@@ -333,7 +333,7 @@ function Get-PlayCommand {
 	if (!$fsrOn -and $frameGenAvailable -and [int]$settings.framegen -ge 2) { $arguments += @('-FrameGen', ([int]$settings.framegen - 1)) }
 	if ($dlss) { $arguments += @('-Upscaler', 'dlss') }
 	# (DLSS makes the 4K output: the 1080p output only with the game's own upscale.)
-	if (!$dlss -and $settings.output -eq '1080p') { $arguments += '-HdOutput' }
+	if ($settings.output -eq '1080p') { $arguments += '-HdOutput' }
 	if ($frameGenAvailable -and ((!$fsrOn -and [int]$settings.framegen -ge 2) -or $dlss)) { $arguments += @('-StreamlineDir', "`"$streamline`"") }
 	# Switches of the config, one -Set argument (run-windows.ps1 splits it at the commas).
 	$sets = @()
@@ -485,8 +485,11 @@ function Update-RenderNote {
 	# (The 1080p output's 3D is at most 1080 high: $output below.)
 	$capped = $output -and $output.Enabled -and $output.SelectedIndex -eq 1 -and $h -gt 1080
 	if ($capped) { $h = 1080 }
+	# (DLSS's 4K output takes 1080 at least.)
+	$raised = $upscaler.SelectedIndex -eq 1 -and !($output -and $output.SelectedIndex -eq 1) -and $h -lt 1080
+	if ($raised) { $h = 1080 }
 	$w = [Math]::Floor($h * (Get-RatioAspect) / 8.0 + 0.5) * 8
-	$renderNote.Text = if ($capped) { "Demon's Souls' 3D at ${w}x${h} (1080 at most with the 1080p output)" } else { "Demon's Souls' 3D at ${w}x${h}; higher = sharper, needs more GPU" }
+	$renderNote.Text = if ($capped) { "Demon's Souls' 3D at ${w}x${h} (1080 at most with the 1080p output)" } elseif ($raised) { "Demon's Souls' 3D at ${w}x${h} (1080 at least with DLSS's 4K output)" } else { "Demon's Souls' 3D at ${w}x${h}; higher = sharper, needs more GPU" }
 }
 $render.Add_SelectedIndexChanged({
 	if (!$script:fillingRender) { $script:renderWanted = [int](([string]$render.SelectedItem -split ' ')[0]) }
@@ -531,15 +534,14 @@ Add-Row 'Aspect ratio' @($ratio, $ratioNote)
 Add-Row 'Render height' @($render, $renderNote)
 Add-Row 'Upscaler' @($upscaler, $upscalerNote)
 # The game's output (run-windows.ps1 -HdOutput, src/loader/demonsSoulsHdOutput.h): 4K, or the game's own 1080p mode, its
-# post-processing and HUD at 1920x1080 and its 3D at most 1080 high. DLSS makes the 4K output: the row is off with it.
+# post-processing and HUD at 1920x1080 and its 3D at most 1080 high (with DLSS: DLSS upscales the 3D to that 1080p).
 $output = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 205 }
 $output.Items.AddRange(@('4K (PS5)', '1080p'))
 $output.SelectedIndex = if ($settings.output -eq '1080p') { 1 } else { 0 }
 $outputNote = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0'
-	Text = '1080p: the game''s own HD mode, effects and HUD at 1920x1080; less GPU work; not with DLSS' }
-$output.Enabled = $upscaler.SelectedIndex -ne 1
+	Text = '1080p: the game''s HD layout, effects and HUD at 1920x1080; less GPU work; with DLSS, DLSS makes the 1080p picture' }
 $output.Add_SelectedIndexChanged({ Update-RenderNote })
-$upscaler.Add_SelectedIndexChanged({ $output.Enabled = $upscaler.SelectedIndex -ne 1; Update-RenderNote })
+$upscaler.Add_SelectedIndexChanged({ Update-RenderNote })
 Add-Row 'Game output' @($output, $outputNote)
 Update-RenderNote
 $fullscreen = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Fullscreen'; AutoSize = $true; Checked = [bool]$settings.fullscreen }
