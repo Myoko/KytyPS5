@@ -8,10 +8,13 @@
 #if defined(_WIN32)
 
 #include <array>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <string>
+#include <vector>
 
 #define WIN32_LEAN_AND_MEAN
 #include <audioclient.h>
