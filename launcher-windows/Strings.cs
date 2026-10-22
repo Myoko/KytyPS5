@@ -130,6 +130,9 @@ static class Strings {
 		{"safegpu.desc", "Prevents the crashes that come from the graphics card hanging ('device lost', a black screen while the driver restarts, VIDEO_TDR_FAILURE): the game's compute work runs one step after another. About 37% lower frame rate. It does not help MEMORY_MANAGEMENT blue screens, which come from the RAM being full. Leave it off if the game runs without such crashes."},
 		{"uilang", "Launcher language"}, {"uilang.auto", "Automatic"},
 		{"credit", "Settings follow the KytyPS5 launcher (src/launcher) by the KytyPS5 developers."},
+		{"advanced.extra", "Extra options"}, {"extra", "Command-line options"},
+		{"extra.desc", "Added to the game's start as on a run.cmd line, e.g. -Set KYTY_DLSS_PRESET=E. -Set pairs join the launcher's own; another option replaces the launcher's of the same name. If the game no longer starts, clear this box."},
+		{"summary.extra", "extra options"},
 
 		{"nav.experimental", "Experimental"}, {"experimental.title", "Experimental"},
 		{"experimental.intro", "Options still being tried out. They can help on some PCs and make things worse on others: turn one on, play a while, and turn it off again if it doesn't help. A note in the linked issue (what you saw, with your graphics card and display) helps decide what becomes a default."},
@@ -255,6 +258,9 @@ static class Strings {
 		{"safegpu.desc", "防止显卡挂起导致的崩溃（device lost、驱动重启时黑屏、VIDEO_TDR_FAILURE 蓝屏）：游戏的计算任务逐个执行。帧率约降低 37%。对内存占满引起的 MEMORY_MANAGEMENT 蓝屏无效。若没有此类崩溃请保持关闭。"},
 		{"uilang", "启动器语言"}, {"uilang.auto", "自动"},
 		{"credit", "设置项沿用 KytyPS5 开发者的 KytyPS5 启动器（src/launcher）。"},
+		{"advanced.extra", "附加参数"}, {"extra", "命令行参数"},
+		{"extra.desc", "启动游戏时附加的参数，写法同 run.cmd，例如 -Set KYTY_DLSS_PRESET=E。-Set 的值会与启动器自己的合并；其他参数会替换启动器的同名参数。如果游戏因此无法启动，清空此框即可。"},
+		{"summary.extra", "附加参数"},
 
 		{"nav.experimental", "实验性"}, {"experimental.title", "实验性"},
 		{"experimental.intro", "仍在试验中的选项。它们在一些电脑上有帮助，在另一些电脑上可能更糟：打开一项、玩一会儿，没有帮助就再关掉。在对应的 issue 里留言（看到了什么，以及显卡和显示器型号）能帮助决定哪些将来成为默认。"},

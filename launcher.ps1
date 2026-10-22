@@ -49,7 +49,8 @@ $safeGpuTip = "Prevents the crashes and blue screens that come from the graphics
 $settings = [ordered]@{ game = ''; resolution = '2560x1440'; fullscreen = $false; aspect = $true; language = 1; redzone = $true; cheats = $false;
 	ecores = $false; fps120 = $false; render = 1440; ratio = '16:9'; quality = 'standard'; vsync = $false; hdr = $false; framegen = 0
 	hud = 0; streamline = ''; safegpu = $false; upscaler = ''; render_dlss = 1080; fsr = $false; output = '4k'
-	lowlatency = $false; present_direct = $false; antilag = $false; keep_resident = $false; fps30 = $false }
+	lowlatency = $false; present_direct = $false; antilag = $false; keep_resident = $false; fps30 = $false
+	extra_args = '' }
 if (Test-Path $settingsPath) {
 	$saved = Get-Content $settingsPath -Raw | ConvertFrom-Json
 	foreach ($property in $saved.PSObject.Properties) { if ($settings.Contains($property.Name)) { $settings[$property.Name] = $property.Value } }
@@ -347,10 +348,58 @@ function Get-PlayCommand {
 	if ($settings.antilag) { $sets += 'KYTY_ANTI_LAG=1' }
 	if ($settings.fps30) { $sets += 'KYTY_FLIP_RATE=1' }
 	if ($settings.keep_resident) { $sets += @('KYTY_RESIDENT_MB=6144', 'KYTY_WORKING_SET_TRIM=0') }
+	# KytyLauncher.exe's extra options (Advanced page): their -Set pairs join (or replace) the launcher's own.
+	$extra = Get-ExtraOptions
+	foreach ($option in $extra) {
+		if ($option[0] -ne '-Set' -or $null -eq $option[1]) { continue }
+		foreach ($pair in ($option[1] -split ',(?=[A-Za-z_][A-Za-z0-9_]*=)')) {
+			$key = ($pair -split '=')[0]
+			$sets = @($sets | Where-Object { ($_ -split '=')[0] -ne $key })
+			$sets += $pair
+		}
+	}
 	if ($sets.Count) { $arguments += @('-Set', ($sets -join ',')) }
 	if ($settings.game) { $arguments += @('-Game', "`"$($settings.game)`"") }
+	# Their other options in place of the launcher's of the same name (run-windows.ps1 takes each once), else added
+	# (its own arguments from the 6th on: after -NoProfile -ExecutionPolicy Bypass -File <script>).
+	foreach ($option in $extra) {
+		if ($option[0] -eq '-Set') { continue }
+		$list = [System.Collections.Generic.List[string]]@($arguments | ForEach-Object { [string]$_ })
+		$at = -1
+		for ($j = 5; $j -lt $list.Count; $j++) { if ($list[$j] -eq $option[0]) { $at = $j; break } }
+		if ($at -ge 0) { $list.RemoveRange($at, $(if ($at + 1 -lt $list.Count -and !$list[$at + 1].StartsWith('-')) { 2 } else { 1 })) }
+		$list.Add($option[0])
+		if ($null -ne $option[1]) { $list.Add($(if ($option[1].Contains(' ')) { "`"$($option[1])`"" } else { $option[1] })) }
+		$arguments = $list.ToArray()
+	}
 	# The console stays for the live log; after a crash it waits for a key.
 	return "$powershellCommand " + ($arguments -join ' ') + ' & if !errorlevel! neq 0 pause'
+}
+# KytyLauncher.exe's extra options (extra_args), as on a run.cmd line (its Commands.ExtraOptions): each -Name with its
+# value (the next part when it does not start with -), "double quotes" keeping spaces in one; a value without a name,
+# or an option holding a character cmd would take itself, is left out.
+$cmdCharacters = [char[]]@('&', '|', '<', '>', '^', '!', '%', '"')
+function Get-ExtraOptions {
+	$parts = New-Object System.Collections.Generic.List[string]
+	$part = New-Object System.Text.StringBuilder
+	$quoted = $false
+	$any = $false
+	foreach ($c in ([string]$settings.extra_args).ToCharArray()) {
+		if ($c -eq [char]'"') { $quoted = !$quoted; $any = $true }
+		elseif ([char]::IsWhiteSpace($c) -and !$quoted) { if ($any) { $parts.Add($part.ToString()) }; [void]$part.Clear(); $any = $false }
+		else { [void]$part.Append($c); $any = $true }
+	}
+	if ($any) { $parts.Add($part.ToString()) }
+	$options = @()
+	for ($i = 0; $i -lt $parts.Count; $i++) {
+		$name = $parts[$i]
+		if ($name.Length -lt 2 -or $name[0] -ne [char]'-') { continue }
+		$value = $null
+		if ($i + 1 -lt $parts.Count -and !$parts[$i + 1].StartsWith('-')) { $i++; $value = $parts[$i] }
+		if ($name.IndexOfAny($cmdCharacters) -ge 0 -or ($null -ne $value -and $value.IndexOfAny($cmdCharacters) -ge 0)) { continue }
+		$options += , @($name, $value)
+	}
+	return , $options
 }
 function Get-PrecompileCommand([string]$switch = '') {
 	$arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$root\precompile-windows.ps1`"")

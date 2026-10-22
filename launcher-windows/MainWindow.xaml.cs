@@ -56,7 +56,7 @@ partial class MainWindow : Window {
 	int renderWanted;   // the height last chosen for the upscaler shown
 	int pageIndex;
 
-	TextBox gamePath;
+	TextBox gamePath, extraArgs;
 	ComboBox resolution, ratio, render, upscaler, output, quality, frameGen, language, hud, uiLanguage;
 	CheckBox fullscreen, aspect, hdr, fps120, vsync, lowLatency, fsr, cheats, redzone, safeGpu, ecores, presentDirect, antiLag,
 		keepResident, fps30;
@@ -710,11 +710,16 @@ partial class MainWindow : Window {
 		var readme = FlatButton("button.readme", (s, e) => OpenReadme());
 		var root = FlatButton("button.root", (s, e) => OpenFolder(context.Root));
 		readme.Margin = root.Margin = new Thickness(10, 0, 0, 0);
+		// Options for the game's start as on a run.cmd line (Commands.ExtraOptions): saved as typed.
+		extraArgs = new TextBox { Text = S.Str("extra_args"), MinWidth = 420 };
+		extraArgs.TextChanged += (s, e) => Changed();
 		return Page("advanced.title",
 			Section("advanced.stability"),
 			Row("hud", hud, Desc(T("hud.desc"))),
 			Row("redzone", redzone, Desc(T("redzone.desc"))),
 			Row("safegpu", safeGpu, Desc(T("safegpu.desc"))),
+			Section("advanced.extra"),
+			Row("extra", extraArgs, Desc(T("extra.desc"))),
 			Section("advanced.launcher"),
 			Row("uilang", uiLanguage),
 			Row(null, Horizontal(logs, readme, root)),
@@ -770,6 +775,7 @@ partial class MainWindow : Window {
 	void ReadForm() {
 		if (gamePath == null || render == null) return;
 		S.Set("game", gamePath.Text.Trim());
+		if (extraArgs != null) S.Set("extra_args", extraArgs.Text.Trim());
 		var res = Value(resolution) as string;
 		if (res != null) S.Set("resolution", res);
 		S.Set("fullscreen", fullscreen.IsChecked == true);
@@ -820,6 +826,7 @@ partial class MainWindow : Window {
 		if (S.Bool("present_direct")) options.Add(T("summary.presentDirect"));
 		if (S.Bool("antilag")) options.Add(T("summary.antilag"));
 		if (S.Bool("keep_resident")) options.Add(T("summary.keepResident"));
+		if (S.Str("extra_args").Length != 0) options.Add(T("summary.extra"));
 
 		var parts = new List<string> {
 			F(S.Bool("fullscreen") ? "summary.fullscreen" : "summary.window", res), S.Str("ratio"), F("summary.render", height),

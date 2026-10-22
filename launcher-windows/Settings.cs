@@ -23,6 +23,8 @@ sealed class Settings {
 		// (Experimental page.)
 		new object[] {"present_direct", false}, new object[] {"antilag", false}, new object[] {"keep_resident", false},
 		new object[] {"fps30", false},
+		// (Advanced page.)
+		new object[] {"extra_args", ""},
 	};
 
 	readonly string path;

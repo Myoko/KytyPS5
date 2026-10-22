@@ -89,11 +89,16 @@ pages: **Play** (the game folder or `.zar`; checks of the game, graphics card, R
 DLSS/FSR; the Play button), **Display** (resolution, aspect ratio, fullscreen, HDR, up to 120 fps, VSync, low
 latency), **Graphics** (upscaler, render height, game output, graphics preset, frame generation), **Game** (console
 language, cheats), **Shaders** (precompile, optionally on the efficiency cores only so the PC stays responsive;
-export shader hints), **Advanced** (performance overlay, red-zone protection, safe GPU mode, the launcher's
-language, the logs folder) and **Experimental** (options still being tried out, each with the issue that collects
-how it goes: direct presentation for VRR displays, AMD Anti-Lag). It remembers the settings (`launcher-settings.json`) and needs nothing installed (.NET
+export shader hints), **Advanced** (performance overlay, red-zone protection, safe GPU mode, extra command-line
+options, the launcher's language, the logs folder) and **Experimental** (options still being tried out, each with
+the issue that collects how it goes: a 30 fps lock, direct presentation for VRR displays, keep memory resident,
+AMD Anti-Lag). It remembers the settings (`launcher-settings.json`) and needs nothing installed (.NET
 Framework 4.7.2, part of Windows 10 and 11). Windows may ask before its first start ("More info", "Run anyway"):
 it is not signed. The earlier PowerShell window (`launcher.ps1`) still works.
+`KytyLauncher.exe --play` starts the game right away with the launcher's settings, without its window: for a
+desktop shortcut, or Steam (Add a Non-Steam Game, pick `KytyLauncher.exe`, then Launch Options `--play` in its
+properties; Steam counts the game as running until it closes, so the controller layout applies). It shows no
+dialogs (after a driver update, precompile from the Shaders page) and opens the window when no game folder is set.
 "Up to 120 fps" (off by default) lets the game render up to 120 frames a second instead of the
 console's 60 where the PC is fast enough: play keeps its speed, and movies, menus and loading screens
 stay at 60.
@@ -217,6 +222,11 @@ shortcut):
 | `-Upscaler dlss` | DLSS super resolution through the game's PS5 Pro path (NVIDIA RTX, needs Streamline: see "Upscaler" above) |
 | `-FrameGen 1` | DLSS frame generation, the number of generated frames per rendered one (`1` = 2x, up to `5`; RTX 40 or newer, needs Streamline) |
 | `-Set KEY=VALUE` | An emulator switch, e.g. `-Set KYTY_SHADER_PREFETCH=0` (several: `-Set A=1,B=2`); the issues name the ones worth trying |
+
+The launcher has a box for these too (Advanced, "Command-line options"), written as after `run.cmd`: its `-Set`
+pairs join the launcher's own (one of the same name replaces the launcher's), and another option replaces the
+launcher's of the same name, e.g. `-RenderHeight 900` or `-Set KYTY_DLSS_PRESET=E`. If the game no longer starts,
+clear the box.
 
 ## Game language (Chinese, Japanese, Korean and others)
 
