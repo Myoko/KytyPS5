@@ -58,7 +58,8 @@ partial class MainWindow : Window {
 
 	TextBox gamePath;
 	ComboBox resolution, ratio, render, upscaler, output, quality, frameGen, language, hud, uiLanguage;
-	CheckBox fullscreen, aspect, hdr, fps120, vsync, lowLatency, fsr, cheats, redzone, safeGpu, ecores, presentDirect, antiLag;
+	CheckBox fullscreen, aspect, hdr, fps120, vsync, lowLatency, fsr, cheats, redzone, safeGpu, ecores, presentDirect, antiLag,
+		keepResident, fps30;
 	TextBlock renderNote, upscalerNote, frameGenNote, streamlineText, cheatState, bannerTitle, bannerLine, storeLine;
 	Image banner;
 	Border bannerFallback;
@@ -725,11 +726,19 @@ partial class MainWindow : Window {
 	FrameworkElement BuildExperimentalPage() {
 		presentDirect = Switch(S.Bool("present_direct"));
 		antiLag = Switch(S.Bool("antilag") && context.AmdGpu, context.AmdGpu);
+		keepResident = Switch(S.Bool("keep_resident"));
+		fps30 = Switch(S.Bool("fps30"));
 		return Page("experimental.title",
 			Desc(T("experimental.intro")),
+			Section("experimental.framerate"),
+			Row("fps30", fps30, Desc(T("fps30.desc"))),
+			Row(null, Feedback(85)),
 			Section("experimental.display"),
 			Row("presentdirect", presentDirect, Desc(T("presentdirect.desc"))),
 			Row(null, Feedback(37)),
+			Section("experimental.memory"),
+			Row("keepresident", keepResident, Desc(T("keepresident.desc"))),
+			Row(null, Feedback(50)),
 			Section("experimental.amd"),
 			Row("antilag", antiLag, Desc(T(context.AmdGpu ? "antilag.desc" : "antilag.notAmd"))),
 			Row(null, Feedback(80)));
@@ -784,6 +793,8 @@ partial class MainWindow : Window {
 		S.Set("ecores", ecores.IsChecked == true);
 		S.Set("present_direct", presentDirect.IsChecked == true);
 		S.Set("antilag", antiLag.IsChecked == true && context.AmdGpu);
+		S.Set("keep_resident", keepResident.IsChecked == true);
+		S.Set("fps30", fps30.IsChecked == true);
 		S.Save();
 	}
 
@@ -800,12 +811,14 @@ partial class MainWindow : Window {
 		var qualityKey = "quality." + (S.Str("quality").Length == 0 ? "standard" : S.Str("quality"));
 		var options = new List<string>();
 		if (S.Bool("vsync")) options.Add(T("summary.vsync"));
-		if (S.Bool("fps120")) options.Add(T("summary.fps120"));
+		if (S.Bool("fps30")) options.Add(T("summary.fps30"));
+		else if (S.Bool("fps120")) options.Add(T("summary.fps120"));
 		if (S.Bool("lowlatency")) options.Add(T("lowlatency"));
 		if (S.Bool("hdr")) options.Add(T("summary.hdr"));
 		if (hdOutput) options.Add(T("summary.hd"));
 		if (S.Bool("present_direct")) options.Add(T("summary.presentDirect"));
 		if (S.Bool("antilag")) options.Add(T("summary.antilag"));
+		if (S.Bool("keep_resident")) options.Add(T("summary.keepResident"));
 
 		var parts = new List<string> {
 			F(S.Bool("fullscreen") ? "summary.fullscreen" : "summary.window", res), S.Str("ratio"), F("summary.render", height),

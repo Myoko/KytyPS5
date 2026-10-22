@@ -46,6 +46,15 @@ static void TrimParkedRange(uint64_t vaddr, uint64_t size);
 class ParkedRangeTrimmer {
 public:
 	static void Trim(uint64_t vaddr, uint64_t size) {
+		// KYTY_WORKING_SET_TRIM=0 (a test; the launcher's Experimental "Keep memory resident"): none, parked ranges and the
+		// texture offload's guest pages (TrimGuestRange) left to Windows: ~1.5 GB more in use on a 16 GB PC. These trims
+		// take guest pages out of the working set, as Windows had done with the page of the MEMORY_MANAGEMENT blue screen's
+		// stack (KeepResident, memory.cpp).
+		static const bool off = [] {
+			const char* value = std::getenv("KYTY_WORKING_SET_TRIM");
+			return value != nullptr && value[0] == '0';
+		}();
+		if (off) return;
 		static auto* trimmer = new ParkedRangeTrimmer; // (never destroyed: its thread may outlive static destructors)
 		{
 			std::lock_guard lock(trimmer->m_mutex);

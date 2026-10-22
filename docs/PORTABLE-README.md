@@ -206,6 +206,7 @@ shortcut):
 | `-Quality low` | How much the game draws: `low` or `lowest` (shorter shadows, simpler distant detail), faster where the processor limits the frame rate |
 | `-TextureReduce 2` | Large textures without their largest levels: `1` half the size per side (the default with less than 12 GB of video memory), `2` a quarter, `0` whole |
 | `-Fps120` | The game's frame rate up to 120 fps instead of 60 (the launcher's "Up to 120 fps") |
+| `-Set KYTY_FLIP_RATE=1` | The game locked to a steady 30 fps, at the same game speed: half the work, even frame times; movies and menus stay at 60 (the launcher's Experimental "Lock to 30 fps") |
 | `-PresentMode Fifo` | VSync on (the launcher's "VSync") |
 | `-LowLatency` | Less input lag: one frame waiting for the screen instead of about two (the launcher's "Low latency") |
 | `-Hdr` | HDR10 output when Windows' "Use HDR" is on for the display |
@@ -276,6 +277,9 @@ There are two levels of preparation, both specific to the graphics card and driv
      overnight is a good idea. Once "ready to play" shows (about halfway), what play needs is in place
      and the game can be started; the rest follows.
    - Closing the window stops it; running it again continues where it stopped.
+   - If the graphics driver never finishes compiling a pipeline (reported on an AMD card), the precompile leaves
+     that pipeline out after 5 minutes and carries on; at the end it lists them in the logs folder
+     (`stuck-pipelines.txt`). Please update the graphics driver, and if it happens again, report that file on GitHub.
    - Coming from an older package with a precompiled `_PipelineCache\static\<title>.bin`: the precompile
      turns it into the store in a few minutes; the `.bin` is then unused and can be deleted (about 4 GB).
    - It compiles the shaders as the game uses them in play too: the package carries what was recorded
@@ -380,7 +384,9 @@ hurts.
 - On some PCs whose RAM runs full (mostly 16 GB with a browser open), Windows stops with a
   MEMORY_MANAGEMENT blue screen after 10 minutes to an hour of play (issue #50, being worked on). Until it is
   fixed: close other large programs while playing, keep a page file of at least 32 GB, and restart the game
-  after long sessions.
+  after long sessions. An untested option for it is on the launcher's Experimental page, "Keep memory resident"
+  (`run.cmd -Set KYTY_RESIDENT_MB=6144,KYTY_WORKING_SET_TRIM=0`; it uses about 1.5 GB more RAM): a note in issue #50
+  on whether it helps is welcome.
 - On some TVs the picture tears or stutters with VSync on. A user's fix on a 60 Hz TV with an NVIDIA
   card (issue #30): in the NVIDIA Control Panel, Manage 3D settings > Program Settings, add
   `kyty_emulator.exe` and set "Vertical sync" to On and "Vulkan/OpenGL present method" to "Prefer native".

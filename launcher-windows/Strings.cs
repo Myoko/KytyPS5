@@ -132,7 +132,12 @@ static class Strings {
 
 		{"nav.experimental", "Experimental"}, {"experimental.title", "Experimental"},
 		{"experimental.intro", "Options still being tried out. They can help on some PCs and make things worse on others: turn one on, play a while, and turn it off again if it doesn't help. A note in the linked issue (what you saw, with your graphics card and display) helps decide what becomes a default."},
-		{"experimental.display", "Display"}, {"experimental.amd", "AMD graphics cards"},
+		{"experimental.display", "Display"}, {"experimental.amd", "AMD graphics cards"}, {"experimental.memory", "Memory"},
+		{"experimental.framerate", "Frame rate"},
+		{"fps30", "Lock to 30 fps (slower PCs)"},
+		{"fps30.desc", "The game runs at a steady 30 fps (like the PS5's cinematic mode) instead of up to 60: half the work for the processor and the graphics card, even frame times, and the same game speed. For PCs that swing between 30 and 60; with 2x frame generation it shows 60. Movies and menus stay at 60. Smoothest on 60 Hz and 120 Hz displays or with VRR. Replaces \"Up to 120 fps\"."},
+		{"keepresident", "Keep memory resident (blue screen test)"},
+		{"keepresident.desc", "For PCs that stop with a MEMORY_MANAGEMENT blue screen (mostly 16 GB): Windows keeps at least 6 GB of the emulator in RAM, and the emulator no longer moves its own unused memory out of it. The blue screen comes from a page Windows had moved out of RAM; whether this avoids it is not known yet. Uses about 1.5 GB more RAM."},
 		{"presentdirect", "Direct presentation (VRR displays)"},
 		{"presentdirect.desc", "Each frame goes to the display as soon as it is ready, as before v20261016b, instead of through the presenter thread that keeps VSync even. On some displays (an LG C2 TV) G-SYNC, FreeSync or VRR engages only this way. Use it with VSync off; without VRR the frame pacing can be less even."},
 		{"antilag", "AMD Anti-Lag"},
@@ -140,6 +145,7 @@ static class Strings {
 		{"antilag.notAmd", "AMD Radeon graphics cards only."},
 		{"feedback", "Feedback: issue #{0}"},
 		{"summary.presentDirect", "direct presentation"}, {"summary.antilag", "Anti-Lag"},
+		{"summary.keepResident", "memory kept resident"}, {"summary.fps30", "30 fps lock"},
 
 		{"dialog.game", "The game folder (eboot.bin, sce_sys)"},
 		{"dialog.zar", "The game folder packed into a ZArchive"},
@@ -250,7 +256,12 @@ static class Strings {
 
 		{"nav.experimental", "实验性"}, {"experimental.title", "实验性"},
 		{"experimental.intro", "仍在试验中的选项。它们在一些电脑上有帮助，在另一些电脑上可能更糟：打开一项、玩一会儿，没有帮助就再关掉。在对应的 issue 里留言（看到了什么，以及显卡和显示器型号）能帮助决定哪些将来成为默认。"},
-		{"experimental.display", "显示"}, {"experimental.amd", "AMD 显卡"},
+		{"experimental.display", "显示"}, {"experimental.amd", "AMD 显卡"}, {"experimental.memory", "内存"},
+		{"experimental.framerate", "帧率"},
+		{"fps30", "锁定 30 帧（较慢的电脑）"},
+		{"fps30.desc", "游戏稳定在 30 帧（和 PS5 的电影模式一样），而不是最高 60 帧：处理器和显卡的工作量减半，帧间隔均匀，游戏速度不变。适合帧率在 30 到 60 之间来回跳的电脑；配合 2 倍插帧显示 60 帧。过场动画和菜单仍为 60 帧。在 60 Hz、120 Hz 显示器上或开启 VRR 时最平稳。打开后「最高 120 帧」不再生效。"},
+		{"keepresident", "常驻内存（蓝屏试验）"},
+		{"keepresident.desc", "适用于出现 MEMORY_MANAGEMENT 蓝屏的电脑（多为 16 GB）：Windows 至少把模拟器的 6 GB 留在内存里，模拟器也不再主动把自己暂时不用的内存移出。这种蓝屏源于一个被 Windows 移出内存的页面；能否避免还不确定。会多占约 1.5 GB 内存。"},
 		{"presentdirect", "直接呈现（VRR 显示器）"},
 		{"presentdirect.desc", "每一帧准备好后立即送到显示器（v20261016b 之前的方式），不经过为保证垂直同步平稳而设的呈现线程。在某些显示器（如 LG C2 电视）上，只有这样 G-SYNC、FreeSync 或 VRR 才会生效。请在关闭垂直同步时使用；没有 VRR 时帧间隔可能不够均匀。"},
 		{"antilag", "AMD Anti-Lag"},
@@ -258,6 +269,7 @@ static class Strings {
 		{"antilag.notAmd", "仅限 AMD Radeon 显卡。"},
 		{"feedback", "反馈：issue #{0}"},
 		{"summary.presentDirect", "直接呈现"}, {"summary.antilag", "Anti-Lag"},
+		{"summary.keepResident", "常驻内存"}, {"summary.fps30", "锁定 30 帧"},
 
 		{"dialog.game", "游戏文件夹（eboot.bin、sce_sys）"},
 		{"dialog.zar", "打包为 ZArchive 的游戏文件夹"},

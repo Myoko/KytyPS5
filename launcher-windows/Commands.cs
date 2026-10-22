@@ -44,7 +44,8 @@ sealed class Commands {
 			if (S.Bool("aspect") && !wide) arguments.Add("-AspectFit");
 		}
 		if (!S.Bool("redzone")) arguments.Add("-NoRedZone");
-		if (S.Bool("fps120")) arguments.Add("-Fps120");
+		// (The 30 fps lock, Experimental: KYTY_FLIP_RATE=1 below, at 60 Hz: up to 120 fps it would be 60.)
+		if (S.Bool("fps120") && !S.Bool("fps30")) arguments.Add("-Fps120");
 		// Presents wait for the display's refresh (Vulkan FIFO): no tearing, and G-SYNC/FreeSync displays keep adapting.
 		if (S.Bool("vsync")) arguments.AddRange(new[] { "-PresentMode", "Fifo" });
 		// (AMD Anti-Lag, an experiment, works on top of low latency.)
@@ -80,6 +81,10 @@ sealed class Commands {
 		// Experiments: each frame presented as it is handed over (variable refresh rate displays, issue #37), and AMD Anti-Lag.
 		if (S.Bool("present_direct")) sets.Add("KYTY_PRESENT_DIRECT=1");
 		if (S.Bool("antilag")) sets.Add("KYTY_ANTI_LAG=1");
+		// The game's 3D view at most every 2nd vblank: a steady 30 fps at the same game speed (movies and menus keep 60).
+		if (S.Bool("fps30")) sets.Add("KYTY_FLIP_RATE=1");
+		// Memory kept in RAM against the MEMORY_MANAGEMENT blue screen (issue #50): a 6 GB working-set floor, no trims of its own.
+		if (S.Bool("keep_resident")) sets.AddRange(new[] { "KYTY_RESIDENT_MB=6144", "KYTY_WORKING_SET_TRIM=0" });
 		if (sets.Count != 0) arguments.AddRange(new[] { "-Set", string.Join(",", sets) });
 		var gamePath = S.Str("game");
 		if (gamePath.Length != 0) arguments.AddRange(new[] { "-Game", Quote(gamePath) });
