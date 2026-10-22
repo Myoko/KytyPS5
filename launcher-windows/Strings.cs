@@ -118,7 +118,7 @@ static class Strings {
 		{"precompile.desc", "Compiles every shader of the game for this graphics card once: {0} on this PC, with the processor fully loaded. Closing its window stops it, and the next run continues. Needed again after a graphics driver update."},
 		{"ecores", "Precompile on the efficiency cores only (slower, the PC stays responsive)"},
 		{"ecores.none", "This processor has one kind of core."},
-		{"hints.desc", "The shaders your play recorded, without the game's code, as my-hints-<game>.hints: attached to a GitHub issue, the next packages precompile them for everyone."},
+		{"hints.desc", "The shaders your play recorded, without the game's code, as my-hints-<game>.hints.zip: attached to a GitHub issue, the next packages precompile them for everyone."},
 
 		{"advanced.title", "Advanced"}, {"advanced.stability", "Overlay and stability"}, {"advanced.launcher", "Launcher"},
 		{"hud", "Performance overlay"}, {"hud.off", "Off"}, {"hud.rate", "Frame rate"}, {"hud.detailed", "Detailed"},
@@ -129,6 +129,17 @@ static class Strings {
 		{"safegpu.desc", "Prevents the crashes that come from the graphics card hanging ('device lost', a black screen while the driver restarts, VIDEO_TDR_FAILURE): the game's compute work runs one step after another. About 37% lower frame rate. It does not help MEMORY_MANAGEMENT blue screens, which come from the RAM being full. Leave it off if the game runs without such crashes."},
 		{"uilang", "Launcher language"}, {"uilang.auto", "Automatic"},
 		{"credit", "Settings follow the KytyPS5 launcher (src/launcher) by the KytyPS5 developers."},
+
+		{"nav.experimental", "Experimental"}, {"experimental.title", "Experimental"},
+		{"experimental.intro", "Options still being tried out. They can help on some PCs and make things worse on others: turn one on, play a while, and turn it off again if it doesn't help. A note in the linked issue (what you saw, with your graphics card and display) helps decide what becomes a default."},
+		{"experimental.display", "Display"}, {"experimental.amd", "AMD graphics cards"},
+		{"presentdirect", "Direct presentation (VRR displays)"},
+		{"presentdirect.desc", "Each frame goes to the display as soon as it is ready, as before v20261016b, instead of through the presenter thread that keeps VSync even. On some displays (an LG C2 TV) G-SYNC, FreeSync or VRR engages only this way. Use it with VSync off; without VRR the frame pacing can be less even."},
+		{"antilag", "AMD Anti-Lag"},
+		{"antilag.desc", "AMD's driver times the game's frames to cut input lag further, on top of Low latency (which it turns on too). Tested on Linux; on Windows it needs a current AMD driver, and without one Low latency works alone."},
+		{"antilag.notAmd", "AMD Radeon graphics cards only."},
+		{"feedback", "Feedback: issue #{0}"},
+		{"summary.presentDirect", "direct presentation"}, {"summary.antilag", "Anti-Lag"},
 
 		{"dialog.game", "The game folder (eboot.bin, sce_sys)"},
 		{"dialog.zar", "The game folder packed into a ZArchive"},
@@ -225,7 +236,7 @@ static class Strings {
 		{"precompile.desc", "为本显卡把游戏的所有着色器编译一次：在这台电脑上{0}，期间 CPU 满载。关闭其窗口即可停止，下次会继续。更新显卡驱动后需要重新预编译。"},
 		{"ecores", "仅在能效核上预编译（较慢，但电脑仍保持流畅）"},
 		{"ecores.none", "此处理器只有一种核心。"},
-		{"hints.desc", "把你游玩时记录的着色器（不含游戏代码）导出为 my-hints-<game>.hints：附在 GitHub issue 里，之后的版本会为所有人预编译它们。"},
+		{"hints.desc", "把你游玩时记录的着色器（不含游戏代码）导出为 my-hints-<game>.hints.zip：附在 GitHub issue 里，之后的版本会为所有人预编译它们。"},
 
 		{"advanced.title", "高级"}, {"advanced.stability", "性能面板与稳定性"}, {"advanced.launcher", "启动器"},
 		{"hud", "性能面板"}, {"hud.off", "关闭"}, {"hud.rate", "帧率"}, {"hud.detailed", "详细"},
@@ -236,6 +247,17 @@ static class Strings {
 		{"safegpu.desc", "防止显卡挂起导致的崩溃（device lost、驱动重启时黑屏、VIDEO_TDR_FAILURE 蓝屏）：游戏的计算任务逐个执行。帧率约降低 37%。对内存占满引起的 MEMORY_MANAGEMENT 蓝屏无效。若没有此类崩溃请保持关闭。"},
 		{"uilang", "启动器语言"}, {"uilang.auto", "自动"},
 		{"credit", "设置项沿用 KytyPS5 开发者的 KytyPS5 启动器（src/launcher）。"},
+
+		{"nav.experimental", "实验性"}, {"experimental.title", "实验性"},
+		{"experimental.intro", "仍在试验中的选项。它们在一些电脑上有帮助，在另一些电脑上可能更糟：打开一项、玩一会儿，没有帮助就再关掉。在对应的 issue 里留言（看到了什么，以及显卡和显示器型号）能帮助决定哪些将来成为默认。"},
+		{"experimental.display", "显示"}, {"experimental.amd", "AMD 显卡"},
+		{"presentdirect", "直接呈现（VRR 显示器）"},
+		{"presentdirect.desc", "每一帧准备好后立即送到显示器（v20261016b 之前的方式），不经过为保证垂直同步平稳而设的呈现线程。在某些显示器（如 LG C2 电视）上，只有这样 G-SYNC、FreeSync 或 VRR 才会生效。请在关闭垂直同步时使用；没有 VRR 时帧间隔可能不够均匀。"},
+		{"antilag", "AMD Anti-Lag"},
+		{"antilag.desc", "由 AMD 驱动安排游戏帧的时机，在「低延迟」的基础上进一步降低输入延迟（会同时打开低延迟）。已在 Linux 上测试；Windows 上需要较新的 AMD 驱动，没有时只有低延迟生效。"},
+		{"antilag.notAmd", "仅限 AMD Radeon 显卡。"},
+		{"feedback", "反馈：issue #{0}"},
+		{"summary.presentDirect", "直接呈现"}, {"summary.antilag", "Anti-Lag"},
 
 		{"dialog.game", "游戏文件夹（eboot.bin、sce_sys）"},
 		{"dialog.zar", "打包为 ZArchive 的游戏文件夹"},

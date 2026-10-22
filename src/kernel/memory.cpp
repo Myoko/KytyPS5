@@ -1431,6 +1431,21 @@ void PrepareHostOverwrite(uint64_t vaddr, uint64_t size) {
 		end   = std::min(end, vaddr + size);
 		(void)g_gpu_resources->InvalidateMemoryForWrite(first, end - first);
 	}
+#elif defined(__linux__)
+	// Linux the same, with KYTY_LINUX_COALESCE_MPROTECT (on unless 0): the tracked span made writable in one go, its
+	// pages' protection changes coalesced (ProtectMappedUnlocked), instead of a fault for each page the store reaches.
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_LINUX_COALESCE_MPROTECT");
+		return value == nullptr || value[0] != '0';
+	}();
+	if (enabled) {
+		uint64_t first = 0, end = 0;
+		if (g_gpu_resources->WatchedSpan(vaddr, size, &first, &end)) {
+			first = std::max(first, vaddr);
+			end   = std::min(end, vaddr + size);
+			(void)g_gpu_resources->InvalidateMemoryForWrite(first, end - first);
+		}
+	}
 #endif
 }
 

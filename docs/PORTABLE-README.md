@@ -89,8 +89,9 @@ pages: **Play** (the game folder or `.zar`; checks of the game, graphics card, R
 DLSS/FSR; the Play button), **Display** (resolution, aspect ratio, fullscreen, HDR, up to 120 fps, VSync, low
 latency), **Graphics** (upscaler, render height, game output, graphics preset, frame generation), **Game** (console
 language, cheats), **Shaders** (precompile, optionally on the efficiency cores only so the PC stays responsive;
-export shader hints) and **Advanced** (performance overlay, red-zone protection, safe GPU mode, the launcher's
-language, the logs folder). It remembers the settings (`launcher-settings.json`) and needs nothing installed (.NET
+export shader hints), **Advanced** (performance overlay, red-zone protection, safe GPU mode, the launcher's
+language, the logs folder) and **Experimental** (options still being tried out, each with the issue that collects
+how it goes: direct presentation for VRR displays, AMD Anti-Lag). It remembers the settings (`launcher-settings.json`) and needs nothing installed (.NET
 Framework 4.7.2, part of Windows 10 and 11). Windows may ask before its first start ("More info", "Run anyway"):
 it is not signed. The earlier PowerShell window (`launcher.ps1`) still works.
 "Up to 120 fps" (off by default) lets the game render up to 120 frames a second instead of the
@@ -284,8 +285,8 @@ There are two levels of preparation, both specific to the graphics card and driv
      of the time); `precompile.cmd -Full` compiles them too.
    - Places and effects the test PC never recorded (bosses' deaths, for one) still compile when they first
      appear. The launcher's "Export shader hints" button (or `precompile.cmd -ExportHints`) writes what your
-     own play recorded, without the game's shader code, to `my-hints-<title>_<version>.hints` (a few hundred
-     KB, nothing is compiled) and shows it in Explorer: attached to an issue, it goes into the hints of the
+     own play recorded, without the game's shader code, to `my-hints-<title>_<version>.hints.zip` (a few hundred
+     KB, nothing is compiled) and shows it in Explorer: attached to a GitHub issue, it goes into the hints of the
      next packages.
    - **After a graphics driver update or a new graphics card it has to be done again**; the launcher
      asks again. It also asks after an update of the emulator that precompiles more: running it again
@@ -372,7 +373,9 @@ hurts.
 - On some PCs the graphics card hangs ("device lost", the screen goes black and the driver restarts, or a
   VIDEO_TDR_FAILURE blue screen), in a laptop RTX 3080's case within minutes at Boletaria: turn on "Safe GPU
   mode" in the launcher (see above). The frame rate is then about 37% lower.
-- Sound: 3D sound has no direction, and there is no reverb.
+- Sound: 3D sound has no direction, and there is no reverb. On a busy PC it may crackle: the sound buffer
+  (20 ms) grows by itself after each dropout; to start with a bigger one: `run.cmd -Set KYTY_AUDIO_BUFFER_MS=60`
+  (up to 200).
 - It uses a lot of memory and video memory: on PCs with too little it may just exit.
 - On some PCs whose RAM runs full (mostly 16 GB with a browser open), Windows stops with a
   MEMORY_MANAGEMENT blue screen after 10 minutes to an hour of play (issue #50, being worked on). Until it is

@@ -47,7 +47,8 @@ sealed class Commands {
 		if (S.Bool("fps120")) arguments.Add("-Fps120");
 		// Presents wait for the display's refresh (Vulkan FIFO): no tearing, and G-SYNC/FreeSync displays keep adapting.
 		if (S.Bool("vsync")) arguments.AddRange(new[] { "-PresentMode", "Fifo" });
-		if (S.Bool("lowlatency")) arguments.Add("-LowLatency");
+		// (AMD Anti-Lag, an experiment, works on top of low latency.)
+		if (S.Bool("lowlatency") || S.Bool("antilag")) arguments.Add("-LowLatency");
 		if (S.Bool("hdr")) arguments.Add("-Hdr");
 		// The cheats file of this title, when it has one: the emulator applies the mods left enabled in it.
 		if (S.Bool("cheats")) {
@@ -76,6 +77,9 @@ sealed class Commands {
 		if (hud >= 1) sets.Add("KYTY_FPS_HUD=" + Number(Math.Min(hud, 2)));
 		// Safe GPU mode: Demon's Souls' compute work one dispatch after another (no GPU hangs, ~37% slower).
 		if (S.Bool("safegpu")) sets.Add("KYTY_COMPUTE_CHAIN=0");
+		// Experiments: each frame presented as it is handed over (variable refresh rate displays, issue #37), and AMD Anti-Lag.
+		if (S.Bool("present_direct")) sets.Add("KYTY_PRESENT_DIRECT=1");
+		if (S.Bool("antilag")) sets.Add("KYTY_ANTI_LAG=1");
 		if (sets.Count != 0) arguments.AddRange(new[] { "-Set", string.Join(",", sets) });
 		var gamePath = S.Str("game");
 		if (gamePath.Length != 0) arguments.AddRange(new[] { "-Game", Quote(gamePath) });

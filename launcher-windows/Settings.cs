@@ -20,6 +20,8 @@ sealed class Settings {
 		new object[] {"streamline", ""}, new object[] {"safegpu", false}, new object[] {"upscaler", ""},
 		new object[] {"render_dlss", 1080}, new object[] {"fsr", false}, new object[] {"output", "4k"},
 		new object[] {"lowlatency", false}, new object[] {"ui_language", ""},
+		// (Experimental page.)
+		new object[] {"present_direct", false}, new object[] {"antilag", false},
 	};
 
 	readonly string path;

@@ -18,6 +18,7 @@ sealed class LauncherContext {
 	public readonly long EfficiencyMask;  // the efficiency cores of a hybrid CPU as an affinity mask, or 0
 	public readonly List<GpuInfo> Gpus;
 	public readonly bool RtxGpu;          // DLSS (the upscaler and frame generation) needs an NVIDIA RTX graphics card
+	public readonly bool AmdGpu;          // an AMD Radeon graphics card (AMD Anti-Lag)
 	public readonly ulong RamBytes;
 	public readonly bool FsrAvailable;    // AMD's signed amd_fidelityfx_vk.dll next to the emulator (FSR 3 frame generation)
 	public string Streamline { get; private set; } // NVIDIA's signed Streamline runtime folder, or null
@@ -35,6 +36,7 @@ sealed class LauncherContext {
 		EfficiencyMask = Native.EfficiencyMask();
 		Gpus = GpuInfo.All();
 		RtxGpu = Gpus.Any(g => g.Name.IndexOf("NVIDIA", StringComparison.OrdinalIgnoreCase) >= 0 && HasWord(g.Name, "RTX"));
+		AmdGpu = Gpus.Any(g => g.Name.IndexOf("AMD", StringComparison.OrdinalIgnoreCase) >= 0 || g.Name.IndexOf("Radeon", StringComparison.OrdinalIgnoreCase) >= 0);
 		RamBytes = Native.TotalRam();
 		Streamline = ResolveStreamline();
 		var fsrDll = Path.Combine(Path.GetDirectoryName(EmulatorExe) ?? Root, "amd_fidelityfx_vk.dll");

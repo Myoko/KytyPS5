@@ -135,7 +135,15 @@ if [ "$MODE" = hints ]; then
 	arguments=(--game "$GAME" --seeds "$SEEDS" --make-hints "$out")
 	for file in "${RECORDINGS[@]}"; do arguments+=(--recorded "$file"); done
 	"$EXE" "${arguments[@]}" || die "making the hints failed (kyty_shader_precompile --make-hints)"
-	echo "hints: $out ($(( ($(stat -c %s "$out") + 1023) / 1024 )) KiB, no game code in it): attach it to an issue"
+	# Zipped as well when zip or python3 is there: GitHub takes a .zip as an attachment, not a .hints file.
+	rm -f "$out.zip"
+	if command -v zip > /dev/null; then
+		(cd "$(dirname "$out")" && zip -q "$(basename "$out").zip" "$(basename "$out")")
+	elif command -v python3 > /dev/null; then
+		python3 -c 'import sys, zipfile, os; zipfile.ZipFile(sys.argv[1] + ".zip", "w", zipfile.ZIP_DEFLATED).write(sys.argv[1], os.path.basename(sys.argv[1]))' "$out"
+	fi
+	[ -f "$out.zip" ] && out="$out.zip"
+	echo "hints: $out ($(( ($(stat -c %s "$out") + 1023) / 1024 )) KiB, no game code in it): attach it to a GitHub issue"
 	exit 0
 fi
 

@@ -2074,6 +2074,37 @@ private:
 		if (it != m_mapped.begin()) {
 			--it;
 		}
+#if defined(__linux__)
+		static const bool coalesce = [] {
+			const char* value = std::getenv("KYTY_LINUX_COALESCE_MPROTECT");
+			return value == nullptr || value[0] != '0';
+		}();
+		// Linux: mprotect spans adjacent mappings, so contiguous regions take one call (Windows' VirtualProtect cannot
+		// cross MapViewOfFile3 views, hence one call per region below). KYTY_LINUX_COALESCE_MPROTECT=0: one call per region.
+		if (coalesce) {
+			uint64_t   run_start = 0;
+			uint64_t   run_end   = 0;
+			const auto flush_run = [&]() {
+				if (run_start >= run_end) return true;
+				LiveTrace::SlowOsCallScope slow(LiveTrace::OsProtect, run_start, run_end - run_start);
+				return VirtualMemory::Protect(run_start, run_end - run_start, mode);
+			};
+			for (; it != m_mapped.end() && it->second.vaddr < end; ++it) {
+				const auto& region      = it->second;
+				const auto  range_start = std::max(vaddr, region.vaddr);
+				const auto  range_end   = std::min(end, region.vaddr + region.size);
+				if (range_start >= range_end) continue;
+				if (run_start < run_end && range_start == run_end) {
+					run_end = range_end;
+					continue;
+				}
+				if (!flush_run()) return false;
+				run_start = range_start;
+				run_end   = range_end;
+			}
+			return flush_run();
+		}
+#endif
 		for (; it != m_mapped.end() && it->second.vaddr < end; ++it) {
 			const auto& region      = it->second;
 			const auto  range_start = std::max(vaddr, region.vaddr);

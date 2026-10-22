@@ -1,4 +1,4 @@
-﻿param([switch]$DryRun)
+param([switch]$DryRun)
 # A small settings window in front of run-windows.ps1 and precompile-windows.ps1 (launcher.cmd opens it). The
 # settings and the console language names follow the KytyPS5 launcher (src/launcher, by the KytyPS5 developers);
 # they are kept in launcher-settings.json next to this script. -DryRun prints the commands without a window.
@@ -11,26 +11,45 @@ $cmd = if ($env:ComSpec -and (Test-Path -LiteralPath $env:ComSpec)) { $env:ComSp
 $powershellExe = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
 $powershellCommand = if (Test-Path -LiteralPath $powershellExe) { "`"$powershellExe`"" } else { 'powershell' }
 $settingsPath = Join-Path $root 'launcher-settings.json'
-$languages = '日语', '英语（美国）', '法语（法国）', '西班牙语（西班牙）', '德语', '意大利语', '荷兰语',
-	'葡萄牙语（葡萄牙）', '俄语', '韩语', '中文（繁体）', '中文（简体）', '芬兰语', '瑞典语',
-	'丹麦语', '挪威语', '波兰语', '葡萄牙语（巴西）', '英语（英国）', '土耳其语', '西班牙语（拉丁美洲）',
-	'阿拉伯语', '法语（加拿大）', '捷克语', '匈牙利语', '希腊语', '罗马尼亚语', '泰语', '越南语', '印尼语'
-$resolutions = '1280x720', '1920x1080', '2560x1440', '3840x2160', '2560x1080', '3440x1440', '3840x1600', '5120x2160',
-	'3840x1080', '5120x1440'
+$languages = 'Japanese', 'English (United States)', 'French (France)', 'Spanish (Spain)', 'German', 'Italian', 'Dutch',
+	'Portuguese (Portugal)', 'Russian', 'Korean', 'Chinese (Traditional)', 'Chinese (Simplified)', 'Finnish', 'Swedish',
+	'Danish', 'Norwegian', 'Polish', 'Portuguese (Brazil)', 'English (United Kingdom)', 'Turkish', 'Spanish (Latin America)',
+	'Arabic', 'French (Canada)', 'Czech', 'Hungarian', 'Greek', 'Romanian', 'Thai', 'Vietnamese', 'Indonesian'
+# The window's sizes for each aspect ratio of the 3D (below).
+$resolutionsByRatio = @{
+	'16:9' = '1280x720', '1920x1080', '2560x1440', '3840x2160'
+	'21:9' = '2560x1080', '3440x1440', '3840x1600', '5120x2160'
+	'32:9' = '3840x1080', '5120x1440', '7680x2160' }
 # The height Demon's Souls renders its 3D at (run-windows.ps1 -RenderHeight); its output and UI stay 3840x2160.
 $renderHeights = '2160 (native 4K)', '1800', '1620', '1512 (PS5 Pro)', '1440 (PS5)', '1296', '1152', '1080', '900'
 # What makes the 3840x2160 image of the 3D (run-windows.ps1 -Upscaler): the game's TAA and stretch (the PS5's), or DLSS in
 # place of Sony's PS5 Pro upscaler on the game's PS5 Pro path (NVIDIA's Streamline runtime, as frame generation).
-$upscalers = '游戏自带 (PS5)', 'DLSS（PS5 Pro 路径）'
-# Demon's Souls' own settings for what a frame draws (run-windows.ps1 -Quality): simpler shadows and distant detail.
+$upscalers = 'Game (PS5)', 'DLSS (PS5 Pro path)'
+# The aspect ratio of Demon's Souls' 3D (run-windows.ps1 -Aspect): wider sees more to the sides.
+$ratios = '16:9 (PS5)', '21:9', '32:9'
+# Demon's Souls' own settings for what a frame draws (run-windows.ps1 -Quality): shorter shadows, simpler distant detail;
+# and smaller textures (run-windows.ps1 -TextureReduce: Low 1, Lowest 2; Standard leaves it to the emulator: 1 below
+# 12 GB of video memory, else 0).
 $qualities = 'Standard (PS5)', 'Low', 'Lowest'
 # DLSS frame generation (run-windows.ps1 -FrameGen: the generated frames per rendered one, the multiplier less one).
-$frameGens = '关闭', '2x', '3x', '4x', '5x', '6x'
+$frameGens = 'Off', '2x', '3x', '4x', '5x', '6x'
 # The emulator's own panel at the top right of the game image (KYTY_FPS_HUD 0, 1, 2).
-$overlays = '关闭', '帧率', '详细'
+$overlays = 'Off', 'Frame rate', 'Detailed'
+# Safe GPU mode (KYTY_COMPUTE_CHAIN=0): Demon's Souls' compute work runs one dispatch after another instead of letting
+# the GPU overlap them. Slower, but it stops the GPU hangs ("device lost", the driver resetting the display) that some
+# PCs have: on an RTX 3080 Laptop with driver 566.07, 3 of 4 runs through 1-1 hung with overlap, none of 3 without it,
+# at 25-48% less frame rate there (13.9-17.7 fps instead of 26.8 at 1-1, 21-22 instead of 28.8 at 2-2).
+$safeGpuTip = "Prevents the crashes and blue screens that come from the graphics card hanging: 'device lost', the screen going`n" +
+	"black while the graphics driver restarts (a TDR), or a VIDEO_TDR_FAILURE blue screen. The emulator then runs Demon's Souls'`n" +
+	"compute work one step after another instead of letting the graphics card overlap the steps. The frame rate is about 37%`n" +
+	"lower (on a laptop RTX 3080 at Boletaria: 17 fps instead of 27). It does not help MEMORY_MANAGEMENT blue screens, which`n" +
+	"come from the RAM being full (see the README). Leave it off if the game runs without such crashes; a current graphics`n" +
+	"driver can help too."
 
-$settings = [ordered]@{ game = ''; resolution = '2560x1440'; fullscreen = $false; aspect = $true; language = 1; redzone = $true;
-	ecores = $false; cheats = $true; fps120 = $false; render = 1440; ratio = '16:9'; quality = 'standard'; vsync = $false; hdr = $false; framegen = 0; hud = 0; streamline = ''; safegpu = $false; upscaler = ''; fsr = $false }
+$settings = [ordered]@{ game = ''; resolution = '2560x1440'; fullscreen = $false; aspect = $true; language = 1; redzone = $true; cheats = $false;
+	ecores = $false; fps120 = $false; render = 1440; ratio = '16:9'; quality = 'standard'; vsync = $false; hdr = $false; framegen = 0
+	hud = 0; streamline = ''; safegpu = $false; upscaler = ''; render_dlss = 1080; fsr = $false; output = '4k'
+	lowlatency = $false; present_direct = $false; antilag = $false }
 if (Test-Path $settingsPath) {
 	$saved = Get-Content $settingsPath -Raw | ConvertFrom-Json
 	foreach ($property in $saved.PSObject.Properties) { if ($settings.Contains($property.Name)) { $settings[$property.Name] = $property.Value } }
@@ -101,17 +120,23 @@ function Resolve-Streamline {
 	return $null
 }
 $streamline = Resolve-Streamline
-$frameGenAvailable = [bool]$streamline
+# DLSS (the upscaler and frame generation) needs an NVIDIA RTX graphics card: with none (AMD, Intel, GeForce GTX) both
+# rows stay off and the game's own TAA makes the picture, at the render height the game's TAA keeps.
+$rtxGpu = try {
+	[bool](Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'NVIDIA' -and $_.Name -match '\bRTX\b' })
+} catch { $false }
+$frameGenAvailable = [bool]$streamline -and $rtxGpu
 # FSR 3.1 frame generation (run-windows -Fsr), any GPU: AMD's signed amd_fidelityfx_vk.dll next to the emulator.
 $fsrDll = Join-Path (Split-Path $exe) 'amd_fidelityfx_vk.dll'
 $fsrAvailable = (Test-Path -LiteralPath $fsrDll) -and
 	((Get-AuthenticodeSignature -LiteralPath $fsrDll).SignerCertificate.Subject -match 'O=Advanced Micro Devices')
 
-# The emulator's own launcher (src/launcher) applies _Patches\<title id>.json by itself; run-windows.ps1
-# passes one only when told to, so the title id is read here the way the title label reads it and the
-# file beside it is offered. Empty when the game has no such patch, so -Patch is then not passed.
-# The title id is remembered per path: for a .zar archive it takes one helper run (Read-GameParam).
+# Cheats (_Patches\<title id>.json)
+# A GoldHEN-style mods file: every mod has a name, an enabled flag and the memory writes it makes.
+# The emulator already honours "enabled" (src/loader/gamePatch.cpp skips a mod whose flag is false),
+# so choosing which mods to apply only means setting those flags.
 $cheatTitleIds = @{}
+
 function Get-CheatFile([string]$game) {
 	if (!$game) { return '' }
 	try {
@@ -126,13 +151,9 @@ function Get-CheatFile([string]$game) {
 	} catch {}
 	return ''
 }
-# ── 金手指（_Patches\<title id>.json）────────────────────────────────────────────
-# The engine already honours mods[].enabled (src/loader/gamePatch.cpp reads it), so the launcher can
-# turn each entry on and off on its own instead of only passing or not passing the whole file.
+
 function Read-CheatFile([string]$file) {
-	# The file is UTF-8 and its names are Chinese. Get-Content would read it as ANSI, which turns some
-	# characters into '?' and can break the JSON's quotes, so it is read with the encoding it was
-	# written in.
+	# The file is UTF-8; Get-Content would read it as ANSI and can break the quotes of its text.
 	return [System.IO.File]::ReadAllText($file, [System.Text.Encoding]::UTF8)
 }
 
@@ -184,24 +205,24 @@ function Save-CheatMods([string]$file, [string]$before, [bool[]]$wanted) {
 function Show-CheatDialog([string]$file) {
 	$data = $null
 	try { $data = Get-CheatData $file } catch {
-		[void][System.Windows.Forms.MessageBox]::Show("读不出金手指文件：`n$file`n`n$($_.Exception.Message)", '金手指')
+		[void][System.Windows.Forms.MessageBox]::Show("The cheat file cannot be read:`n$file`n`n$($_.Exception.Message)", 'Cheats')
 		return
 	}
 	$mods = @($data.mods)
 	if ($mods.Count -eq 0) {
-		[void][System.Windows.Forms.MessageBox]::Show("这个文件里没有金手指条目：`n$file", '金手指')
+		[void][System.Windows.Forms.MessageBox]::Show("That file holds no cheats:`n$file", 'Cheats')
 		return
 	}
 	$before = Read-CheatFile $file
 
 	$cheatForm = New-Object System.Windows.Forms.Form -Property @{
-		Text = '金手指 - ' + $(if ($data.name) { [string]$data.name } else { [string]$data.id })
+		Text = 'Cheats - ' + $(if ($data.name) { [string]$data.name } else { [string]$data.id })
 		StartPosition = 'CenterParent'
 		FormBorderStyle = 'FixedDialog'
 		MaximizeBox = $false
 		MinimizeBox = $false
 		ClientSize = New-Object System.Drawing.Size(600, 480)
-		Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9)
+		Font = New-Object System.Drawing.Font('Segoe UI', 9)
 	}
 	$cheatList = New-Object System.Windows.Forms.CheckedListBox -Property @{
 		Location = New-Object System.Drawing.Point(12, 12)
@@ -231,16 +252,16 @@ function Show-CheatDialog([string]$file) {
 		}
 	})
 
-	$all = New-Object System.Windows.Forms.Button -Property @{ Text = '全选'; Location = New-Object System.Drawing.Point(12, 436); Size = New-Object System.Drawing.Size(90, 28) }
+	$all = New-Object System.Windows.Forms.Button -Property @{ Text = 'Select all'; Location = New-Object System.Drawing.Point(12, 436); Size = New-Object System.Drawing.Size(100, 28) }
 	$all.Add_Click({
 		for ($i = 0; $i -lt $script:cheatDialogList.Items.Count; $i++) { $script:cheatDialogList.SetItemChecked($i, $true) }
 	})
-	$none = New-Object System.Windows.Forms.Button -Property @{ Text = '全不选'; Location = New-Object System.Drawing.Point(110, 436); Size = New-Object System.Drawing.Size(90, 28) }
+	$none = New-Object System.Windows.Forms.Button -Property @{ Text = 'Select none'; Location = New-Object System.Drawing.Point(120, 436); Size = New-Object System.Drawing.Size(100, 28) }
 	$none.Add_Click({
 		for ($i = 0; $i -lt $script:cheatDialogList.Items.Count; $i++) { $script:cheatDialogList.SetItemChecked($i, $false) }
 	})
-	$ok = New-Object System.Windows.Forms.Button -Property @{ Text = '确定'; Location = New-Object System.Drawing.Point(408, 436); Size = New-Object System.Drawing.Size(90, 28); DialogResult = 'OK' }
-	$cancel = New-Object System.Windows.Forms.Button -Property @{ Text = '取消'; Location = New-Object System.Drawing.Point(504, 436); Size = New-Object System.Drawing.Size(90, 28); DialogResult = 'Cancel' }
+	$ok = New-Object System.Windows.Forms.Button -Property @{ Text = 'OK'; Location = New-Object System.Drawing.Point(408, 436); Size = New-Object System.Drawing.Size(90, 28); DialogResult = 'OK' }
+	$cancel = New-Object System.Windows.Forms.Button -Property @{ Text = 'Cancel'; Location = New-Object System.Drawing.Point(504, 436); Size = New-Object System.Drawing.Size(90, 28); DialogResult = 'Cancel' }
 	$cheatForm.Controls.AddRange(@($all, $none, $ok, $cancel))
 	$cheatForm.AcceptButton = $ok
 	$cheatForm.CancelButton = $cancel
@@ -251,11 +272,11 @@ function Show-CheatDialog([string]$file) {
 	foreach ($i in 0..($mods.Count - 1)) { $wanted += [bool]$cheatList.GetItemChecked($i) }
 	$result = Save-CheatMods $file $before $wanted
 	if ($result -eq 'file-changed') {
-		[void][System.Windows.Forms.MessageBox]::Show('金手指文件在对话框打开期间被改动过，这次没有写入。', '金手指')
+		[void][System.Windows.Forms.MessageBox]::Show('The cheat file changed while the dialog was open; nothing was written.', 'Cheats')
 	} elseif ($result -eq 'count-changed') {
-		[void][System.Windows.Forms.MessageBox]::Show('金手指条目数量对不上，这次没有写入。', '金手指')
+		[void][System.Windows.Forms.MessageBox]::Show('The number of cheats does not match; nothing was written.', 'Cheats')
 	} elseif ($result -eq 'verify-failed') {
-		[void][System.Windows.Forms.MessageBox]::Show('写入后校验失败，已自动还原备份文件。', '金手指')
+		[void][System.Windows.Forms.MessageBox]::Show('The write could not be verified; the backup was restored.', 'Cheats')
 	}
 }
 
@@ -274,12 +295,10 @@ function Read-GameParam([string]$game) {
 	}
 	return $null
 }
+
 function Get-PlayCommand {
 	$size = $settings.resolution -split 'x'
-	# -Prompt is left out. Its version dialog has no don't-ask-again - only the precompile offer reads
-	# no-precompile-prompt.txt - so for a title run-windows.ps1 does not consider tested it would appear
-	# on every launch. The precompile has its own button below, so nothing is lost.
-	$arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$root\run-windows.ps1`"", '-Follow',
+	$arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$root\run-windows.ps1`"", '-Prompt', '-Follow',
 		'-Width', $size[0], '-Height', $size[1], '-Language', $settings.language)
 	# (-AspectFit with 21:9 or 32:9 would keep movies and menus at 16:9: the launcher's wider ratios fill the screen.)
 	if ($settings.fullscreen) {
@@ -288,37 +307,45 @@ function Get-PlayCommand {
 	}
 	if (!$settings.redzone) { $arguments += '-NoRedZone' }
 	if ($settings.fps120) { $arguments += '-Fps120' }
-	$dlss = $frameGenAvailable -and $settings.upscaler -eq 'dlss'
-	# (With DLSS 1440 is passed too: the PS5 Pro path's own height is 1512.)
-	if ([int]$settings.render -gt 0 -and ([int]$settings.render -ne 1440 -or $dlss)) { $arguments += @('-RenderHeight', [int]$settings.render) }
-	if ($settings.ratio -in '21:9', '32:9') { $arguments += @('-Aspect', $settings.ratio) }
 	# Presents wait for the display's refresh (Vulkan FIFO): no tearing, and G-SYNC/FreeSync displays keep adapting.
 	if ($settings.vsync) { $arguments += @('-PresentMode', 'Fifo') }
-# Demon's Souls' own settings for what a frame draws (run-windows.ps1 -Quality): shorter shadows, simpler distant detail;
-# and smaller textures (run-windows.ps1 -TextureReduce: Low 1, Lowest 2; Standard leaves it to the emulator: 1 below
-# 12 GB of video memory, else 0).
-if ($settings.quality -in 'low', 'lowest') {
-	$arguments += @('-Quality', $settings.quality, '-TextureReduce', $(if ($settings.quality -eq 'lowest') { 2 } else { 1 }))
-}
+	# One frame queued instead of about two ($lowLatencyTip).
+	# (AMD Anti-Lag, an experiment of KytyLauncher.exe, works on top of low latency.)
+	if ($settings.lowlatency -or $settings.antilag) { $arguments += '-LowLatency' }
 	# HDR10 output when Windows HDR is on for the display; SDR otherwise.
 	if ($settings.hdr) { $arguments += '-Hdr' }
+	# The cheats file of this title, when it has one: the emulator applies the mods left enabled in it.
+	if ($settings.cheats) {
+		$patch = Get-CheatFile $settings.game
+		if ($patch) { $arguments += @('-Patch', "`"$patch`"") }
+	}
+	$dlss = $frameGenAvailable -and $settings.upscaler -eq 'dlss'
+	# The upscaler's own render height (with DLSS always passed: the PS5 Pro path's own height is 1512).
+	$height = if ($dlss) { [int]$settings.render_dlss } else { [int]$settings.render }
+	if ($height -gt 0) { $arguments += @('-RenderHeight', $height) }
+	if ($settings.ratio -in '21:9', '32:9') { $arguments += @('-Aspect', $settings.ratio) }
+	if ($settings.quality -in 'low', 'lowest') {
+		$arguments += @('-Quality', $settings.quality, '-TextureReduce', $(if ($settings.quality -eq 'lowest') { 2 } else { 1 }))
+	}
 	$fsrOn = $fsrAvailable -and $settings.fsr
 	if ($fsrOn) { $arguments += '-Fsr' }
 	if (!$fsrOn -and $frameGenAvailable -and [int]$settings.framegen -ge 2) { $arguments += @('-FrameGen', ([int]$settings.framegen - 1)) }
 	if ($dlss) { $arguments += @('-Upscaler', 'dlss') }
+	# (DLSS makes the 4K output: the 1080p output only with the game's own upscale.)
+	if (!$dlss -and $settings.output -eq '1080p') { $arguments += '-HdOutput' }
 	if ($frameGenAvailable -and ((!$fsrOn -and [int]$settings.framegen -ge 2) -or $dlss)) { $arguments += @('-StreamlineDir', "`"$streamline`"") }
-	# The emulator's panel (KYTY_FPS_HUD) at the top right of the game image: the frame rate and frame times, or with
-	# the GPU, processor and memory too.
 	# Switches of the config, one -Set argument (run-windows.ps1 splits it at the commas).
 	$sets = @()
+	# The emulator's panel (KYTY_FPS_HUD) at the top right of the game image: the frame rate and frame times, or with
+	# the GPU, processor and memory too.
 	if ([int]$settings.hud -ge 1) { $sets += "KYTY_FPS_HUD=$([Math]::Min([int]$settings.hud, 2))" }
-	# Safe GPU mode: no overlapping compute dispatches (KYTY_COMPUTE_CHAIN=0).
+	# Safe GPU mode: no overlapping compute dispatches ($safeGpuTip).
 	if ($settings.safegpu) { $sets += 'KYTY_COMPUTE_CHAIN=0' }
+	# KytyLauncher.exe's experiments: direct presentation (issue #37) and AMD Anti-Lag.
+	if ($settings.present_direct) { $sets += 'KYTY_PRESENT_DIRECT=1' }
+	if ($settings.antilag) { $sets += 'KYTY_ANTI_LAG=1' }
 	if ($sets.Count) { $arguments += @('-Set', ($sets -join ',')) }
 	if ($settings.game) { $arguments += @('-Game', "`"$($settings.game)`"") }
-	# run-windows.ps1 passes --game-patch only for -Patch, and the emulator rejects it twice, so the
-	# file is added here rather than left to the emulator's own _Patches lookup.
-	if ($settings.cheats) { $patch = Get-CheatFile $settings.game; if ($patch) { $arguments += @('-Patch', "`"$patch`"") } }
 	# The console stays for the live log; after a crash it waits for a key.
 	return "$powershellCommand " + ($arguments -join ' ') + ' & if !errorlevel! neq 0 pause'
 }
@@ -335,7 +362,7 @@ if ($DryRun) {
 	"precompile: cmd /s /c `"$(Get-PrecompileCommand)`""
 	"hints:      cmd /s /c `"$(Get-PrecompileCommand '-ExportHints')`""
 	"efficiency cores: 0x{0:X}" -f $efficiencyMask
-	"frame generation: $(if ($frameGenAvailable) { "NVIDIA's Streamline runtime in $streamline" } else { "no NVIDIA-signed Streamline runtime (settings: '$($settings.streamline)')" })"
+	"frame generation: $(if ($frameGenAvailable) { "NVIDIA's Streamline runtime in $streamline" } elseif (!$rtxGpu) { 'no NVIDIA RTX graphics card (DLSS off)' } else { "no NVIDIA-signed Streamline runtime (settings: '$($settings.streamline)')" })"
 	return
 }
 
@@ -345,7 +372,7 @@ Add-Type -Namespace KytyLauncher -Name Dpi -MemberDefinition '[DllImport("user32
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 $form = New-Object System.Windows.Forms.Form -Property @{
-	Text = 'KytyPS5 启动器'; FormBorderStyle = 'FixedDialog'; MaximizeBox = $false; StartPosition = 'CenterScreen'
+	Text = 'KytyPS5 launcher'; FormBorderStyle = 'FixedDialog'; MaximizeBox = $false; StartPosition = 'CenterScreen'
 	AutoSize = $true; AutoSizeMode = 'GrowAndShrink'; Font = New-Object System.Drawing.Font('Segoe UI', 9); Padding = '12,12,12,8'
 }
 $grid = New-Object System.Windows.Forms.TableLayoutPanel -Property @{ ColumnCount = 2; AutoSize = $true; Dock = 'Fill' }
@@ -359,14 +386,14 @@ function Add-Row($label, [object[]]$controls) {
 }
 
 $game = New-Object System.Windows.Forms.TextBox -Property @{ Text = $settings.game; Width = 440 }
-$browse = New-Object System.Windows.Forms.Button -Property @{ Text = '浏览…'; AutoSize = $true }
-$browseZar = New-Object System.Windows.Forms.Button -Property @{ Text = '选 .zar…'; AutoSize = $true }
-Add-Row '游戏目录' @($game, $browse, $browseZar)
+$browse = New-Object System.Windows.Forms.Button -Property @{ Text = 'Browse...'; AutoSize = $true }
+$browseZar = New-Object System.Windows.Forms.Button -Property @{ Text = '.zar...'; AutoSize = $true }
+Add-Row 'Game folder' @($game, $browse, $browseZar)
 $title = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray' }
 Add-Row '' @($title)
 # A game: its folder (eboot.bin and sce_sys) or the folder packed into a ZArchive (a .zar file).
 function Update-Title {
-	$title.Text = '请选择含 eboot.bin 与 sce_sys 的游戏目录（游戏转储），或它的 .zar 打包档'
+	$title.Text = 'Choose the folder with eboot.bin and sce_sys (the game dump), or a .zar archive of it.'
 	try {
 		$json = Read-GameParam $game.Text.Trim()
 		if ($json) {
@@ -374,59 +401,47 @@ function Update-Title {
 				$json.titleId, $json.contentVersion
 		}
 	} catch {}
-	# The cheat line is about the folder as it is being typed, not about the last saved setting.
-	if ($cheatNote) {
-		$patch = Get-CheatFile $game.Text.Trim()
-		$cheatCounts = if ($patch) { Get-CheatCounts $patch } else { $null }
-		$cheatNote.Text = if ($patch) {
-			'套用 ' + [System.IO.Path]::GetFileName($patch) + "（$($cheatCounts.on)/$($cheatCounts.total) 条启用）"
-		} else { '此处没有 _Patches\<title id>.json' }
-	}
 }
 $browse.Add_Click({
-	$dialog = New-Object System.Windows.Forms.FolderBrowserDialog -Property @{ Description = '游戏目录（含 eboot.bin、sce_sys）' }
+	$dialog = New-Object System.Windows.Forms.FolderBrowserDialog -Property @{ Description = 'The game folder (eboot.bin, sce_sys)' }
 	if ($game.Text -and (Test-Path -LiteralPath $game.Text -PathType Container)) { $dialog.SelectedPath = $game.Text }
 	if ($dialog.ShowDialog($form) -eq 'OK') { $game.Text = $dialog.SelectedPath }
 })
 # The game folder packed into a ZArchive (zarchive.exe <folder> <file.zar>): read without extracting it.
 $browseZar.Add_Click({
-	$dialog = New-Object System.Windows.Forms.OpenFileDialog -Property @{ Title = '选择打包成 ZArchive 的游戏目录'; Filter = 'ZArchive (*.zar)|*.zar' }
+	$dialog = New-Object System.Windows.Forms.OpenFileDialog -Property @{ Title = 'The game folder packed into a ZArchive'; Filter = 'ZArchive (*.zar)|*.zar' }
 	if ($game.Text -and (Test-Path -LiteralPath $game.Text -PathType Leaf)) { $dialog.InitialDirectory = Split-Path $game.Text }
 	if ($dialog.ShowDialog($form) -eq 'OK') { $game.Text = $dialog.FileName }
 })
 $game.Add_TextChanged({ Update-Title })
 Update-Title
 
-$resolution = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 160 }
-$resolution.Items.AddRange($resolutions)
-$resolution.SelectedItem = if ($resolutions -contains $settings.resolution) { $settings.resolution } else { '2560x1440' }
-Add-Row '分辨率' @($resolution)
-$fullscreen = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '全屏'; AutoSize = $true; Checked = [bool]$settings.fullscreen }
-$aspect = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '保持 16:9（黑边）'; AutoSize = $true; Checked = [bool]$settings.aspect }
-$aspect.Enabled = $fullscreen.Checked
-$fullscreen.Add_CheckedChanged({ $aspect.Enabled = $fullscreen.Checked })
-Add-Row '' @($fullscreen, $aspect)
-$language = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 320 }
-$language.Items.AddRange($languages)
-$language.SelectedIndex = [Math]::Max(0, [Math]::Min($languages.Count - 1, [int]$settings.language))
-Add-Row '主机语言' @($language)
-$redzone = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '红区保护（推荐）'; AutoSize = $true; Checked = [bool]$settings.redzone }
-Add-Row '' @($redzone)
-$fps120 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '最高 120 fps（游戏自身的帧；过场动画保持 60）'; AutoSize = $true; Checked = [bool]$settings.fps120 }
-Add-Row '' @($fps120)
-$vsync = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '垂直同步（不撕裂；自适应同步显示器保持生效）'; AutoSize = $true; Checked = [bool]$settings.vsync }
-Add-Row '' @($vsync)
-$hdr = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'HDR（需先在 Windows 显示设置里打开"使用 HDR"）'; AutoSize = $true; Checked = [bool]$settings.hdr }
-Add-Row '' @($hdr)
-# 当前画面比例的 3D 宽高比（与 run-windows.ps1 -Aspect 一致）。
-function Get-RatioAspect {
-	switch ((($ratio.SelectedItem -split ' ')[0])) {
-		'21:9' { 64.0 / 27.0 }
-		'32:9' { 32.0 / 9.0 }
-		default { 16.0 / 9.0 }
+# The picture's size, shape and detail, side by side: the aspect ratio offers the resolutions of its shape (a 21:9
+# picture in a 3840x2160 window was stretched back to 16:9) and the render heights whose 3D the game holds (no larger
+# than its own 3840x2160 in GPU tiles: 21:9 at 2160 ended it at start-up, 1864 drew it red; src/loader/demonsSoulsRenderSize.h).
+$ratio = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 205 }
+$ratio.Items.AddRange($ratios)
+$ratio.SelectedItem = ($ratios | Where-Object { ($_ -split ' ')[0] -eq [string]$settings.ratio } | Select-Object -First 1)
+if ($ratio.SelectedIndex -lt 0) { $ratio.SelectedIndex = 0 }
+$ratioNote = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0'
+	Text = '21:9 and 32:9 show more to the sides; the HUD keeps its shape, menus and movies are stretched' }
+function Get-Ratio { ([string]$ratio.SelectedItem -split ' ')[0] }
+function Get-RatioAspect { switch (Get-Ratio) { '21:9' { 64.0 / 27.0 } '32:9' { 32.0 / 9.0 } default { 16.0 / 9.0 } } }
+$resolution = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 205 }
+# The ratio's resolutions; `wanted` kept when it is one of them, else the one nearest its height.
+function Update-Resolutions([string]$wanted) {
+	$list = $resolutionsByRatio[(Get-Ratio)]
+	$resolution.Items.Clear()
+	$resolution.Items.AddRange($list)
+	$height = [int](($wanted -split 'x')[1])
+	$resolution.SelectedItem = if ($list -contains $wanted) { $wanted } else {
+		$list | Sort-Object { [Math]::Abs([int](($_ -split 'x')[1]) - $height) } | Select-Object -First 1
 	}
 }
-# 该比例下游戏渲染目标显存能容纳的最高渲染高度：瓦片数不超过 3840x2160 所用的（超过会开机崩或画面变红）。
+Update-Resolutions $settings.resolution
+$render = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 205 }
+# The highest render height whose 3D at the ratio fits the game's render target memory, made for 3840x2160: no more of
+# the GPU's 64 KiB tiles (256x128, 128x128, 128x64, 64x64 pixels) than 3840x2160 (the emulator's FitsRenderTargets).
 function Get-MaxRenderHeight {
 	$aspectValue = Get-RatioAspect
 	for ($h = 2160; $h -ge 720; $h -= 8) {
@@ -440,55 +455,136 @@ function Get-MaxRenderHeight {
 	}
 	720
 }
-# 只把当前比例允许的渲染高度放进下拉列表。
-function Fill-RenderHeights {
+# Each upscaler keeps its own render height (settings render, render_dlss): the row shows the height last chosen for the
+# chosen upscaler ($renderWanted) among those the ratio allows; one above them shows as the highest allowed (and comes
+# back with a ratio that allows it), one not in the list as the upscaler's default.
+function Get-RenderFallback { if ($script:renderForDlss) { 1080 } else { 1440 } }
+function Select-RenderHeight {
 	$most = Get-MaxRenderHeight
 	$allowed = @($renderHeights | Where-Object { [int](($_ -split ' ')[0]) -le $most })
-	$render.Items.Clear()
-	$render.Items.AddRange($allowed)
+	$script:fillingRender = $true
+	try {
+		$render.Items.Clear()
+		$render.Items.AddRange($allowed)
+		if ($script:renderWanted -gt $most) { $render.SelectedIndex = 0; return }
+		foreach ($wanted in @($script:renderWanted, (Get-RenderFallback))) {
+			$render.SelectedItem = ($allowed | Where-Object { ($_ -split ' ')[0] -eq [string]$wanted } | Select-Object -First 1)
+			if ($render.SelectedIndex -ge 0) { return }
+		}
+		$render.SelectedIndex = 0
+	} finally {
+		$script:fillingRender = $false
+	}
 }
-$render = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 160 }
-	Fill-RenderHeights
-$render.SelectedItem = ($renderHeights | Where-Object { ($_ -split ' ')[0] -eq [string][int]$settings.render } | Select-Object -First 1)
-if ($render.SelectedIndex -lt 0) { $render.SelectedItem = '1440 (PS5)' }
-$renderNote = New-Object System.Windows.Forms.Label -Property @{ Text = '《恶魔之魂》的 3D；越高越清晰、越吃显卡'; AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
-$upscaler = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 160; Enabled = $frameGenAvailable }
+$renderNote = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
+function Update-RenderNote {
+	$h = [int](([string]$render.SelectedItem -split ' ')[0])
+	# (The 1080p output's 3D is at most 1080 high: $output below.)
+	$capped = $output -and $output.Enabled -and $output.SelectedIndex -eq 1 -and $h -gt 1080
+	if ($capped) { $h = 1080 }
+	$w = [Math]::Floor($h * (Get-RatioAspect) / 8.0 + 0.5) * 8
+	$renderNote.Text = if ($capped) { "Demon's Souls' 3D at ${w}x${h} (1080 at most with the 1080p output)" } else { "Demon's Souls' 3D at ${w}x${h}; higher = sharper, needs more GPU" }
+}
+$render.Add_SelectedIndexChanged({
+	if (!$script:fillingRender) { $script:renderWanted = [int](([string]$render.SelectedItem -split ' ')[0]) }
+	Update-RenderNote
+})
+$renderForDlss = $frameGenAvailable -and $settings.upscaler -eq 'dlss'
+$renderWanted = [int]$(if ($renderForDlss) { $settings.render_dlss } else { $settings.render })
+Select-RenderHeight
+Update-RenderNote
+$ratio.Add_SelectedIndexChanged({
+	Update-Resolutions ([string]$resolution.SelectedItem)
+	Select-RenderHeight
+	Update-RenderNote
+})
+$upscaler = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 205; Enabled = $frameGenAvailable }
 $upscaler.Items.AddRange($upscalers)
 $upscaler.SelectedIndex = if ($frameGenAvailable -and $settings.upscaler -eq 'dlss') { 1 } else { 0 }
 $upscalerNote = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
 function Update-UpscalerNote {
-	$upscalerNote.Text = if ($frameGenAvailable) { 'DLSS：NVIDIA RTX；1440 = 画质、1080 = 性能、2160 = DLAA' } else {
-		'需要 NVIDIA 的 Streamline SDK（在「帧生成」那里选它的文件夹）' }
+	$upscalerNote.Text = if ($frameGenAvailable) { 'DLSS: NVIDIA RTX; 1440 = Quality, 1080 = Performance, 2160 = DLAA' }
+		elseif (!$rtxGpu) { 'DLSS needs an NVIDIA RTX graphics card: here the game''s own TAA' }
+		else { 'needs NVIDIA''s Streamline SDK (choose its folder under Frame generation)' }
 }
 Update-UpscalerNote
 (New-Object System.Windows.Forms.ToolTip -Property @{ AutoPopDelay = 30000 }).SetToolTip($upscaler,
-	"游戏自带：PS5 的性能模式 —— 3D 在设定高度由游戏自己的 TAA 抗锯齿，再拉伸到 4K。`n" +
-	"DLSS：走游戏自己的 PS5 Pro 模式，把索尼的上采样器（PSSR）换成 NVIDIA DLSS —— 3D 按设定高度渲染`n" +
-	"（1512 时是 PS5 Pro 的 2688x1512；最低 1080），由 DLSS 生成 3840x2160，再由游戏补完到 4K（泛光、景深、HUD）。`n" +
-	"比拉伸更清晰，代价是吃一些显卡性能。游戏内的电影模式仍是原生 4K、不走 DLSS。")
-Add-Row '渲染高度' @($render, $renderNote)
-Add-Row '上采样' @($upscaler, $upscalerNote)
-$ratios = '16:9 (PS5)', '21:9', '32:9'
-$ratio = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 160 }
-$ratio.Items.AddRange($ratios)
-$ratio.SelectedItem = ($ratios | Where-Object { ($_ -split ' ')[0] -eq [string]$settings.ratio } | Select-Object -First 1)
-if ($ratio.SelectedIndex -lt 0) { $ratio.SelectedIndex = 0 }
-$ratio.Add_SelectedIndexChanged({
-	$kept = [string]$render.SelectedItem
-	Fill-RenderHeights
-	$render.SelectedItem = if ($render.Items -contains $kept) { $kept } else { $render.Items[0] }
+	"Game: the PS5's performance mode, its 3D anti-aliased by the game's TAA at the render height and stretched to 4K.`n" +
+	"DLSS: the game's own PS5 Pro mode, Sony's upscaler (PSSR) replaced by NVIDIA DLSS: the 3D at the render height (2688x1512`n" +
+	"at 1512, the PS5 Pro's; 1080 at least) made a 3840x2160 image the game finishes at 4K (bloom, depth of field, the HUD).`n" +
+	"Sharper than the stretch, at some GPU cost. The in-game Cinematic mode stays native 4K without DLSS.`n" +
+	"Each upscaler keeps its own render height. DLSS starts at 1080: on an RTX 5090 about the frame rate of the game's TAA`n" +
+	"at 1440, with a sharper 4K image.")
+$upscaler.Add_SelectedIndexChanged({
+	# The height chosen goes back to the upscaler it was for; the newly chosen one's is shown.
+	if ($script:renderForDlss) { $settings.render_dlss = $script:renderWanted } else { $settings.render = $script:renderWanted }
+	$script:renderForDlss = $upscaler.SelectedIndex -eq 1
+	$script:renderWanted = [int]$(if ($script:renderForDlss) { $settings.render_dlss } else { $settings.render })
+	Select-RenderHeight
+	Update-RenderNote
 })
-$ratioNote = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0'
-	Text = '3D 画面更宽（两侧看得更多）；HUD 保持形状、菜单会被拉伸、过场保持 16:9' }
-Add-Row '画面比例' @($ratio, $ratioNote)
+Add-Row 'Resolution' @($resolution)
+Add-Row 'Aspect ratio' @($ratio, $ratioNote)
+Add-Row 'Render height' @($render, $renderNote)
+Add-Row 'Upscaler' @($upscaler, $upscalerNote)
+# The game's output (run-windows.ps1 -HdOutput, src/loader/demonsSoulsHdOutput.h): 4K, or the game's own 1080p mode, its
+# post-processing and HUD at 1920x1080 and its 3D at most 1080 high. DLSS makes the 4K output: the row is off with it.
+$output = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 205 }
+$output.Items.AddRange(@('4K (PS5)', '1080p'))
+$output.SelectedIndex = if ($settings.output -eq '1080p') { 1 } else { 0 }
+$outputNote = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0'
+	Text = '1080p: the game''s own HD mode, effects and HUD at 1920x1080; less GPU work; not with DLSS' }
+$output.Enabled = $upscaler.SelectedIndex -ne 1
+$output.Add_SelectedIndexChanged({ Update-RenderNote })
+$upscaler.Add_SelectedIndexChanged({ $output.Enabled = $upscaler.SelectedIndex -ne 1; Update-RenderNote })
+Add-Row 'Game output' @($output, $outputNote)
+Update-RenderNote
+$fullscreen = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Fullscreen'; AutoSize = $true; Checked = [bool]$settings.fullscreen }
+$aspect = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Keep the aspect ratio (black bars)'; AutoSize = $true; Checked = [bool]$settings.aspect }
+$aspect.Enabled = $fullscreen.Checked
+$fullscreen.Add_CheckedChanged({ $aspect.Enabled = $fullscreen.Checked })
+Add-Row '' @($fullscreen, $aspect)
+$language = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 320 }
+$language.Items.AddRange($languages)
+$language.SelectedIndex = [Math]::Max(0, [Math]::Min($languages.Count - 1, [int]$settings.language))
+Add-Row 'Console language' @($language)
+$redzone = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Red-zone protection (recommended)'; AutoSize = $true; Checked = [bool]$settings.redzone }
+Add-Row '' @($redzone)
+$fps120 = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Up to 120 fps (the game''s own frames; movies stay at 60)'; AutoSize = $true; Checked = [bool]$settings.fps120 }
+Add-Row '' @($fps120)
+$vsync = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'VSync (no screen tearing; adaptive sync displays keep it)'; AutoSize = $true; Checked = [bool]$settings.vsync }
+Add-Row '' @($vsync)
+$lowLatencyTip = "The game keeps one finished frame waiting for the screen instead of about two, so what you press shows sooner:`n" +
+	"at 60 Hz about 15-23 ms from the game's frame to the screen instead of about 30. A frame that comes late is then no`n" +
+	"longer covered by a waiting one, so the frame pacing is a little less even."
+$lowLatency = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Low latency (less input lag, slightly less even frame pacing)'; AutoSize = $true; Checked = [bool]$settings.lowlatency }
+(New-Object System.Windows.Forms.ToolTip -Property @{ AutoPopDelay = 30000 }).SetToolTip($lowLatency, $lowLatencyTip)
+Add-Row '' @($lowLatency)
+$hdr = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'HDR (turn on "Use HDR" in Windows display settings first)'; AutoSize = $true; Checked = [bool]$settings.hdr }
+Add-Row '' @($hdr)
+$safeGpu = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Safe GPU mode: prevents GPU-hang crashes and blue screens, but the frame rate is about 37% lower'; AutoSize = $true; Checked = [bool]$settings.safegpu }
+(New-Object System.Windows.Forms.ToolTip -Property @{ AutoPopDelay = 30000 }).SetToolTip($safeGpu, $safeGpuTip)
+Add-Row '' @($safeGpu)
+$cheats = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Cheats (_Patches\<title id>.json)'; AutoSize = $true; Checked = [bool]$settings.cheats }
+Add-Row '' @($cheats)
+$cheatButton = New-Object System.Windows.Forms.Button -Property @{ Text = 'Select...'; AutoSize = $true }
+$cheatButton.Add_Click({
+	$cheatFile = Get-CheatFile $game.Text.Trim()
+	if (!$cheatFile) {
+		[void][System.Windows.Forms.MessageBox]::Show('There is no _Patches\<title id>.json for this game.', 'Cheats')
+		return
+	}
+	Show-CheatDialog $cheatFile
+})
+Add-Row '' @($cheatButton)
 $quality = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 205 }
 $quality.Items.AddRange($qualities)
 $quality.SelectedItem = ($qualities | Where-Object { ($_ -split ' ')[0] -eq [string]$settings.quality } | Select-Object -First 1)
 if ($quality.SelectedIndex -lt 0) { $quality.SelectedIndex = 0 }
-$qualityNote = New-Object System.Windows.Forms.Label -Property @{ Text = '更短的阴影、更简的细节、更小的纹理；弱机上更快'; AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
+$qualityNote = New-Object System.Windows.Forms.Label -Property @{ Text = 'shorter shadows, simpler detail, smaller textures; faster on weaker PCs'; AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
 $qualityTips = New-Object System.Windows.Forms.ToolTip
-$qualityTips.SetToolTip($quality, "标准：PS5 的画面。显存不足 12 GB 时，大纹理省掉最大的一级（每边减半）以便放得下。`n低：更短的太阳阴影、更简单的远景细节，纹理每边减半。`n最低：阴影更短，且不再有环境遮蔽与火把阴影，纹理每边减为四分之一。")
-Add-Row '画质' @($quality, $qualityNote)
+$qualityTips.SetToolTip($quality, "Standard: the PS5's picture. With less than 12 GB of video memory, large textures leave out their largest level`n(half the size per side) so that they fit.`nLow: shorter sun shadows, simpler distant detail, textures half the size per side.`nLowest: shorter still, no ambient shadowing or torch shadows, textures a quarter the size per side.")
+Add-Row 'Graphics' @($quality, $qualityNote)
 $frameGen = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 160; Enabled = $frameGenAvailable }
 $frameGen.Items.AddRange($frameGens)
 $frameGen.SelectedItem = if ($frameGenAvailable -and [int]$settings.framegen -ge 2) { "$([int]$settings.framegen)x" } else { 'Off' }
@@ -496,8 +592,9 @@ if ($frameGen.SelectedIndex -lt 0) { $frameGen.SelectedIndex = 0 }
 $frameGenFolder = New-Object System.Windows.Forms.Button -Property @{ Text = 'Streamline...'; AutoSize = $true }
 $frameGenNote = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
 function Update-FrameGenNote {
-	$frameGenNote.Text = if ($frameGenAvailable) { 'DLSS；需要 NVIDIA RTX 40 或更新（3x 及以上：RTX 50）' } else {
-		'需要 NVIDIA 的 Streamline SDK：下载后用「Streamline...」选择它的文件夹' }
+	$frameGenNote.Text = if ($frameGenAvailable) { 'DLSS; NVIDIA RTX 40 or newer (3x and up: RTX 50)' }
+		elseif (!$rtxGpu) { 'DLSS: needs an NVIDIA RTX 40 or newer graphics card' }
+		else { 'needs NVIDIA''s Streamline SDK: download it, then choose its folder' }
 }
 Update-FrameGenNote
 $frameGenTips = New-Object System.Windows.Forms.ToolTip
@@ -515,70 +612,42 @@ $frameGenFolder.Add_Click({
 	}
 	$settings.streamline = $dialog.SelectedPath
 	$script:streamline = $found
-	$script:frameGenAvailable = $true
-	$upscaler.Enabled = $true
-	Update-UpscalerNote
-	$frameGen.Enabled = $true
+	# (Without an NVIDIA RTX graphics card the folder is kept, the rows stay off.)
+	$script:frameGenAvailable = $rtxGpu
+	$frameGen.Enabled = $rtxGpu
+	$upscaler.Enabled = $rtxGpu
 	Update-FrameGenNote
+	Update-UpscalerNote
 })
-$fsr = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'AMD FSR 3 帧生成（2x，任何显卡；替代 DLSS）'; AutoSize = $true
+Add-Row 'Frame generation' @($frameGen, $frameGenFolder, $frameGenNote)
+$fsr = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'AMD FSR 3 frame generation (2x, any GPU; instead of DLSS)'; AutoSize = $true
 	Checked = ($fsrAvailable -and [bool]$settings.fsr); Enabled = $fsrAvailable }
-(New-Object System.Windows.Forms.ToolTip).SetToolTip($fsr, "AMD FidelityFX FSR 3.1：在游戏的两帧之间生成一帧，用它的深度和运动信息。`n" +
-	"开了垂直同步时，显示帧数受显示器刷新率限制（60 Hz 显示器下游戏按 30 fps 跑）。`n" +
-	"需要把 amd_fidelityfx_vk.dll 放在模拟器旁边。")
+(New-Object System.Windows.Forms.ToolTip).SetToolTip($fsr, "AMD FidelityFX FSR 3.1: one generated frame between two of the game's, from its depth and motion.`n" +
+	"With VSync on, the shown frames are capped at the display's refresh (a 60 Hz display runs the game at 30 fps).`nNeeds amd_fidelityfx_vk.dll next to the emulator.")
 Add-Row '' @($fsr)
-Add-Row '帧生成' @($frameGen, $frameGenFolder, $frameGenNote)
 $hud = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 160 }
 $hud.Items.AddRange($overlays)
 # (An older launcher saved true for the frame rate.)
 $hud.SelectedIndex = [Math]::Max(0, [Math]::Min($overlays.Count - 1, [int]$settings.hud))
-$hudNote = New-Object System.Windows.Forms.Label -Property @{ Text = '右上角：帧率与帧时间；详细：GPU、CPU、内存。游戏内按 F8 切换'; AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
-Add-Row '覆盖层' @($hud, $hudNote)
-$safeGpuTip = "避免显卡挂死造成的崩溃与蓝屏：'device lost'、驱动重启时黑屏（TDR）、或 VIDEO_TDR_FAILURE 蓝屏。`n" +
-	"开启后模拟器把恶魔之魂的计算工作一步一步串行执行，不再让显卡重叠执行。`n" +
-	"代价是帧率约低 37%（笔记本 RTX 3080 在波雷塔利亚：27 → 17 fps）。`n" +
-	"它不能解决 MEMORY_MANAGEMENT 蓝屏（那是内存塞满，见 README）。`n" +
-	"如果游戏本来不出现这类崩溃就别开；更新显卡驱动也有帮助。"
-$safeGpu = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '安全 GPU 模式：避免显卡挂死导致的崩溃与蓝屏，但帧率约低 37%'; AutoSize = $true; Checked = [bool]$settings.safegpu }
-(New-Object System.Windows.Forms.ToolTip -Property @{ AutoPopDelay = 30000 }).SetToolTip($safeGpu, $safeGpuTip)
-Add-Row '安全 GPU 模式' @($safeGpu)
-$ecores = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '只用能效核预编译（更慢，但电脑保持流畅）'; AutoSize = $true
+$hudNote = New-Object System.Windows.Forms.Label -Property @{ Text = 'top right: frame rate and frame times; detailed: GPU, CPU, memory. F8 in the game switches it'; AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
+Add-Row 'Overlay' @($hud, $hudNote)
+$ecores = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Precompile on the efficiency cores only (slower, the PC stays responsive)'; AutoSize = $true
 	Checked = ([bool]$settings.ecores -and $efficiencyMask -ne 0); Enabled = ($efficiencyMask -ne 0) }
 Add-Row '' @($ecores)
-$cheats = New-Object System.Windows.Forms.CheckBox -Property @{ Text = '金手指 (_Patches\<title id>.json)'; AutoSize = $true
-	Checked = [bool]$settings.cheats }
-$cheatButton = New-Object System.Windows.Forms.Button -Property @{ Text = '选择...'; AutoSize = $true }
-$cheatButton.Add_Click({
-	$cheatFile = Get-CheatFile $game.Text.Trim()
-	if (!$cheatFile) {
-		[void][System.Windows.Forms.MessageBox]::Show('没有找到 _Patches\<title id>.json。', '金手指')
-		return
-	}
-	Show-CheatDialog $cheatFile
-	Update-Title
-})
-Add-Row '' @($cheats, $cheatButton)
-$cheatNote = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray' }
-Add-Row '' @($cheatNote)
-Update-Title
 
 $buttons = New-Object System.Windows.Forms.FlowLayoutPanel -Property @{ AutoSize = $true; Margin = '0,10,0,0' }
-$play = New-Object System.Windows.Forms.Button -Property @{ Text = '开始游戏'; AutoSize = $true; Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold) }
-$precompile = New-Object System.Windows.Forms.Button -Property @{ Text = '预编译着色器'; AutoSize = $true }
-$share = New-Object System.Windows.Forms.Button -Property @{ Text = '导出着色器 hints'; AutoSize = $true }
-(New-Object System.Windows.Forms.ToolTip).SetToolTip($share, ('把你这次游玩记录到的着色器导出为 my-hints-<game>.hints（不含游戏代码）：' +
-	'附到 GitHub issue 里，下一个版本的预编译就会带上它们。'))
-$logs = New-Object System.Windows.Forms.Button -Property @{ Text = '日志目录'; AutoSize = $true }
-$readme = New-Object System.Windows.Forms.Button -Property @{ Text = '说明 (README)'; AutoSize = $true }
-$buttons.Controls.AddRange(@($play, $precompile, $logs, $readme))
-$share.Add_Click({
-	Read-Form
-	Start-Process $cmd -ArgumentList "/s /c `"$(Get-PrecompileCommand '-ExportHints')`"" -WorkingDirectory $root
-})
+$play = New-Object System.Windows.Forms.Button -Property @{ Text = 'Play'; AutoSize = $true; Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold) }
+$precompile = New-Object System.Windows.Forms.Button -Property @{ Text = 'Precompile shaders'; AutoSize = $true }
+$share = New-Object System.Windows.Forms.Button -Property @{ Text = 'Export shader hints'; AutoSize = $true }
+(New-Object System.Windows.Forms.ToolTip).SetToolTip($share, ('The shaders your play recorded, without the game''s code, as my-hints-<game>.hints.zip: ' +
+	'attached to a GitHub issue, the next packages precompile them for everyone.'))
+$logs = New-Object System.Windows.Forms.Button -Property @{ Text = 'Logs folder'; AutoSize = $true }
+$readme = New-Object System.Windows.Forms.Button -Property @{ Text = 'README'; AutoSize = $true }
+$buttons.Controls.AddRange(@($play, $precompile, $share, $logs, $readme))
 $grid.Controls.Add($buttons)
 $grid.SetColumnSpan($buttons, 2)
 $credit = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray'; Margin = '0,8,0,0'
-	Text = '设置项沿用 KytyPS5 开发者的原版启动器（src/launcher）。' }
+	Text = 'Settings follow the KytyPS5 launcher (src/launcher) by the KytyPS5 developers.' }
 $grid.Controls.Add($credit)
 $grid.SetColumnSpan($credit, 2)
 $form.AcceptButton = $play
@@ -592,18 +661,21 @@ function Read-Form {
 	$settings.redzone    = $redzone.Checked
 	$settings.fps120     = $fps120.Checked
 	$settings.vsync      = $vsync.Checked
+	$settings.lowlatency = $lowLatency.Checked
 	$settings.hdr        = $hdr.Checked
-	$settings.hud        = $hud.SelectedIndex
+	$settings.cheats     = $cheats.Checked
 	$settings.safegpu    = $safeGpu.Checked
-	$settings.render     = [int](([string]$render.SelectedItem -split ' ')[0])
-	$settings.quality    = ([string]$quality.SelectedItem -split ' ')[0].ToLowerInvariant()
+	$settings.hud        = $hud.SelectedIndex
+	$height              = [int](([string]$render.SelectedItem -split ' ')[0])
+	if ($renderForDlss) { $settings.render_dlss = $height } else { $settings.render = $height }
 	$settings.ratio      = ([string]$ratio.SelectedItem -split ' ')[0]
+	$settings.quality    = ([string]$quality.SelectedItem -split ' ')[0].ToLowerInvariant()
+	$settings.output     = if ($output.SelectedIndex -eq 1) { '1080p' } else { '4k' }
 	# (Kept as it was where the DLLs are missing.)
 	if ($frameGenAvailable) { $settings.framegen = if ($frameGen.SelectedIndex -gt 0) { $frameGen.SelectedIndex + 1 } else { 0 } }
-	if ($fsrAvailable) { $settings.fsr = $fsr.Checked }
 	if ($frameGenAvailable) { $settings.upscaler = if ($upscaler.SelectedIndex -eq 1) { 'dlss' } else { '' } }
+	if ($fsrAvailable) { $settings.fsr = $fsr.Checked }
 	$settings.ecores     = $ecores.Checked
-	$settings.cheats     = $cheats.Checked
 	Save-Settings
 }
 $play.Add_Click({
@@ -614,6 +686,10 @@ $play.Add_Click({
 $precompile.Add_Click({
 	Read-Form
 	Start-Process $cmd -ArgumentList "/s /c `"$(Get-PrecompileCommand)`"" -WorkingDirectory $root
+})
+$share.Add_Click({
+	Read-Form
+	Start-Process $cmd -ArgumentList "/s /c `"$(Get-PrecompileCommand '-ExportHints')`"" -WorkingDirectory $root
 })
 $logs.Add_Click({
 	$folder = if (Test-Path "$root\_Build") { "$root\_Build\run-logs" } else { "$root\logs" }

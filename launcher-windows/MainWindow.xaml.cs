@@ -6,6 +6,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -57,7 +58,7 @@ partial class MainWindow : Window {
 
 	TextBox gamePath;
 	ComboBox resolution, ratio, render, upscaler, output, quality, frameGen, language, hud, uiLanguage;
-	CheckBox fullscreen, aspect, hdr, fps120, vsync, lowLatency, fsr, cheats, redzone, safeGpu, ecores;
+	CheckBox fullscreen, aspect, hdr, fps120, vsync, lowLatency, fsr, cheats, redzone, safeGpu, ecores, presentDirect, antiLag;
 	TextBlock renderNote, upscalerNote, frameGenNote, streamlineText, cheatState, bannerTitle, bannerLine, storeLine;
 	Image banner;
 	Border bannerFallback;
@@ -118,6 +119,7 @@ partial class MainWindow : Window {
 		AddPage("nav.game", BuildGamePage());
 		AddPage("nav.shaders", BuildShadersPage());
 		AddPage("nav.advanced", BuildAdvancedPage());
+		AddPage("nav.experimental", BuildExperimentalPage());
 		building = false;
 		Nav.SelectedIndex = Math.Max(0, Math.Min(pageIndex, pages.Count - 1));
 		ShowPage(Nav.SelectedIndex);
@@ -717,6 +719,35 @@ partial class MainWindow : Window {
 			Desc(T("credit")));
 	}
 
+	// ------------------------------------------------------------------ Experimental
+
+	// Options still being tried out (not defaults yet): a player turns one on, and its issue collects how it went.
+	FrameworkElement BuildExperimentalPage() {
+		presentDirect = Switch(S.Bool("present_direct"));
+		antiLag = Switch(S.Bool("antilag") && context.AmdGpu, context.AmdGpu);
+		return Page("experimental.title",
+			Desc(T("experimental.intro")),
+			Section("experimental.display"),
+			Row("presentdirect", presentDirect, Desc(T("presentdirect.desc"))),
+			Row(null, Feedback(37)),
+			Section("experimental.amd"),
+			Row("antilag", antiLag, Desc(T(context.AmdGpu ? "antilag.desc" : "antilag.notAmd"))),
+			Row(null, Feedback(80)));
+	}
+
+	TextBlock Feedback(int issue) {
+		var link = new Hyperlink(new Run(F("feedback", issue))) {
+			NavigateUri = new Uri("https://github.com/chenxiao07/KytyPS5/issues/" + issue), Foreground = Res<Brush>("GoldBrush") };
+		link.RequestNavigate += (s, e) => {
+			try {
+				Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
+			} catch (Exception) {
+			}
+			e.Handled = true;
+		};
+		return new TextBlock(link) { FontSize = 12, Margin = new Thickness(0, -6, 0, 0) };
+	}
+
 	// ------------------------------------------------------------------ state, summary, actions
 
 	void Changed() {
@@ -751,6 +782,8 @@ partial class MainWindow : Window {
 		if (context.FrameGenAvailable) S.Set("upscaler", upscaler.SelectedIndex == 1 ? "dlss" : "");
 		if (context.FsrAvailable) S.Set("fsr", fsr.IsChecked == true);
 		S.Set("ecores", ecores.IsChecked == true);
+		S.Set("present_direct", presentDirect.IsChecked == true);
+		S.Set("antilag", antiLag.IsChecked == true && context.AmdGpu);
 		S.Save();
 	}
 
@@ -771,6 +804,8 @@ partial class MainWindow : Window {
 		if (S.Bool("lowlatency")) options.Add(T("lowlatency"));
 		if (S.Bool("hdr")) options.Add(T("summary.hdr"));
 		if (hdOutput) options.Add(T("summary.hd"));
+		if (S.Bool("present_direct")) options.Add(T("summary.presentDirect"));
+		if (S.Bool("antilag")) options.Add(T("summary.antilag"));
 
 		var parts = new List<string> {
 			F(S.Bool("fullscreen") ? "summary.fullscreen" : "summary.window", res), S.Str("ratio"), F("summary.render", height),
@@ -868,7 +903,7 @@ partial class MainWindow : Window {
 		var root = (FrameworkElement)Content;
 		var width = (int)Width;
 		var height = (int)Height;
-		var names = new[] { "play", "display", "graphics", "game", "shaders", "advanced" };
+		var names = new[] { "play", "display", "graphics", "game", "shaders", "advanced", "experimental" };
 		for (int i = 0; i < pages.Count; i++) {
 			Nav.SelectedIndex = i;
 			ShowPage(i);

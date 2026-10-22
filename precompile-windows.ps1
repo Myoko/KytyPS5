@@ -170,8 +170,12 @@ if ($ExportHints) {
 	foreach ($file in $recordings) { $arguments += @('--recorded', $file.FullName) }
 	& $Exe @arguments
 	if ($LASTEXITCODE) { throw 'making the hints failed (kyty_shader_precompile --make-hints)' }
-	Write-Host "hints: $out ($([math]::Ceiling((Get-Item $out).Length / 1KB)) KiB, no game code in it): attach it to an issue"
-	Start-Process explorer.exe "/select,`"$out`""
+	# Zipped as well: GitHub takes a .zip as an attachment, not a .hints file.
+	$zip = "$out.zip"
+	Remove-Item -LiteralPath $zip -ErrorAction SilentlyContinue
+	Compress-Archive -LiteralPath $out -DestinationPath $zip
+	Write-Host "hints: $zip ($([math]::Ceiling((Get-Item $zip).Length / 1KB)) KiB, no game code in it): attach it to a GitHub issue"
+	Start-Process explorer.exe "/select,`"$zip`""
 	exit 0
 }
 $recordedLost = $false
