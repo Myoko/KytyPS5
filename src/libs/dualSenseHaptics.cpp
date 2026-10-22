@@ -2,6 +2,8 @@
 
 #include "SDL.h"
 #include "common/logging/log.h"
+#include "libs/dualSenseBluetooth.h"
+#include "SDL_hidapi.h"
 
 #if defined(_WIN32)
 
@@ -42,6 +44,38 @@ uint32_t            g_routes        = 0;
 std::mutex g_mutex;
 int        g_found    = -1; // -1 unknown, 0 no endpoint, 1 yes
 bool       g_enabled  = true;
+// The same pad over Bluetooth: no audio endpoint exists there, its speaker and actuators travel in
+// HID reports (dualSenseBluetooth.cpp). One stream per route, opened on first use.
+DualSenseBluetooth::Stream* g_bt_speaker   = nullptr;
+DualSenseBluetooth::Stream* g_bt_vibration = nullptr;
+bool                        g_bt_tried    = false;
+
+// True when a DualSense sits on the Bluetooth bus. SDL2's hidapi has no bus type, so the Windows
+// device path's HID-over-Bluetooth service GUID says which bus it is on.
+bool BluetoothPadPresent() {
+	for (const uint16_t product: {static_cast<uint16_t>(0x0ce6), static_cast<uint16_t>(0x0df2)}) {
+		auto* devices = SDL_hid_enumerate(0x054c, product);
+		bool  found   = false;
+		for (auto* device = devices; device != nullptr; device = device->next) {
+			if (device->path == nullptr) {
+				continue;
+			}
+			std::string path;
+			for (const char* c = device->path; *c != 0; ++c) {
+				path.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(*c))));
+			}
+			if (path.find("00001124-0000-1000-8000-00805f9b34fb") != std::string::npos) {
+				found = true;
+				break;
+			}
+		}
+		SDL_hid_free_enumeration(devices);
+		if (found) {
+			return true;
+		}
+	}
+	return false;
+}
 bool       g_log      = false;
 float      g_gain     = 4.0f; // the tested setting: 1.0 leaves the actuators faint in play
 bool       g_all_channels  = false;
@@ -403,6 +437,10 @@ bool Available() {
 		device->Release();
 		std::printf("DualSense: the pad's audio endpoint is available (speaker 0-1, actuators %u-%u)\n",
 		            g_first_channel, g_first_channel + g_channel_count - 1u);
+	} else if (BluetoothPadPresent()) {
+		g_found = 1;
+		std::printf("DualSense: no audio endpoint; a Bluetooth pad carries the speaker and the haptics\n");
+		return true;
 	} else {
 		std::printf("DualSense: no audio endpoint found (no pad speaker and no haptics)\n");
 	}
@@ -437,6 +475,22 @@ bool Open(bool speaker) {
 	}
 
 	if (g_client == nullptr) {
+		// A Bluetooth pad first: it has no audio endpoint; its speaker and actuators are HID reports.
+		if (!g_bt_tried) {
+			g_bt_tried     = true;
+			g_bt_vibration = DualSenseBluetooth::Open(48000, false, 0, nullptr);
+			g_bt_speaker   = DualSenseBluetooth::Open(48000, true, 0, nullptr);
+			if (g_bt_vibration != nullptr || g_bt_speaker != nullptr) {
+				std::printf("DualSense: a Bluetooth pad carries the haptics (%s) and the speaker (%s)\n",
+				            g_bt_vibration != nullptr ? "yes" : "no",
+				            g_bt_speaker != nullptr ? "yes" : "no");
+			}
+		}
+		if (speaker ? g_bt_speaker != nullptr : g_bt_vibration != nullptr) {
+			g_routes |= route;
+			return true;
+		}
+
 		EnsureCom();
 
 		IMMDevice* device = FindEndpoint();
@@ -523,6 +577,14 @@ void Close(bool speaker) {
 		(void)RouteSpeaker(false); // the pad's headphone routing goes back, as on the console
 	}
 
+	if (speaker) {
+		DualSenseBluetooth::Close(g_bt_speaker);
+		g_bt_speaker = nullptr;
+	} else {
+		DualSenseBluetooth::Close(g_bt_vibration);
+		g_bt_vibration = nullptr;
+	}
+
 	if (g_client != nullptr) {
 		g_client->Stop();
 		g_client->Release();
@@ -548,6 +610,57 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 	}
 	if ((g_routes & (speaker ? ROUTE_SPEAKER : ROUTE_VIBRATION)) == 0U) {
 		return false;
+	}
+
+	// Bluetooth: the same mapping and gain, resampled to the 48 kHz its reports carry, then queued.
+	if (speaker ? g_bt_speaker != nullptr : g_bt_vibration != nullptr) {
+		auto* bt = speaker ? g_bt_speaker : g_bt_vibration;
+		constexpr uint32_t bt_rate     = 48000;
+		const auto         out_frames  = source_rate == bt_rate
+		                                     ? frames
+		                                     : static_cast<uint32_t>(static_cast<uint64_t>(frames) * bt_rate / source_rate);
+		if (out_frames == 0) {
+			return false;
+		}
+		std::vector<float> mixed(static_cast<size_t>(out_frames) * 2);
+		const auto         route_gain = speaker ? g_speaker_gain : g_gain;
+		for (uint32_t i = 0; i < out_frames; i++) {
+			const auto source_index = source_rate == bt_rate
+			                              ? i
+			                              : static_cast<uint32_t>(static_cast<uint64_t>(i) * source_rate / bt_rate);
+			if (source_index >= frames) {
+				break;
+			}
+			for (uint32_t c = 0; c < 2; c++) {
+				const auto source_channel =
+				    source_channels == 1 ? 0u : (c < source_channels ? c : source_channels - 1u);
+				float value = 0.0f;
+				if (is_float) {
+					value = reinterpret_cast<const float*>(data)[static_cast<size_t>(source_index) *
+					                                                 source_channels + source_channel];
+				} else {
+					value = static_cast<float>(reinterpret_cast<const int16_t*>(data)[
+					            static_cast<size_t>(source_index) * source_channels + source_channel]) /
+					        32768.0f;
+				}
+				if (gains != nullptr) {
+					value *= gains[source_channel];
+				}
+				value *= route_gain;
+				if (speaker ? g_speaker_limiter : false) {
+					value = value > 0.8f ? 0.8f + (value - 0.8f) / (1.0f + (value - 0.8f) * 4.0f) : value;
+					value = value < -0.8f ? -0.8f + (value + 0.8f) / (1.0f - (value + 0.8f) * 4.0f) : value;
+				}
+				mixed[static_cast<size_t>(i) * 2 + c] = value;
+			}
+		}
+		(void)DualSenseBluetooth::Queue(bt, mixed.data(), out_frames);
+		if (speaker) {
+			g_speaker_writes++;
+		} else {
+			g_vibration_writes++;
+		}
+		return true;
 	}
 
 	const auto target_rate     = g_mix->nSamplesPerSec;
