@@ -37,6 +37,9 @@ partial class MainWindow : Window {
 	};
 	// The height Demon's Souls renders its 3D at (run-windows.ps1 -RenderHeight); its output and UI stay 3840x2160.
 	static readonly int[] RenderHeights = { 2160, 1800, 1620, 1512, 1440, 1296, 1152, 1080, 900, 720 };
+	// Below 720 with the 1080p output only (issue #129): DLSS's Balanced, Performance and Ultra Performance there; the
+	// game's TAA down to 540 (from 360 its picture is too soft).
+	static readonly int[] LowRenderHeights = { 630, 540, 360 };
 
 	// (--screenshot pictures: no game art, another path shown.)
 	public static bool ScreenshotNoArt;
@@ -491,8 +494,8 @@ partial class MainWindow : Window {
 		};
 		output = Combo(new[] { new Choice(T("output.4k"), "4k"), new Choice(T("output.1080"), "1080p") }, S.Str("output") == "1080p" ? 1 : 0);
 		output.SelectionChanged += (s, e) => {
-			// (DLSS's heights and their modes follow the output.)
-			if (renderForDlss) SelectRenderHeight();
+			// (The heights below 720, and DLSS's heights and their modes, follow the output.)
+			SelectRenderHeight();
 			UpdateRenderNote();
 		};
 		// The DLSS model (KYTY_DLSS_PRESET): the DLSS version's own choice, its transformer or its CNN model.
@@ -580,12 +583,13 @@ partial class MainWindow : Window {
 		return 720;
 	}
 
-	// The heights the ratio allows (with DLSS those its output takes: 1080 and up for 4K, up to 1080 for 1080p); the one
-	// last chosen for this upscaler, a higher one as the highest allowed, an unknown one as the upscaler's default (DLSS
-	// 1080, the game's TAA 1440).
+	// The heights the ratio allows (with DLSS those its output takes: 1080 and up for 4K, up to 1080 for 1080p; below 720
+	// with the 1080p output only); the one last chosen for this upscaler, a higher one as the highest allowed, an unknown
+	// one as the upscaler's default (DLSS 1080, the game's TAA 1440).
 	void SelectRenderHeight() {
 		var most = MaxRenderHeight();
 		var allowed = RenderHeights.Where(h => h <= most && (!renderForDlss || (HdOutputChosen ? h <= 1080 : h >= 1080))).ToList();
+		if (HdOutputChosen) allowed.AddRange(LowRenderHeights.Where(h => renderForDlss || h >= 540));
 		fillingRender = true;
 		var was = building;
 		building = true;
