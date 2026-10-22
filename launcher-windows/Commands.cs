@@ -76,6 +76,7 @@ sealed class Commands {
 		// (With DLSS too: its PS5 Pro path then makes the 1080p output, the 3D at most 1080 high.)
 		if (S.Str("output") == "1080p") arguments.Add("-HdOutput");
 		if (context.FrameGenAvailable && ((!fsrOn && frameGen >= 2) || dlss)) arguments.AddRange(new[] { "-StreamlineDir", Quote(context.Streamline) });
+		AddGpu(arguments);
 		var sets = new List<string>();
 		// The emulator's panel at the top right of the game image: the frame rate and frame times, or with the GPU,
 		// processor and memory too (F8 in the game switches it).
@@ -123,6 +124,13 @@ sealed class Commands {
 	// Characters cmd would take itself in the command line (/v:on: ! too), and quotes: an option holding one is left out.
 	static readonly char[] CmdCharacters = { '&', '|', '<', '>', '^', '!', '%', '"' };
 
+	// The graphics card chosen on the Advanced page (a PC with more than one), by its name: the game and the precompile
+	// both use it (run-windows.ps1 / precompile-windows.ps1 -Gpu; issue #132).
+	void AddGpu(List<string> arguments) {
+		var gpu = S.Str("gpu");
+		if (gpu.Length != 0 && gpu.IndexOfAny(CmdCharacters) < 0) arguments.AddRange(new[] { "-Gpu", Quote(gpu) });
+	}
+
 	static bool IsSet(string name) {
 		return string.Equals(name, "-Set", StringComparison.OrdinalIgnoreCase);
 	}
@@ -167,6 +175,7 @@ sealed class Commands {
 		var arguments = new List<string> { "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", Quote(Path.Combine(context.Root, "precompile-windows.ps1")) };
 		if (!string.IsNullOrEmpty(option)) arguments.Add(option);
 		if (S.Bool("ecores") && context.EfficiencyMask != 0) arguments.AddRange(new[] { "-Affinity", context.EfficiencyMask.ToString(CultureInfo.InvariantCulture) });
+		AddGpu(arguments);
 		var gamePath = S.Str("game");
 		if (gamePath.Length != 0) arguments.AddRange(new[] { "-Game", Quote(gamePath) });
 		return PowerShell() + " " + string.Join(" ", arguments) + " & pause";

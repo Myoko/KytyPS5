@@ -90,8 +90,8 @@ DLSS/FSR; the Play button), **Display** (resolution, aspect ratio, fullscreen, H
 latency), **Graphics** (upscaler, render height with each height's DLSS mode, game output, DLSS model, graphics
 preset, frame generation), **Game** (console
 language, cheats), **Shaders** (precompile, optionally on the efficiency cores only so the PC stays responsive;
-export shader hints), **Advanced** (performance overlay, red-zone protection, safe GPU mode, extra command-line
-options, the launcher's language, the logs folder) and **Experimental** (options still being tried out, each with
+export shader hints), **Advanced** (performance overlay, red-zone protection, safe GPU mode, the graphics card on a
+PC with more than one, extra command-line options, the launcher's language, the logs folder) and **Experimental** (options still being tried out, each with
 the issue that collects how it goes: a 30 fps lock, direct presentation for VRR displays, keep memory resident,
 AMD Anti-Lag). It remembers the settings (`launcher-settings.json`) and needs nothing installed (.NET
 Framework 4.7.2, part of Windows 10 and 11). Windows may ask before its first start ("More info", "Run anyway"):
@@ -222,6 +222,7 @@ shortcut):
 | `-Hdr` | HDR10 output when Windows' "Use HDR" is on for the display |
 | `-Upscaler dlss` | DLSS super resolution through the game's PS5 Pro path (NVIDIA RTX, needs Streamline: see "Upscaler" above) |
 | `-FrameGen 1` | DLSS frame generation, the number of generated frames per rendered one (`1` = 2x, up to `5`; RTX 40 or newer, needs Streamline) |
+| `-Gpu 1` | The graphics card on a PC with more than one: its number in the log's `Vulkan GPU <n>:` lines, or a part of its name (`-Gpu 4090`); give `precompile.cmd` the same `-Gpu`, so the shaders are compiled for that card. Without it the first discrete GPU, in the order Windows' graphics settings give |
 | `-Set KEY=VALUE` | An emulator switch, e.g. `-Set KYTY_SHADER_PREFETCH=0` (several: `-Set A=1,B=2`); the issues name the ones worth trying |
 
 The launcher has a box for these too (Advanced, "Command-line options"), written as after `run.cmd`: its `-Set`

@@ -60,7 +60,7 @@ partial class MainWindow : Window {
 	int pageIndex;
 
 	TextBox gamePath, extraArgs;
-	ComboBox resolution, ratio, render, upscaler, dlssModel, output, quality, frameGen, language, hud, uiLanguage;
+	ComboBox resolution, ratio, render, upscaler, dlssModel, output, quality, frameGen, language, hud, uiLanguage, gpu;
 	CheckBox fullscreen, aspect, hdr, fps120, vsync, lowLatency, fsr, cheats, redzone, safeGpu, ecores, presentDirect, antiLag,
 		keepResident, fps30;
 	TextBlock renderNote, upscalerNote, frameGenNote, streamlineText, cheatState, bannerTitle, bannerLine, storeLine;
@@ -738,17 +738,24 @@ partial class MainWindow : Window {
 		// Options for the game's start as on a run.cmd line (Commands.ExtraOptions): saved as typed.
 		extraArgs = new TextBox { Text = S.Str("extra_args"), MinWidth = 420 };
 		extraArgs.TextChanged += (s, e) => Changed();
-		return Page("advanced.title",
+		// The graphics card, shown on a PC with more than one (Commands.AddGpu): automatic or one by its name.
+		var gpus = new List<Choice> { new Choice(T("gpu.auto"), "") };
+		foreach (var card in context.Gpus) gpus.Add(new Choice(card.Name, card.Name));
+		gpu = Combo(gpus, Math.Max(0, gpus.FindIndex(c => (string)c.Value == S.Str("gpu"))), 360);
+		var content = new List<UIElement> {
 			Section("advanced.stability"),
 			Row("hud", hud, Desc(T("hud.desc"))),
 			Row("redzone", redzone, Desc(T("redzone.desc"))),
-			Row("safegpu", safeGpu, Desc(T("safegpu.desc"))),
+			Row("safegpu", safeGpu, Desc(T("safegpu.desc"))) };
+		if (context.Gpus.Count > 1) content.AddRange(new UIElement[] { Section("advanced.gpu"), Row("gpu", gpu, Desc(T("gpu.desc"))) });
+		content.AddRange(new UIElement[] {
 			Section("advanced.extra"),
 			Row("extra", extraArgs, Desc(T("extra.desc"))),
 			Section("advanced.launcher"),
 			Row("uilang", uiLanguage),
 			Row(null, Horizontal(logs, readme, root)),
-			Desc(T("credit")));
+			Desc(T("credit")) });
+		return Page("advanced.title", content.ToArray());
 	}
 
 	// ------------------------------------------------------------------ Experimental
@@ -822,6 +829,7 @@ partial class MainWindow : Window {
 		if (context.FrameGenAvailable) S.Set("framegen", frameGen.SelectedIndex > 0 ? frameGen.SelectedIndex + 1 : 0);
 		if (context.FrameGenAvailable) S.Set("upscaler", upscaler.SelectedIndex == 1 ? "dlss" : "");
 		S.Set("dlss_preset", Value(dlssModel) as string ?? "");
+		S.Set("gpu", Value(gpu) as string ?? "");
 		if (context.FsrAvailable) S.Set("fsr", fsr.IsChecked == true);
 		S.Set("ecores", ecores.IsChecked == true);
 		S.Set("present_direct", presentDirect.IsChecked == true);

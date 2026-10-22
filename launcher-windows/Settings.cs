@@ -24,7 +24,7 @@ sealed class Settings {
 		new object[] {"present_direct", false}, new object[] {"antilag", false}, new object[] {"keep_resident", false},
 		new object[] {"fps30", false},
 		// (Advanced page.)
-		new object[] {"extra_args", ""},
+		new object[] {"extra_args", ""}, new object[] {"gpu", ""},
 		// (Graphics page: the DLSS model, a preset letter or the DLSS version's own choice.)
 		new object[] {"dlss_preset", ""},
 	};
