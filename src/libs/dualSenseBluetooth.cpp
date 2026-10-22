@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
@@ -63,6 +64,20 @@ std::string Address(const Char* serial) {
 	return address.size() == 12 ? address : std::string {};
 }
 
+// SDL2's hidapi says nothing about the bus a device sits on (bus_type is an SDL3 field). On Windows a
+// Bluetooth HID device's path carries the HID-over-Bluetooth service's GUID, and a wired one's does
+// not, so the path is what tells them apart here.
+static bool IsBluetoothPath(const char* path) {
+	if (path == nullptr) {
+		return false;
+	}
+	std::string lower;
+	for (const char* c = path; *c != 0; ++c) {
+		lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(*c))));
+	}
+	return lower.find("00001124-0000-1000-8000-00805f9b34fb") != std::string::npos;
+}
+
 // The DualSense on the Bluetooth bus whose serial is the joystick's own. A wired one has no
 // Bluetooth-bus HID device, so this answers nullptr for it and the USB audio path stays in use.
 SDL_hid_device* OpenDevice(int controller) {
@@ -75,7 +90,7 @@ SDL_hid_device* OpenDevice(int controller) {
 		std::string path;
 		bool        ambiguous = false;
 		for (auto* device = devices; device != nullptr; device = device->next) {
-			if (device->bus_type != SDL_HID_API_BUS_BLUETOOTH || device->path == nullptr) {
+			if (!IsBluetoothPath(device->path)) {
 				continue;
 			}
 			if (!serial.empty() && Address(device->serial_number) != serial) {
@@ -362,7 +377,7 @@ Stream* Open(uint32_t freq, bool speaker, int controller, void (*tick)()) {
 	if (speaker && !session->CreateEncoder()) {
 		return nullptr;
 	}
-	auto* audio = SDL_NewAudioStream(SDL_AUDIO_F32, 2, static_cast<int>(freq), SDL_AUDIO_F32, 2,
+	auto* audio = SDL_NewAudioStream(AUDIO_F32SYS, 2, static_cast<int>(freq), AUDIO_F32SYS, 2,
 	                                 speaker ? SPEAKER_RATE : HAPTIC_RATE);
 	if (audio == nullptr) {
 		return nullptr;
