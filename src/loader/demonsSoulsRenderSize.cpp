@@ -3,6 +3,7 @@
 #include "loader/demonsSoulsSuperResolution.h"
 
 #include "graphics/host_gpu/hostMemory.h"
+#include "graphics/presentation/window.h"
 #include "graphics/host_gpu/renderer/demonsSouls.h"
 #include "loader/elf.h"
 #include "loader/guestCode.h"
@@ -138,10 +139,24 @@ uint32_t WideOutputWidth() {
 	return g_wide_output;
 }
 
+uint32_t AutoHeight(bool upscaler) {
+	const char* setting = std::getenv("KYTY_RENDER_HEIGHT");
+	if (setting != nullptr && *setting != 0 && std::strcmp(setting, "auto") != 0) return 0;
+	uint32_t width = 0, height = 0;
+	Libs::Graphics::WindowOutputSize(&width, &height);
+	if (height == 0) return 0;
+	if (upscaler) height = std::max(SuperResolutionLeastHeight, static_cast<uint32_t>(std::lround(height / 1.5)));
+	// Without an upscaler at most the game's own 1440: a 4K window would render 2.25 times the default's pixels, a GPU
+	// cost nobody chose. 2160 stays a choice (KYTY_RENDER_HEIGHT=2160).
+	return std::clamp(height, 720u, upscaler ? OutputHeight : RenderHeight);
+}
+
 void Install(Program* program) {
 	const char* setting = std::getenv("KYTY_RENDER_HEIGHT");
 	const char* wide    = std::getenv("KYTY_RENDER_ASPECT");
-	if (((setting == nullptr || *setting == 0) && (wide == nullptr || *wide == 0)) || program == nullptr ||
+	const bool  numeric   = setting != nullptr && *setting != 0 && std::strcmp(setting, "auto") != 0;
+	const auto  automatic = AutoHeight(DemonsSoulsSuperResolution::Active());
+	if ((!numeric && automatic == 0 && (wide == nullptr || *wide == 0)) || program == nullptr ||
 	    !Libs::Graphics::DemonsSouls::IsSupportedGame() || program->file_name.filename() != "eboot.bin")
 		return;
 	// (The game's super resolution path: display mode 5 is the performance mode, loader/demonsSoulsSuperResolution.h.
@@ -154,8 +169,20 @@ void Install(Program* program) {
 	const int      mode        = hd ? HdUpscaledMode : trinity ? TrinityMode : PerformanceMode;
 	const uint32_t out_width   = hd ? DemonsSoulsHdOutput::HdWidth : OutputWidth;
 	const uint32_t out_height  = hd ? DemonsSoulsHdOutput::HdHeight : OutputHeight;
-	auto requested = setting != nullptr && *setting != 0 ? static_cast<uint32_t>(std::strtoul(setting, nullptr, 10))
-	                                                     : game_height;
+	auto requested = automatic != 0 ? automatic
+	                 : numeric      ? static_cast<uint32_t>(std::strtoul(setting, nullptr, 10))
+	                                : game_height;
+	if (automatic != 0) {
+		uint32_t window_width = 0, window_height = 0;
+		Libs::Graphics::WindowOutputSize(&window_width, &window_height);
+		std::printf("Demon's Souls render size: automatic for the %ux%u window: %s 3D at height %u%s\n", window_width,
+		            window_height, hd ? "HD output (1920x1080)," : trinity ? "PS5 Pro output (3840x2160)," : "4K output,",
+		            std::min(requested, hd ? DemonsSoulsHdOutput::HdHeight : requested),
+		            hd && window_height == DemonsSoulsHdOutput::HdHeight ? " (pixel-exact)"
+		            : !hd && !trinity && window_height == OutputHeight ? " (pixel-exact)"
+		                                                               : "");
+		if (hd && requested > DemonsSoulsHdOutput::HdHeight) requested = DemonsSoulsHdOutput::HdHeight;
+	}
 	if (hd && requested > DemonsSoulsHdOutput::HdHeight && requested <= OutputHeight) {
 		std::printf("Demon's Souls render size: KYTY_RENDER_HEIGHT=%u is above the HD output's 1080; 1080 instead\n",
 		            requested);

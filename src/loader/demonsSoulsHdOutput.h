@@ -45,5 +45,10 @@ inline constexpr uint32_t         HdWidth = 1920, HdHeight = 1080;
 // An interface image's size from its texture's (0xe6041b, in 0xe603c0): mov rax, [r13 + 0x10]; vmovaps [rbp - 0x40],
 // xmm4; mov rdi, [rax + disp32]; add rdi, 8; call 0xdda210 (the screen's pixels per layout unit, the divisor).
 inline constexpr std::string_view ImageScale = "49 8b 45 10 c5 f8 29 65 c0 48 8b b8 ?? ?? ?? ?? 48 83 c7 08 e8";
+// The same division for another kind of image, the souls counter's backdrop among them (0xe641e8): cmp byte
+// [rax + 0x198], 1; jne; lea rdi, [rbx + 8]; call 0xdda210; mov rax, [r14 + 0x110].
+inline constexpr std::string_view BackdropScale =
+    "80 b8 98 01 00 00 01 0f 85 ?? ?? ?? ?? 48 8d 7b 08 e8 ?? ?? ?? ?? 49 8b 86 10 01 00 00";
+inline constexpr uint32_t BackdropDivisor = 13; // the lea and the call, 9 bytes
 } // namespace DemonsSoulsHdOutput
 } // namespace Loader

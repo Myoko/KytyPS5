@@ -5,6 +5,7 @@
 #include "loader/guestCode.h"
 #include "loader/runtimeLinker.h"
 #include "local/frame-gen.h"
+#include "local/fsr-native.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -30,7 +31,9 @@ bool Active() {
 
 void Install(Program* program) {
 	const char* upscaler = std::getenv("KYTY_UPSCALER");
-	if (upscaler == nullptr || std::string_view(upscaler) != "dlss" || program == nullptr ||
+	// (FSR 3 built in, Linux: any GPU, nothing to wait for on the device.)
+	const bool fsr = Libs::Graphics::FsrNative::UpscalerRequested();
+	if (upscaler == nullptr || (std::string_view(upscaler) != "dlss" && !fsr) || program == nullptr ||
 	    !Libs::Graphics::DemonsSouls::IsSupportedGame() || program->file_name.filename() != "eboot.bin")
 		return;
 	if (DemonsSoulsHdOutput::Active()) {
@@ -39,7 +42,7 @@ void Install(Program* program) {
 		return;
 	}
 	// (The device exists by now: without DLSS on it, the game's own TAA rather than a stretch without anti-aliasing.)
-	if (!Libs::Graphics::FrameGen::UpscalerReady()) {
+	if (!fsr && !Libs::Graphics::FrameGen::UpscalerReady()) {
 		std::printf("Demon's Souls super resolution: DLSS is not available here (an NVIDIA RTX GPU and NVIDIA's DLSS "
 		            "runtime: Streamline on Windows, libkyty_dlss.so on Linux); the game's own TAA kept\n");
 		return;
@@ -52,7 +55,8 @@ void Install(Program* program) {
 	// Installation occurs before module initializers or guest threads run; program memory is writable to the host.
 	std::memcpy(reinterpret_cast<void*>(*site), Taken, sizeof(Taken));
 	g_active = true;
-	std::printf("Demon's Souls super resolution: the PS5 Pro path (display mode 5, its upscaler in place of the TAA) is on\n");
+	std::printf("Demon's Souls super resolution: the PS5 Pro path (display mode 5, %s in place of the TAA) is on\n",
+	            fsr ? "FSR 3" : "DLSS");
 }
 
 } // namespace Loader::DemonsSoulsSuperResolution

@@ -211,6 +211,18 @@ if(KYTY_CLANG_CL)
 		add_compile_options("-fprofile-instr-use=${KYTY_PGO_USE}" -Wno-profile-instr-unprofiled
 		                    -Wno-profile-instr-out-of-date -Wno-backend-plugin)
 	endif()
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+	# Linux: the same PGO switches. The profile must be made on Linux (tools/pgo is clang-cl's).
+	option(KYTY_PGO_GENERATE "Instrumented build; the live command `pgo <file>` writes the profile" OFF)
+	set(KYTY_PGO_USE "" CACHE FILEPATH "llvm-profdata output to optimize with (empty: none)")
+	if(KYTY_PGO_GENERATE)
+		add_compile_options(-fprofile-instr-generate)
+		add_link_options(-fprofile-instr-generate)
+		add_compile_definitions(KYTY_PGO_GENERATE=1)
+	elseif(KYTY_PGO_USE)
+		add_compile_options("-fprofile-instr-use=${KYTY_PGO_USE}" -Wno-profile-instr-unprofiled
+		                    -Wno-profile-instr-out-of-date -Wno-backend-plugin)
+	endif()
 endif()
 
 add_subdirectory("${KYTY_THIRD_PARTY_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/3rdparty")
@@ -407,6 +419,12 @@ list(APPEND kyty_emulator_src
 	"${KYTY_SOURCE_DIR}/local/frame-gen.cpp"
 	"${KYTY_SOURCE_DIR}/local/frame-gen-hudless.h"
 	"${KYTY_SOURCE_DIR}/local/frame-gen-hudless.cpp"
+	"${KYTY_SOURCE_DIR}/local/screenshot.h"
+	"${KYTY_SOURCE_DIR}/local/screenshot.cpp"
+	"${KYTY_SOURCE_DIR}/local/anti-lag.h"
+	"${KYTY_SOURCE_DIR}/local/anti-lag.cpp"
+	"${KYTY_SOURCE_DIR}/local/fsr-native.h"
+	"${KYTY_SOURCE_DIR}/local/fsr-native.cpp"
 	"${KYTY_SOURCE_DIR}/local/debug-snapshot.h"
 	"${KYTY_SOURCE_DIR}/local/debug-snapshot.cpp"
 	"${KYTY_SOURCE_DIR}/local/perf-overlay.h"
@@ -423,6 +441,11 @@ if (KYTY_CLANG_CL)
 endif()
 
 set(kyty_emulator_link_libraries common Vulkan::Headers spirv-tools-opt spirv-tools SDL2-static imgui xxhash FFmpeg::ffmpeg fmt::fmt nlohmann_json::nlohmann_json LibAtrac9 kyty_git_version Zydis::Zydis xbyak::xbyak libzstd_static)
+# Linux: AMD FidelityFX FSR 3 built from source (3rdparty/fidelityfx) for KYTY_UPSCALER=fsr
+# (src/local/fsr-native.h); Windows loads AMD's runtime instead (frame-gen.cpp).
+if (LINUX)
+	list(APPEND kyty_emulator_link_libraries kyty_fidelityfx)
+endif()
 
 # Linux system libraries required by the static FFmpeg archive.
 if(LINUX)

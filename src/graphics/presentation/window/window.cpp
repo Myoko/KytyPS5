@@ -46,6 +46,7 @@
 #include "loader/systemContent.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <fmt/format.h>
 #include <memory>
@@ -196,6 +197,7 @@ constexpr uint32_t KYTY_SDL_BUTTON_X2MASK = SDL_BUTTON_X2MASK; // NOLINT(hicpp-s
 namespace {
 
 std::unique_ptr<WindowContext> g_window;
+std::atomic<uint32_t>          g_output_width {0}, g_output_height {0}; // WindowOutputSize
 
 } // namespace
 
@@ -795,6 +797,21 @@ void WindowContext::RunOnMainThread(std::function<void()> task) {
 	}
 }
 
+void WindowContext::PostToMainThread(std::function<void()> task) {
+	if (Common::Thread::IsMainThread()) {
+		task();
+		return;
+	}
+	{
+		Common::LockGuard lock(main_task_mutex);
+		main_tasks.push_back(std::move(task));
+		++main_tasks_queued;
+	}
+	SDL_Event event {};
+	event.type = SDL_USEREVENT;
+	SDL_PushEvent(&event);
+}
+
 void WindowContext::DrainMainThreadTasks() {
 	std::vector<std::function<void()>> tasks;
 	{
@@ -952,9 +969,27 @@ Presenter& WindowInit(uint32_t width, uint32_t height) {
 	StartupProgressShow(window->window);
 	window->CreateVulkan();
 	StartupProgressHide();
+	// The size the game is shown at: the display's in full screen (the window may not have it yet), else the window's
+	// drawable size (its swapchain's). Demon's Souls' render size follows it (loader/demonsSoulsRenderSize.h).
+	int output_width = 0, output_height = 0;
+	if (Config::FullscreenEnabled()) {
+		SDL_DisplayMode mode {};
+		if (SDL_GetDesktopDisplayMode(std::max(SDL_GetWindowDisplayIndex(window->window), 0), &mode) == 0) {
+			output_width  = mode.w;
+			output_height = mode.h;
+		}
+	}
+	if (output_width <= 0 || output_height <= 0) SDL_Vulkan_GetDrawableSize(window->window, &output_width, &output_height);
+	g_output_width.store(static_cast<uint32_t>(std::max(output_width, 0)), std::memory_order_relaxed);
+	g_output_height.store(static_cast<uint32_t>(std::max(output_height, 0)), std::memory_order_relaxed);
 	auto& presenter = *window->presenter;
 	g_window        = std::move(window);
 	return presenter;
+}
+
+void WindowOutputSize(uint32_t* width, uint32_t* height) {
+	*width  = g_output_width.load(std::memory_order_relaxed);
+	*height = g_output_height.load(std::memory_order_relaxed);
 }
 
 void WindowRun() {
@@ -1050,7 +1085,7 @@ void WindowContext::UpdateIcon() {
 	}
 }
 
-void WindowContext::UpdateTitle() {
+void WindowContext::UpdateTitle(uint32_t presented, const char* generator) {
 	static char title[128];
 	static char title_id[12];
 	static char app_ver[12];
@@ -1063,7 +1098,9 @@ void WindowContext::UpdateTitle() {
 	static uint64_t fps_start   = Common::Timer::QueryPerformanceCounter();
 	static uint64_t frame_num   = 0;
 	static uint64_t fps_frames  = 0;
+	static uint64_t fps_shown   = 0; // images shown, generated ones included
 	static double   current_fps = 0.0;
+	static double   shown_fps   = 0.0;
 
 #if KYTY_BUILD == KYTY_BUILD_DEBUG
 	static constexpr auto build_type = "Debug";
@@ -1077,24 +1114,41 @@ void WindowContext::UpdateTitle() {
 	const auto frequency = Common::Timer::QueryPerformanceFrequency();
 	frame_num++;
 	fps_frames++;
+	fps_shown += presented;
 	if (now - fps_start >= frequency) {
 		current_fps = static_cast<double>(fps_frames) * static_cast<double>(frequency) /
 		              static_cast<double>(now - fps_start);
+		shown_fps   = static_cast<double>(fps_shown) * static_cast<double>(frequency) / static_cast<double>(now - fps_start);
 		fps_start   = now;
 		fps_frames  = 0;
+		fps_shown   = 0;
 	}
 
+	// Twice a second at most, and never waiting for the main thread (PostToMainThread): the title is set while the
+	// present thread goes on.
+	static uint64_t title_at = 0;
+	if (now - title_at < frequency / 2 || title_posted.exchange(true, std::memory_order_acq_rel)) {
+		return;
+	}
+	title_at = now;
 	const auto* device_name = graphic_ctx.GetPhysicalDeviceProperties().deviceName.data();
 	auto text = fmt::format(
 	    "[{} | {}] {}{}{}{}{}{}[{}] [{}], frame: {}, fps: {:.0f}", KYTY_BUILD_LABEL, build_type,
 	    (has_title ? title : ""), (has_title ? ", " : ""), (has_title_id ? title_id : ""),
 	    (has_title_id ? ", " : ""), (has_app_ver ? app_ver : ""), (has_app_ver ? " " : ""),
 	    device_name, processor_name, frame_num, current_fps);
+	// (The game's frame rate first, the rate shown with the generated frames after it.)
+	if (generator != nullptr && shown_fps > current_fps + 0.5) {
+		text += fmt::format(" ({}: {:.0f})", generator, shown_fps);
+	}
 	if (const auto waypoints = Loader::DemonsSoulsWarp::RecordedWaypoints(); waypoints != 0) {
 		text += fmt::format(", waypoints: {}", waypoints);
 	}
 
-	RunOnMainThread([this, text = std::move(text)] { SDL_SetWindowTitle(window, text.c_str()); });
+	PostToMainThread([this, text = std::move(text)] {
+		SDL_SetWindowTitle(window, text.c_str());
+		title_posted.store(false, std::memory_order_release);
+	});
 }
 
 } // namespace Libs::Graphics
