@@ -90,6 +90,9 @@ sealed class Commands {
 		if (S.Bool("fps30")) sets.Add("KYTY_FLIP_RATE=1");
 		// Memory kept in RAM against the MEMORY_MANAGEMENT blue screen (issue #50): a 6 GB working-set floor, no trims of its own.
 		if (S.Bool("keep_resident")) sets.AddRange(new[] { "KYTY_RESIDENT_MB=6144", "KYTY_WORKING_SET_TRIM=0" });
+		// The DLSS model chosen on the Graphics page (a preset letter; none: the DLSS version's own choice).
+		var preset = S.Str("dlss_preset");
+		if (dlss && preset.Length == 1 && preset[0] >= 'A' && preset[0] <= 'O') sets.Add("KYTY_DLSS_PRESET=" + preset);
 		// The Advanced page's extra options: their -Set pairs join (or replace) the launcher's own.
 		var extra = ExtraOptions();
 		foreach (var option in extra) {

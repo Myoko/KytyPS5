@@ -25,6 +25,8 @@ sealed class Settings {
 		new object[] {"fps30", false},
 		// (Advanced page.)
 		new object[] {"extra_args", ""},
+		// (Graphics page: the DLSS model, a preset letter or the DLSS version's own choice.)
+		new object[] {"dlss_preset", ""},
 	};
 
 	readonly string path;

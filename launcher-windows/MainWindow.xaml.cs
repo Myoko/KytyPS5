@@ -57,7 +57,7 @@ partial class MainWindow : Window {
 	int pageIndex;
 
 	TextBox gamePath, extraArgs;
-	ComboBox resolution, ratio, render, upscaler, output, quality, frameGen, language, hud, uiLanguage;
+	ComboBox resolution, ratio, render, upscaler, dlssModel, output, quality, frameGen, language, hud, uiLanguage;
 	CheckBox fullscreen, aspect, hdr, fps120, vsync, lowLatency, fsr, cheats, redzone, safeGpu, ecores, presentDirect, antiLag,
 		keepResident, fps30;
 	TextBlock renderNote, upscalerNote, frameGenNote, streamlineText, cheatState, bannerTitle, bannerLine, storeLine;
@@ -490,13 +490,22 @@ partial class MainWindow : Window {
 			Changed();
 		};
 		output = Combo(new[] { new Choice(T("output.4k"), "4k"), new Choice(T("output.1080"), "1080p") }, S.Str("output") == "1080p" ? 1 : 0);
-		output.SelectionChanged += (s, e) => UpdateRenderNote();
+		output.SelectionChanged += (s, e) => {
+			// (DLSS's heights and their modes follow the output.)
+			if (renderForDlss) SelectRenderHeight();
+			UpdateRenderNote();
+		};
+		// The DLSS model (KYTY_DLSS_PRESET): the DLSS version's own choice, its transformer or its CNN model.
+		var models = new[] { new Choice(T("dlssmodel.auto"), ""), new Choice(T("dlssmodel.k"), "K"), new Choice(T("dlssmodel.e"), "E") };
+		dlssModel = Combo(models, Math.Max(0, Array.FindIndex(models, c => (string)c.Value == S.Str("dlss_preset"))));
+		dlssModel.IsEnabled = renderForDlss;
 		upscaler.SelectionChanged += (s, e) => {
 			if (building) return;
 			// The height chosen goes back to the upscaler it was for; the newly chosen one's is shown.
 			S.Set(renderForDlss ? "render_dlss" : "render", renderWanted);
 			renderForDlss = upscaler.SelectedIndex == 1;
 			renderWanted = renderForDlss ? S.Int("render_dlss") : S.Int("render");
+			dlssModel.IsEnabled = renderForDlss;
 			SelectRenderHeight();
 			UpdateRenderNote();
 			Changed();
@@ -526,6 +535,7 @@ partial class MainWindow : Window {
 			Row("upscaler", upscaler, upscalerNote),
 			Row("render", render, renderNote),
 			Row("output", output, Desc(T("output.desc"))),
+			Row("dlssmodel", dlssModel, Desc(T("dlssmodel.desc"))),
 			Section("graphics.detail"),
 			Row("quality", quality, Desc(T("quality.desc"))),
 			Section("graphics.fg"),
@@ -536,12 +546,22 @@ partial class MainWindow : Window {
 	}
 
 	string RenderLabel(int height) {
+		if (renderForDlss) return Paren(height.ToString(), DlssMode(height));
 		switch (height) {
 			case 2160: return Paren("2160", T("render.native"));
 			case 1512: return Paren("1512", T("render.pro"));
 			case 1440: return Paren("1440", T("render.ps5"));
 			default: return height.ToString();
 		}
+	}
+
+	bool HdOutputChosen { get { return output != null && output.SelectedIndex == 1; } }
+
+	// The DLSS mode a render height runs in: the emulator picks it from the height's share of the game's output
+	// (frame-gen.cpp: 95% DLAA, 62% Quality, 55% Balanced, 45% Performance, less Ultra Performance).
+	string DlssMode(int height) {
+		var share = (double)height / (HdOutputChosen ? 1080 : 2160);
+		return T(share >= 0.95 ? "dlss.dlaa" : share >= 0.62 ? "dlss.quality" : share >= 0.55 ? "dlss.balanced" : share >= 0.45 ? "dlss.performance" : "dlss.ultra");
 	}
 
 	// The highest render height whose 3D at the ratio fits the game's render target memory, made for 3840x2160: no more of
@@ -560,11 +580,12 @@ partial class MainWindow : Window {
 		return 720;
 	}
 
-	// The heights the ratio allows; the one last chosen for this upscaler, a higher one as the highest allowed, an unknown
-	// one as the upscaler's default (DLSS 1080, the game's TAA 1440).
+	// The heights the ratio allows (with DLSS those its output takes: 1080 and up for 4K, up to 1080 for 1080p); the one
+	// last chosen for this upscaler, a higher one as the highest allowed, an unknown one as the upscaler's default (DLSS
+	// 1080, the game's TAA 1440).
 	void SelectRenderHeight() {
 		var most = MaxRenderHeight();
-		var allowed = RenderHeights.Where(h => h <= most).ToList();
+		var allowed = RenderHeights.Where(h => h <= most && (!renderForDlss || (HdOutputChosen ? h <= 1080 : h >= 1080))).ToList();
 		fillingRender = true;
 		var was = building;
 		building = true;
@@ -796,6 +817,7 @@ partial class MainWindow : Window {
 		// (Kept as they were where the DLLs are missing.)
 		if (context.FrameGenAvailable) S.Set("framegen", frameGen.SelectedIndex > 0 ? frameGen.SelectedIndex + 1 : 0);
 		if (context.FrameGenAvailable) S.Set("upscaler", upscaler.SelectedIndex == 1 ? "dlss" : "");
+		S.Set("dlss_preset", Value(dlssModel) as string ?? "");
 		if (context.FsrAvailable) S.Set("fsr", fsr.IsChecked == true);
 		S.Set("ecores", ecores.IsChecked == true);
 		S.Set("present_direct", presentDirect.IsChecked == true);
@@ -811,6 +833,8 @@ partial class MainWindow : Window {
 		var hdOutput = S.Str("output") == "1080p";
 		var height = dlss ? S.Int("render_dlss") : S.Int("render");
 		if (hdOutput && height > 1080) height = 1080;
+		// (DLSS's 4K output takes 1080 at least, as its render height list.)
+		if (dlss && !hdOutput && height < 1080) height = 1080;
 		string frameGeneration;
 		if (context.FsrAvailable && S.Bool("fsr")) frameGeneration = T("summary.fsr");
 		else if (context.FrameGenAvailable && S.Int("framegen") >= 2) frameGeneration = "DLSS " + S.Int("framegen") + "x";

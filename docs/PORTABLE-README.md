@@ -87,7 +87,8 @@ folder (usually named `PPSA01341-app0`).
 **Double-click `KytyLauncher.exe`** (or `launcher.cmd`) for the settings window, in English or Chinese. Its
 pages: **Play** (the game folder or `.zar`; checks of the game, graphics card, RAM, precompiled shaders and
 DLSS/FSR; the Play button), **Display** (resolution, aspect ratio, fullscreen, HDR, up to 120 fps, VSync, low
-latency), **Graphics** (upscaler, render height, game output, graphics preset, frame generation), **Game** (console
+latency), **Graphics** (upscaler, render height with each height's DLSS mode, game output, DLSS model, graphics
+preset, frame generation), **Game** (console
 language, cheats), **Shaders** (precompile, optionally on the efficiency cores only so the PC stays responsive;
 export shader hints), **Advanced** (performance overlay, red-zone protection, safe GPU mode, extra command-line
 options, the launcher's language, the logs folder) and **Experimental** (options still being tried out, each with
