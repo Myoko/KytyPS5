@@ -91,7 +91,10 @@ uint32_t   g_channel_count = 2;
 // full scale inside the pad - at 8.0 the same peak reaches full scale and the pad's amplifier clips.
 uint32_t   g_speaker_first_channel = 0;
 uint32_t   g_speaker_channel_count = 2;
-float      g_speaker_gain          = 4.0f;
+// Unity by default, as the Bluetooth route uses: the pad's own amplifier and the +6 dB preamp the
+// routing report asks for are what make this audible, and anything above unity clips in the pad -
+// heard as tearing, not as loudness. Raise it here (or in dualsense-haptics.txt) only to taste.
+float      g_speaker_gain          = 1.0f;
 // The controller's own +6 dB speaker preamp (HID output report byte 37). github.com/Jetsku/KytyPS5
 // sends it, Linux does too, and so does the DualSense add-on that is known to play without tearing -
 // all with a digital gain of 1.0. The tearing came from this route's own gain, not from the preamp, so
@@ -824,6 +827,12 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 	}
 
 	g_render->ReleaseBuffer(out_frames, 0);
+
+	if (!speaker) {
+		// The same motor drive the Bluetooth route uses, from the same block: the endpoint's actuator
+		// pair alone is faint too, and a wired pad should feel like a wireless one.
+		RumbleFromHaptics(peak, peak);
+	}
 
 	// What actually reaches the pad, so a log says whether the game fills this route at all, how loud
 	// it got and whether the gain ran past full scale: the first writes, then one every 512 (about

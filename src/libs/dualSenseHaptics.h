@@ -21,7 +21,7 @@
 //                                  (default: 23, the actuator pair)
 //   KYTY_DUALSENSE_HAPTICS_GAIN=<float>         applied to the vibration samples (default: 1.0)
 //   KYTY_DUALSENSE_SPEAKER_CHANNELS=01|23|all   the same for the pad speaker (default: 01)
-//   KYTY_DUALSENSE_SPEAKER_GAIN=<float>         0..64 (default: 4.0, +12 dB). What the guest sends
+//   KYTY_DUALSENSE_SPEAKER_GAIN=<float>         0..64 (default: 1.0, unity - the Bluetooth route uses the same). What the guest sends
 //                                  to a pad speaker port is quiet - Demon's Souls peaks at about
 //                                  -40 dB - so some digital gain is what makes it clear. Past 4.0 the
 //                                  loudest moments reach full scale inside the controller, once its
