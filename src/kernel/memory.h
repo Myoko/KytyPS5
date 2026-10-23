@@ -132,6 +132,9 @@ void                   TrimGuestRange(uint64_t vaddr, uint64_t size);
 // Linux, the texture offload: the pages of [address, address + size) of the backing view freed, in
 // every view of them (a later read gets zeros). False elsewhere.
 bool DiscardBacking(uint64_t address, uint64_t size);
+// Linux, the file offload: the byte at `address` of the backing view in a second read-write view of
+// the backing store, which protections of the backing view leave alone. Null elsewhere.
+uint8_t* SpareBackingPointer(uint64_t address);
 // The backing view (every guest mapping's bytes, at their backing offset): its base and size; false when there is none.
 bool                   BackingView(uint64_t* base, uint64_t* size);
 // Diagnostics (live `ranges`): the guest's virtual ranges (start, size, direct memory offset, protection, memory type,

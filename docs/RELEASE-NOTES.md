@@ -2,6 +2,35 @@
 
 Your precompiled shaders stay valid: the shaders are the same as in v20261023.
 
+- **Picture glitches and black textures from v20261023b fixed** (#158, #157): with v20261023b the picture could show
+  its top-left quarter at twice the size for seconds, and black textures could pile up until a restart (a 16 GB PC).
+  v20261023b's fix for the blue screen keeps the memory the emulator watches behind guard pages. Windows lifts a page's
+  guard the moment it reports a read, and the emulator could take long to put it back while the game streamed, so
+  other threads read stale or dropped data meanwhile. The guard is now put back at once; the blue screen fix stays. If
+  you still see either, please tell us on #158. `run.cmd -Set KYTY_READ_GUARD=0` avoids it, but on a PC whose RAM runs
+  full it brings back the blue screen risk.
+- **Crash on graphics cards with less than 12 GB fixed** (in every build since v20261020): a buffer freed on a helper
+  thread while the emulator compacted video memory could stop the game with an access violation (in 1 of 2 tours on an
+  8 GB laptop). Found and fixed first by @Bios2000 (PR #151). The compaction also takes at most about 5 ms of a frame
+  on that laptop now (it was up to 18 ms).
+- **Fewer long hitches in Stonefang 2-2 and the Valley of Defilement 5-2** (graphics cards with 12 GB or more): the
+  game's big texture pools are kept while you stay in a world instead of being uploaded again whole (150-460 ms
+  frames).
+- **Texture offload** (on by default with 20 GB of RAM or less): fixes for writes over dropped textures, a race when a
+  texture is taken, write-backs, and a hang in copies (@Bios2000, PR #152).
+- **DualSense on Bluetooth:** a hit's vibration stops with the hit instead of lasting over a second (@Myoko, PR #156,
+  #146).
+- **Linux:** an opt-in file offload, `KYTY_FILE_OFFLOAD=1`, drops guest memory that still equals the game's files from
+  RAM (about 1 GB on a 16 GB PC; @Bios2000, PR #153).
+- New settings for PCs short of RAM: `KYTY_STAGING_MB` (the upload ring's size), `KYTY_STAGING_STATS=1` (its use) and
+  `KYTY_HEAP_TRIM=1` (freed heap memory given back; @Bios2000, PR #154). Nothing changes unless you set them.
+- **Thanks** to @Bios2000 and @Myoko for their fixes, and to @kvothe3323, @i-pseudo and @lukefela for the quick
+  reports.
+
+## New in v20261023b
+
+Your precompiled shaders stay valid: the shaders are the same as in v20261023.
+
 - **The MEMORY_MANAGEMENT blue screen is fixed** (#50, #5): PCs whose RAM ran full (16 GB, or 32 GB with a browser
   open) could stop with this blue screen after 10 minutes to an hour, often during a load or after a death. The cause
   is Windows mishandling "no access" pages of a mapped file when it pages them out; the emulator now keeps guest memory
@@ -32,54 +61,30 @@ Your precompiled shaders stay valid: the shaders are the same as in v20261023.
   output too (@intellq, PR #140).
 - **Thanks** to @Myoko, @intellq, and everyone who posted bug check lines and dumps of the blue screen (#5, #50).
 
-## New in v20261023
-
-Your precompiled shaders stay valid: the shaders are the same as in v20261022. The release's hints now hold two
-more whole playthroughs, so the launcher offers the precompile once more: only the new part is compiled (minutes).
-
-- **FSR 3 upscaling for every graphics card:** in the launcher, Graphics > Upscaler > **FSR 3 (PS5 Pro path)**
-  (`run.cmd -Upscaler fsr`). AMD's FSR 3 replaces Sony's PS5 Pro upscaler, as DLSS does: AMD, Intel and GeForce GTX
-  cards get a real upscaler, built in, nothing to download. On an RTX 5090 at Boletaria's start, 1080 to 4K looked close
-  to DLSS at the same height.
-- **DLSS and FSR 3 for 1080p screens:** with Game output 1080p they make the 1080p picture directly (no 4K step), from
-  render heights down to 360. Each render height in the launcher shows the mode it runs in (Quality, Balanced,
-  Performance, Ultra Performance, DLAA); with the 4K output, 720 is DLSS's Ultra Performance. Graphics > **DLSS model**:
-  Automatic, Transformer (preset K), or CNN (preset E, lighter on RTX 20 and 30 cards).
-- **Game output "Automatic"** (the new default): the game's own 1080p output for a 16:9 game window (or screen, in
-  full screen) at most 1080 lines high, 4K otherwise. On 1080p screens the picture is pixel for pixel and the graphics
-  card saves the 4K post-processing (RTX 5090: 69.8 -> 78.3 fps; RX 9070 XT on Linux: +4.6%). Choose 4K to keep it
-  (`run.cmd -Set KYTY_HD_OUTPUT=0`).
-- **Every language in every release:** the game's language settings offer the text of all 23 languages (Chinese,
-  Japanese and Korean too) and all 9 voices, whatever the release; no `param.json` edit (a contribution by @noir39,
-  PR #139).
-- **Sound:** no more crackling, and no delay that slowly grew in long sessions (#85).
-- **Launcher:**
-  - Experimental page: **Lock to 30 fps** (steady 30 at the normal game speed, for slower PCs), direct presentation
-    for variable refresh rate displays (#37), **Keep memory resident** (a test against MEMORY_MANAGEMENT blue screens,
-    #50), AMD Anti-Lag (#80).
-  - Advanced: a **Command-line options** box (as after `run.cmd`), and a **Graphics card** choice on PCs with more than
-    one (#132).
-  - `KytyLauncher.exe --play` starts the game with the launcher's settings, without its window: for Steam's "Add a
-    Non-Steam Game" with the Launch Options `--play` (#130).
-  - Export shader hints writes a `.zip`, which GitHub takes as an attachment.
-- **Fixes:**
-  - With the 1080p output at render height 1080, the menus' 3D was black (the character in the equipment menu and in
-    character creation) (#138).
-  - PCs with two graphics cards ran the game on the one Windows' graphics settings did not choose, and the precompile
-    on the other (#132). `run.cmd -Gpu 4090` (a number or part of the name) picks one.
-  - A precompile that hung on an old graphics driver: a pipeline the driver never finishes is now left out after 5
-    minutes, and the files such a run left behind no longer make every start offer the precompile (#126).
-  - `kyty_emulator.exe` carries version information (Microsoft Defender's machine learning took the bare file for a
-    trojan, #135).
-- **Shader hints:** two whole playthroughs added, by @DevList1454 (#124) and @Mvii7 (#134): fewer first-time
-  stutters in places our own recordings missed.
-- **Linux:** the package is built with a Linux PGO profile (+3.4%, @the2ndday, PR #133); the render thread's locks and
-  memory protection are cheaper (`KYTY_LINUX_FAST_LOCKS`, `KYTY_LINUX_COALESCE_MPROTECT`, on by default; +8% on an
-  i5-14400, @the2ndday, PR #125); the texture offload for 16 GB PCs runs on Linux too (@Bios2000, PRs #136 and #137);
-  FSR 3 upscaling is as sharp as it should be (@Bios2000, PR #131).
-- **Thanks** to @noir39, @the2ndday, @Bios2000, @DevList1454, @Mvii7 and everyone who reported problems and tested.
-
 ## 本版本的变化
+
+已有的预编译着色器继续有效：着色器与 v20261023 相同。
+
+- **修复了 v20261023b 带来的画面错乱和黑色贴图**（#158、#157）：v20261023b 中，画面可能会有几秒钟只显示左上角的四分之一
+  并放大两倍；一台 16 GB 内存的电脑上黑色贴图越来越多，直到重启。v20261023b 为修复蓝屏改用 guard 页保护模拟器需要监视的
+  内存。Windows 在页面第一次被读取时会立刻撤掉它的 guard，而模拟器在游戏加载资源时可能要过很久才把 guard 放回去，这段
+  时间里其他线程会读到过期或已被释放的数据。现在 guard 会立刻放回，蓝屏修复保持不变。如果仍然遇到，请在 #158 告诉我们。
+  `run.cmd -Set KYTY_READ_GUARD=0` 可以避开，但在内存被占满的电脑上会重新带来蓝屏风险。
+- **修复了显存小于 12 GB 的显卡上的崩溃**（v20261020 以来的所有版本）：模拟器整理显存时，辅助线程释放的缓冲区可能让游戏
+  因访问违规而退出（8 GB 笔记本上两次巡回中出现一次）。由 @Bios2000 最先发现并修复（PR #151）。整理显存现在在那台笔记本
+  上每帧最多占用约 5 ms（之前最多 18 ms）。
+- **Stonefang 2-2 和 Valley of Defilement 5-2 的长卡顿更少**（12 GB 及以上显存）：游戏的大纹理池在同一个世界内会保留，
+  不再整体重新上传（150–460 ms 的长帧）。
+- **纹理卸载**（内存 20 GB 及以下时默认开启）：修复了写入已卸载的贴图、取用贴图时的竞争、回写，以及复制时的卡死
+  （@Bios2000，PR #152）。
+- **蓝牙 DualSense：** 受击的振动会随受击结束，不再持续一秒多（@Myoko，PR #156，#146）。
+- **Linux：** 新增可选的文件卸载 `KYTY_FILE_OFFLOAD=1`，把与游戏文件内容相同的客户机内存从内存中释放（16 GB 电脑上约
+  1 GB；@Bios2000，PR #153）。
+- 面向内存不足电脑的新设置：`KYTY_STAGING_MB`（上传环的大小）、`KYTY_STAGING_STATS=1`（其使用情况）和
+  `KYTY_HEAP_TRIM=1`（归还释放的堆内存；@Bios2000，PR #154）。不设置则没有任何变化。
+- **感谢** @Bios2000 和 @Myoko 的修复，以及 @kvothe3323、@i-pseudo、@lukefela 的及时反馈。
+
+## v20261023b 的变化
 
 已有的预编译着色器继续有效：着色器与 v20261023 相同。
 
@@ -105,26 +110,3 @@ more whole playthroughs, so the launcher offers the precompile once more: only t
     "merge failed"（#149）。
 - **FSR 3 插帧：** 读取关卡后 HUD 不再错位（@intellq，PR #142）；Linux 上 HDR10 输出也能用（@intellq，PR #140）。
 - **感谢** @Myoko、@intellq，以及所有贴出蓝屏代码和转储文件的用户（#5、#50）。
-
-## v20261023 的变化
-
-已经预编译的着色器继续有效：着色器与 v20261022 相同。发布包的提示新增了两份完整通关的记录，所以启动器会再提示一次预编译：只编译新增的部分（几分钟）。
-
-- **FSR 3 超分，任何显卡都可用：** 启动器「画质」>「超分辨率」>「FSR 3（PS5 Pro 路径）」（`run.cmd -Upscaler fsr`）。和 DLSS 一样，用 AMD 的 FSR 3 替代索尼的 PS5 Pro 超分：AMD、Intel 和 GeForce GTX 显卡也有了真正的超分，已内置，无需下载。在 RTX 5090 上的波雷塔利亚起点，从 1080 到 4K 的画面接近同高度的 DLSS。
-- **1080p 屏幕的 DLSS 和 FSR 3：** 游戏输出选 1080p 时，它们直接生成 1080p 画面（不再经过 4K），渲染高度最低可到 360。启动器中每个渲染高度都标出对应的模式（质量、平衡、性能、超级性能、DLAA）；4K 输出时 720 是 DLSS 的超级性能模式。「画质」>「DLSS 模型」：自动、Transformer（预设 K）或 CNN（预设 E，在 RTX 20/30 系显卡上更轻）。
-- **游戏输出「自动」**（新的默认）：16:9 且游戏窗口（全屏时为屏幕）高度不超过 1080 时使用游戏自己的 1080p 输出，否则 4K。1080p 屏幕上画面逐像素显示，显卡也省掉了 4K 后处理（RTX 5090：69.8 → 78.3 fps；Linux 上的 RX 9070 XT：+4.6%）。想保持 4K 请选 4K（`run.cmd -Set KYTY_HD_OUTPUT=0`）。
-- **所有版本都能选所有语言：** 无论哪个区服版本，游戏的语言设置都提供全部 23 种文字（包括中文、日文、韩文）和全部 9 种语音，不再需要修改 `param.json`（@noir39 的贡献，PR #139）。
-- **声音：** 不再有爆音，长时间游玩时声音逐渐延迟的问题也已修正（#85）。
-- **启动器：**
-  - 「实验性」页：**锁定 30 帧**（稳定 30 帧、游戏速度正常，适合较慢的电脑）、可变刷新率显示器的直接呈现（#37）、**保持内存常驻**（针对 MEMORY_MANAGEMENT 蓝屏的测试，#50）、AMD Anti-Lag（#80）。
-  - 「高级」：**命令行参数**输入框（写法同 `run.cmd` 后面的参数），以及多显卡电脑上的**显卡**选择（#132）。
-  - `KytyLauncher.exe --play` 用启动器的设置直接启动游戏、不显示启动器窗口：适合在 Steam「添加非 Steam 游戏」里使用，启动选项填 `--play`（#130）。
-  - 导出着色器提示会生成 `.zip`，可以直接作为 GitHub 附件上传。
-- **修正：**
-  - 1080p 输出且渲染高度为 1080 时，菜单里的 3D 是黑的（装备菜单和捏人界面里的角色）（#138）。
-  - 装有两块显卡的电脑上，游戏用的不是 Windows 图形设置选择的那块，预编译却用了另一块（#132）。可用 `run.cmd -Gpu 4090`（编号或名称的一部分）指定。
-  - 旧显卡驱动导致预编译卡住：驱动始终编译不完的管线现在 5 分钟后跳过，这类运行留下的文件也不会再让每次启动都提示预编译（#126）。
-  - `kyty_emulator.exe` 带上了版本信息（微软 Defender 的机器学习曾把没有版本信息的文件误判为木马，#135）。
-- **着色器提示：** 加入了 @DevList1454（#124）和 @Mvii7（#134）的两份完整通关记录：在我们自己的录制没有覆盖到的地方，首次出现的卡顿更少。
-- **Linux：** 发布包用 Linux 的 PGO 配置文件构建（+3.4%，@the2ndday，PR #133）；渲染线程的锁和内存保护更省（`KYTY_LINUX_FAST_LOCKS`、`KYTY_LINUX_COALESCE_MPROTECT`，默认开启；i5-14400 上 +8%，@the2ndday，PR #125）；面向 16 GB 电脑的纹理卸载在 Linux 上也启用了（@Bios2000，PR #136 和 #137）；FSR 3 超分恢复了应有的清晰度（@Bios2000，PR #131）。
-- **感谢** @noir39、@the2ndday、@Bios2000、@DevList1454、@Mvii7 以及所有报告问题和帮忙测试的玩家。

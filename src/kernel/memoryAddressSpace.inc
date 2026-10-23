@@ -293,6 +293,27 @@ public:
 #endif
 	}
 
+	// Linux, the file offload: the byte at `address` of the backing view in a second read-write
+	// view of the store (mapped on first use), which the offload's protections of the backing view
+	// leave alone. Null elsewhere.
+	uint8_t* SparePointer(uint64_t address) {
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX && !defined(__APPLE__)
+		std::call_once(m_spare_once, [this] {
+			if (!IsAvailable()) return;
+			void* view =
+			    mmap(nullptr, m_size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_NORESERVE, m_fd, 0);
+			if (view != MAP_FAILED) m_spare = static_cast<uint8_t*>(view);
+		});
+		const auto base = reinterpret_cast<uint64_t>(m_backing_base);
+		return m_spare != nullptr && address >= base && address - base < m_size
+		           ? m_spare + (address - base)
+				   : nullptr;
+#else
+		(void)address;
+		return nullptr;
+#endif
+	}
+
 	bool ZeroRange(uint64_t backing_offset, uint64_t size) {
 		GuestBackingMutation mutation;
 		if (!IsAvailable() || !RangeOk(backing_offset, size)) {
@@ -1465,7 +1486,9 @@ private:
 		return ptr != MAP_FAILED && ptr == vaddr;
 	}
 
-	int m_fd = -1;
+	int            m_fd    = -1;
+	uint8_t*       m_spare = nullptr; // (SparePointer)
+	std::once_flag m_spare_once;
 #endif
 
 	uint8_t*                     m_backing_base = nullptr;
@@ -1678,6 +1701,7 @@ public:
 
 	const uint8_t* BackingPointer(uint64_t vaddr, uint64_t size) { return m_backing->BackingPointer(vaddr, size); }
 	uint64_t       BackingMappingEnd(uint64_t vaddr) { return m_backing->MappingEndOf(vaddr); }
+	uint8_t* SpareBackingPointer(uint64_t address) { return m_backing->SparePointer(address); }
 	bool           DiscardBacking(uint64_t address, uint64_t size) {
 		return m_backing->DiscardPages(address, size);
 	}
@@ -1763,11 +1787,23 @@ public:
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	// KYTY_READ_GUARD: the 4 KiB page of `vaddr` guarded again after its guard raised a fault, when it is a guest view's
-	// (true); as the trackers' protections, after any map or unmap over it.
+	// (true). At once, without the lock: Windows took the guard off as it raised the fault, and until it is back any other
+	// thread reads the page without a fault - a GPU-written page's stale bytes, a texture-offloaded page's zeros. The
+	// waits for maps and unmaps in flight anywhere (WaitNotBusy with KYTY_PROTECT_SERIAL) left it open for whole system
+	// calls while the game streamed (issues #157, #158). A guest view is a mapped view of the backing section
+	// (MEM_MAPPED); guards in the guest's private memory are its stacks' (GuestStackOverflow). A guard armed over a change
+	// another thread made meanwhile is settled once the fault is served (SettleReadGuard); a view mapped or unmapped
+	// meanwhile takes the locked path below.
 	bool ArmReadGuard(uint64_t vaddr) {
-		constexpr uint64_t Page = 0x1000;
-		const uint64_t     page = vaddr & ~(Page - 1);
-		std::shared_lock   lock(m_mutex);
+		constexpr uint64_t       Page = 0x1000;
+		const uint64_t           page = vaddr & ~(Page - 1);
+		MEMORY_BASIC_INFORMATION info {};
+		if (VirtualQuery(reinterpret_cast<const void*>(page), &info, sizeof(info)) != sizeof(info) ||
+		    info.Type != MEM_MAPPED || info.State != MEM_COMMIT)
+			return false;
+		if (DWORD old = 0; VirtualProtect(reinterpret_cast<void*>(page), Page, PAGE_GUARD | PAGE_READONLY, &old) != 0)
+			return true;
+		std::shared_lock lock(m_mutex);
 		WaitNotBusy(lock, page, Page);
 		auto it = m_mapped.upper_bound(page);
 		if (it == m_mapped.begin()) return false;
@@ -1783,6 +1819,8 @@ public:
 	                VirtualMemory::Mode               mode,
 	                GuestBackingStore::FailureReason* failure_reason = nullptr) {
 		LiveTrace::SlowOsCallScope slow(LiveTrace::OsMapBacking, vaddr, size);
+		// (Offloaded ranges of the memory mapped given back first: the new view would not fault.)
+		TextureOffload::OnBackingMapped(GetBackingBase() + backing_offset, size);
 		MaterializeParked(vaddr, size);
 		FreeSplit split;
 		{

@@ -361,12 +361,17 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
 	// below it a kept image costs nothing, a deleted one an upload when the game uses it again.
 	m_trigger_gc_memory = m_graphics.GetTotalMemoryBudget();
 #if KYTY_TEXTURE_OFFLOAD_SUPPORTED
-	if (TextureOffload::Enabled()) {
+	if (TextureOffload::AnyEnabled()) {
 		const bool offload = TextureOffload::GetMode() == TextureOffload::Mode::Offload;
 		g_offload_cache    = this;
 		g_offload_alive.store(true, std::memory_order_release);
 		auto& state = TextureOffload::Get();
-		state.remove.store(+[](uint64_t vaddr, uint64_t size) { g_offload_cache->m_page_manager.UpdateReadWatchers<false>(vaddr, size); });
+		// (Every page then gets the protection the page manager has for it: the touch let reads
+		// through (TouchLocked), and a page other read watchers hold (the GPU wrote it) keeps its
+		// no access without a change the hold's end would make.)
+		state.remove.store(+[](uint64_t vaddr, uint64_t size) {
+			g_offload_cache->m_page_manager.UpdateReadWatchers<false, true>(vaddr, size);
+		});
 		if (offload) {
 			// A restore on the render thread; from a game thread through it (as a guest readback: BufferCache::ReadMemory).
 			state.restore.store(+[](uint64_t vaddr, uint64_t size, TextureOffload::Touch touch) {
@@ -385,12 +390,34 @@ TextureCache::TextureCache(GraphicContext& graphics, CommandScheduler& scheduler
 				if (AsyncUpload::t_worker || CommandScheduler::InDeferredOperation()) return false;
 				return GuestGpu::IsGpuThread() || LibKernel::PthreadSelfOrNull() != nullptr;
 			});
+			// (A host write's wait for the asynchronous restores under it, on the render thread:
+			// their downloads go first.)
+			state.submit.store(+[] {
+				auto* cache = g_offload_cache;
+				if (cache == nullptr || !g_offload_alive.load(std::memory_order_acquire) ||
+				    !GuestGpu::IsGpuThread() || CommandScheduler::InDeferredOperation() ||
+				    !cache->m_offload_unsubmitted)
+					return;
+				cache->m_offload_unsubmitted = false;
+				cache->m_scheduler.Flush();
+			});
 		}
 		Common::HostException::SetProbeHandler(TextureOffload::OnFault);
-		std::printf(offload ? "Texture offload: on (the guest bytes of clean sampled textures of 256 KiB or more dropped from RAM "
-		                      "after 2 s clean and a download that gives them back exactly; KYTY_TEXTURE_OFFLOAD=0 keeps them)\n"
-		                    : "Texture offload probe: on (clean sampled textures of 256 KiB or more made inaccessible after 2 s "
-		                      "clean; nothing discarded)\n");
+		if (FileOffload::Enabled()) {
+			std::printf(FileOffload::GetMode() == FileOffload::Mode::Offload
+			                ? "File offload: on (APR-read guest pages still equal to their files "
+			                  "dropped from RAM, read back from the files when touched)\n"
+			                : "File offload probe: on (APR-read guest pages still equal to their "
+			                  "files made inaccessible; touches counted, nothing dropped)\n");
+		}
+		if (TextureOffload::Enabled()) {
+			std::printf(offload ? "Texture offload: on (the guest bytes of clean sampled textures "
+			                      "of 256 KiB or more dropped from RAM after 2 s clean and a "
+			                      "download that gives them back exactly; KYTY_TEXTURE_OFFLOAD=0 "
+			                      "keeps them)\n"
+			                    : "Texture offload probe: on (clean sampled textures of 256 KiB or "
+			                      "more made inaccessible after 2 s clean; nothing discarded)\n");
+		}
 	}
 #endif
 }
@@ -4085,6 +4112,10 @@ void TextureCache::OffloadScan(uint64_t tick) {
 		m_scheduler.Flush();
 	}
 	if (tick % 120 != 0) return;
+#if KYTY_FILE_OFFLOAD_SUPPORTED
+	if (FileOffload::Enabled()) OffloadFiles();
+#endif
+	if (!TextureOffload::Enabled()) return;
 	// (Diagnostics: where a scan's time goes, printed when it took 10 ms or more.)
 	using Clock          = std::chrono::steady_clock;
 	const auto scan_start = Clock::now();
@@ -4185,10 +4216,14 @@ void TextureCache::OffloadScan(uint64_t tick) {
 		auto mark = Clock::now();
 		if (offload) AsyncUpload::DrainRange(begin, end - begin);
 		ms[1] += since(mark);
-		TextureOffload::Add(begin, end - begin, pieces, image.serial, (static_cast<uint64_t>(id.generation) << 32u) | id.index,
-		                    offload);
 		mark = Clock::now();
-		m_page_manager.UpdateReadWatchers<true>(begin, end - begin);
+		TextureOffload::Add(begin, end - begin, pieces, image.serial,
+		                    (static_cast<uint64_t>(id.generation) << 32u) | id.index, offload, [&] {
+			                    m_page_manager.UpdateReadWatchers<true>(begin, end - begin);
+			                    // (Its no access now, not with this thread's other deferred
+			                    // ones: TextureOffload::Add.)
+			                    PageManager::FlushDeferredProtection(begin, end - begin);
+		                    });
 		ms[2] += since(mark);
 		if (offload) {
 			discards.emplace_back(begin, end - begin);
@@ -4293,11 +4328,114 @@ void TextureCache::OffloadScan(uint64_t tick) {
 #endif
 }
 
+#if KYTY_FILE_OFFLOAD_SUPPORTED
+// The offload worker's compares of a scan's file ranges (CheckFileRange) 8 MiB at a time, each
+// batch posting the next: an image's asynchronous restore posted meanwhile, which threads wait for,
+// runs between two batches, not after a whole scan's (up to 256 MiB of reads and compares).
+static void PostFileChecks(std::shared_ptr<std::vector<std::pair<uint64_t, uint64_t>>> taken,
+                           size_t first, bool drop) {
+	OffloadWorker::Post([taken = std::move(taken), first, drop]() mutable {
+		constexpr uint64_t Batch = uint64_t {8} << 20u;
+		uint64_t           bytes = 0;
+		size_t             next  = first;
+		for (; next < taken->size() && bytes < Batch; ++next) {
+			TextureOffload::CheckFileRange((*taken)[next].first, drop);
+			bytes += (*taken)[next].second;
+		}
+		if (next < taken->size()) PostFileChecks(std::move(taken), next, drop);
+	});
+}
+#endif
+
+// KYTY_FILE_OFFLOAD (file-offload.h; from OffloadScan, every 120 flips): pieces of APR reads that
+// no read replaced for 10 s are taken (the page manager's hold on the guest view, no access in the
+// backing view: each touch faults from now on) and compared with their files by the offload
+// worker, which drops the equal ones (KYTY_FILE_OFFLOAD=1).
+void TextureCache::OffloadFiles() {
+#if KYTY_FILE_OFFLOAD_SUPPORTED
+	static const auto age = [] {
+		const char* value = std::getenv("KYTY_FILE_OFFLOAD_AGE");
+		return std::chrono::seconds(
+		    value != nullptr && value[0] != '\0' ? std::strtoull(value, nullptr, 10) : 10);
+	}();
+	// (KYTY_FILE_OFFLOAD_SCAN_MB, default 256: the bytes a scan takes;
+	// KYTY_FILE_OFFLOAD_SCAN_RANGES, default 256: the ranges, each a hold and protection changes on
+	// this thread.)
+	static const uint64_t budget = [] {
+		const char* value = std::getenv("KYTY_FILE_OFFLOAD_SCAN_MB");
+		return (value != nullptr && value[0] != '\0' ? std::strtoull(value, nullptr, 10)
+		                                             : uint64_t {256})
+		       << 20u;
+	}();
+	static const size_t count = [] {
+		const char* value = std::getenv("KYTY_FILE_OFFLOAD_SCAN_RANGES");
+		return static_cast<size_t>(
+		    value != nullptr && value[0] != '\0' ? std::strtoull(value, nullptr, 10) : 256);
+	}();
+	const auto start = std::chrono::steady_clock::now();
+	const bool drop  = FileOffload::GetMode() == FileOffload::Mode::Offload;
+	auto       taken = std::make_shared<std::vector<std::pair<uint64_t, uint64_t>>>();
+	// (As IsRegionGpuModified, under the lock this thread holds: OffloadScan's caller.)
+	const auto gpu_written = [&](uint64_t begin, uint64_t size) {
+		if (m_buffer_cache.IsRegionGpuModified(begin, size)) return true;
+		for (const auto id: FindImagesInRegion(begin, size, false)) {
+			const auto& image = m_slot_images[id];
+			if (!image.depth_id && image.IsGpuModified() && !image.IsDefinitelyCpuDirty())
+				return true;
+		}
+		return false;
+	};
+	for (const auto& candidate: FileOffload::Take(age, budget, count)) {
+		const uint64_t                     size = candidate.end - candidate.begin;
+		std::vector<TextureOffload::Piece> pieces;
+		uint64_t                           covered = 0;
+		for (uint64_t at = candidate.begin; at < candidate.end;) {
+			const auto  mapping_end = Libs::LibKernel::Memory::BackingMappingEnd(at);
+			const auto  piece = mapping_end > at ? std::min(mapping_end, candidate.end) - at : 0;
+			const auto* backing =
+			    piece != 0 ? Libs::LibKernel::Memory::TryGetBackingPointer(at, piece) : nullptr;
+			if (backing == nullptr) break;
+			pieces.push_back({reinterpret_cast<uint64_t>(backing), piece});
+			covered += piece;
+			at += piece;
+		}
+		// (Memory without backing bytes for all of it, flexible memory, or under a taken range:
+		// left alone. So is memory mapped at another guest address too (a write there would not
+		// fault) and memory the GPU wrote (its bytes are the GPU's, read back when the game reads
+		// them).)
+		if (covered != size || TextureOffload::AnyTaken(candidate.begin, size) ||
+		    !Libs::LibKernel::Memory::IsUniqueGuestBackingRangeAcrossMappings(candidate.begin,
+		                                                                      size) ||
+		    gpu_written(candidate.begin, size))
+			continue;
+		const auto hold = [&] {
+			m_page_manager.UpdateReadWatchers<true>(candidate.begin, size);
+			// (Its no access now, not with this thread's other deferred ones: TextureOffload::Add.
+			// The worker's compare comes after it too.)
+			PageManager::FlushDeferredProtection(candidate.begin, size);
+		};
+		if (TextureOffload::AddFile(candidate.begin, size, std::move(pieces), candidate.file,
+		                            candidate.offset, hold))
+			taken->emplace_back(candidate.begin, size);
+	}
+	const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+	    std::chrono::steady_clock::now() - start);
+	TextureOffload::NoteFileScan(taken->size(), static_cast<uint64_t>(us.count()));
+	if (!taken->empty()) PostFileChecks(std::move(taken), 0, drop);
+#endif
+}
+
 // Render thread: the discarded ranges over [vaddr, vaddr + size) downloaded back from their images in one submission,
 // the render thread waiting for it; their read watchers then go.
 void TextureCache::RestoreOffloaded(uint64_t vaddr, uint64_t size, uint8_t touch_value, bool async) {
 #if KYTY_TEXTURE_OFFLOAD_SUPPORTED
 	const auto touch  = static_cast<TextureOffload::Touch>(touch_value);
+#if KYTY_FILE_OFFLOAD_SUPPORTED
+	// (Dropped file bytes there: read back from their files first, on this thread. Not for an image
+	// gone: nothing reads them.)
+	if (touch != TextureOffload::Touch::Count && touch != TextureOffload::Touch::ImageGone)
+		TextureOffload::RestoreFiles(vaddr, size, touch);
+#endif
 	auto       ranges = TextureOffload::BeginRestore(vaddr, size, touch, touch == TextureOffload::Touch::Count, async);
 	if (ranges.empty()) return;
 	const auto                         start = std::chrono::steady_clock::now();
@@ -4902,7 +5040,7 @@ void TextureCache::RunGarbageCollector() {
 		return true;
 	});
 	RetireStaleImages(tick);
-	if (TextureOffload::Enabled()) OffloadScan(tick);
+	if (TextureOffload::AnyEnabled()) OffloadScan(tick);
 	if (m_graphics.CanReportMemoryUsage()) {
 		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();
 	}
