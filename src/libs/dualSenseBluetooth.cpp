@@ -33,7 +33,9 @@ constexpr int      SPEAKER_RATE = 45000;
 constexpr int      OPUS_FRAMES  = 480;
 constexpr int      OPUS_BYTES   = 200;
 constexpr size_t   REPORT_BYTES = 547;
-constexpr int      MAX_QUEUE_MS = 80;
+// 40 ms: the same report carries the actuators, so a shorter queue trades a little tolerance for a
+// noticeably smaller delay before a hit is felt.
+constexpr int      MAX_QUEUE_MS = 40;
 constexpr uint64_t COALESCE_NS  = 1000000;
 
 struct Session;
@@ -200,13 +202,14 @@ bool PrepareReport(Session& session, PendingReport& pending, uint64_t now) {
 	bool speaker_ready = false;
 	for (const auto* stream: session.streams) {
 		const bool available = SDL_AudioStreamAvailable(stream->audio) > 0;
-		// Both payloads cover 64 / 3000 seconds. Measure input duration so SDL's resampler lookahead
-		// does not make a complete block appear partial.
-		const auto frames =
-		    (static_cast<uint64_t>(stream->freq) * (HAPTIC_REPORT_FLOATS / 2) + HAPTIC_RATE - 1) /
-		    HAPTIC_RATE;
-		const bool full = available && SDL_AudioStreamAvailable(stream->audio) >=
-		                                   static_cast<int>(frames * 2 * sizeof(float));
+		// One report carries HAPTIC_REPORT_FLOATS floats, or two Opus packets for the speaker. SDL2's
+		// SDL_AudioStreamAvailable answers the converted (output) side where SDL3's
+		// SDL_GetAudioStreamQueued answers the input side, so a full block is measured in output
+		// frames here: measuring it in input frames made a complete block look partial, and every
+		// report then waited for the deadline path before it was sent.
+		const int needed = (stream->speaker ? 2 * OPUS_FRAMES : HAPTIC_REPORT_FLOATS / 2) * 2 *
+		                   static_cast<int>(sizeof(float));
+		const bool full = available && SDL_AudioStreamAvailable(stream->audio) >= needed;
 		has_data |= available;
 		ready |= full;
 		speaker_ready |= stream->speaker && full;
@@ -411,16 +414,22 @@ uint64_t Queue(Stream* stream, const float* stereo, uint32_t frames) {
 		stereo += static_cast<size_t>(frames - max_frames) * 2;
 		frames = max_frames;
 	}
+	// The budget is a duration, so it is counted in output frames: that is the side SDL2 answers.
+	const auto out_rate  = stream->speaker ? SPEAKER_RATE : HAPTIC_RATE;
+	const int  max_out   = static_cast<int>(static_cast<uint64_t>(out_rate) * MAX_QUEUE_MS / 1000) * 2 *
+	                       static_cast<int>(sizeof(float));
+	const int  converted = static_cast<int>(static_cast<uint64_t>(frames) * out_rate / stream->freq) * 2 *
+	                       static_cast<int>(sizeof(float));
 	int       queued = std::max(0, SDL_AudioStreamAvailable(stream->audio));
 	const int bytes  = static_cast<int>(frames * 2 * sizeof(float));
-	if (queued + bytes > static_cast<int>(max_frames * 2 * sizeof(float))) {
+	if (queued + converted > max_out) {
 		// Discard complete old report slots, preserving the newest queued audio. Clearing the whole
 		// stream here creates an audible gap after a brief Windows Bluetooth write stall.
 		std::array<float, 2 * OPUS_FRAMES * 2> discarded {};
 		const int discard_bytes = stream->speaker
 		                              ? static_cast<int>(sizeof(discarded))
 		                              : static_cast<int>(HAPTIC_REPORT_FLOATS * sizeof(float));
-		const int target        = static_cast<int>(max_frames * 2 * sizeof(float)) - bytes;
+		const int target        = max_out - converted;
 		while (queued > target) {
 			if (SDL_AudioStreamGet(stream->audio, discarded.data(), discard_bytes) <= 0) {
 				SDL_AudioStreamClear(stream->audio);

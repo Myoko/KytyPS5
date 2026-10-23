@@ -490,6 +490,11 @@ bool Open(bool speaker) {
 			}
 		}
 		if (speaker ? g_bt_speaker != nullptr : g_bt_vibration != nullptr) {
+			// The pad plays its speaker only after the audio-control report routes it there (the
+			// same report the USB path sends): without it the reports carry audio it never plays.
+			if (speaker) {
+				(void)RouteSpeaker(true);
+			}
 			g_routes |= route;
 			return true;
 		}
@@ -583,6 +588,7 @@ void Close(bool speaker) {
 	if (speaker) {
 		DualSenseBluetooth::Close(g_bt_speaker);
 		g_bt_speaker = nullptr;
+		(void)RouteSpeaker(false); // the pad's headphone routing goes back, as on the console
 	} else {
 		DualSenseBluetooth::Close(g_bt_vibration);
 		g_bt_vibration = nullptr;
