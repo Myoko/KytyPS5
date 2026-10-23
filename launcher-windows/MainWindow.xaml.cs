@@ -551,6 +551,8 @@ partial class MainWindow : Window {
 			Margin = new Thickness(12, 0, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 380 };
 		streamlineText.Text = context.Streamline ?? (S.Str("streamline").Length != 0 ? S.Str("streamline") : T("streamline.none"));
 		fsr = Switch(context.FsrAvailable && S.Bool("fsr"), context.FsrAvailable);
+		fsr.Checked += (s, e) => UpdateUpscalerNote();
+		fsr.Unchecked += (s, e) => UpdateUpscalerNote();
 		return Page("graphics.title",
 			Section("graphics.resolution"),
 			Row("upscaler", upscaler, upscalerNote),
@@ -677,7 +679,10 @@ partial class MainWindow : Window {
 
 	void UpdateUpscalerNote() {
 		var chosen = upscaler == null ? S.Str("upscaler") : Value(upscaler) as string;
+		// (DLSS with FSR 3 frame generation: that runs without Streamline, so the emulator upscales with FSR 3 instead.)
+		var fsrFrameGen = fsr != null ? fsr.IsChecked == true : context.FsrAvailable && S.Bool("fsr");
 		upscalerNote.Text = chosen == "fsr" ? T("upscaler.fsrNote")
+		                    : chosen == "dlss" && fsrFrameGen ? T("upscaler.dlssFsrFg")
 		                    : T(context.FrameGenAvailable ? "upscaler.ok" : !context.RtxGpu ? "upscaler.noRtx" : "upscaler.noStreamline");
 	}
 

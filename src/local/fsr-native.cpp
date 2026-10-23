@@ -12,6 +12,7 @@
 #if defined(_WIN32)
 #include <malloc.h>
 #endif
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string_view>
@@ -60,13 +61,26 @@ PFN_vkVoidFunction kyty_ffx_vkGetDeviceProcAddr(VkDevice device, const char* nam
 
 namespace Libs::Graphics::FsrNative {
 
+namespace {
+std::atomic<bool> g_instead_of_dlss {false}; // UpscaleInsteadOfDlss
+} // namespace
+
 bool UpscalerRequested() {
 #if KYTY_FSR_NATIVE
 	static const bool requested = [] {
 		const char* value = std::getenv("KYTY_UPSCALER");
 		return value != nullptr && std::string_view(value) == "fsr";
 	}();
-	return requested;
+	return requested || g_instead_of_dlss.load(std::memory_order_relaxed);
+#else
+	return false;
+#endif
+}
+
+bool UpscaleInsteadOfDlss() {
+#if KYTY_FSR_NATIVE
+	g_instead_of_dlss.store(true, std::memory_order_relaxed);
+	return true;
 #else
 	return false;
 #endif
