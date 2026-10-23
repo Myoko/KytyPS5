@@ -119,6 +119,12 @@ bool       g_speaker_limiter       = false;
 // cannot feel it", too high as "it buzzes through a whole spell charge" - so it is a setting, not a
 // constant: dualsense-haptics.txt `motor_gain=`, or KYTY_DUALSENSE_VIBRATION_MOTOR_GAIN.
 float      g_vibration_motor_gain  = 2.0f;
+// How long the motors stay on after each block, and how fast the hold falls between blocks. Together
+// they are the tail of a hit: a report lasts motor_ms, and the level carries over at motor_decay per
+// 21.3 ms report. A hit is a single block, so 60 ms / 0.6 ends it in about 250 ms; longer or slower
+// reads as a hit that keeps rumbling (and a whole spell charge as one long one).
+uint32_t   g_vibration_motor_ms    = 60;
+float      g_vibration_motor_decay = 0.6f;
 
 // What the routes actually did, so a log can tell clipping from silence and from a stalled endpoint.
 uint64_t   g_speaker_writes        = 0;
@@ -272,14 +278,26 @@ void ReadSettingsFile() {
 			if (gain >= 0.0f && gain <= 16.0f) {
 				g_vibration_motor_gain = gain;
 			}
+		} else if (key == "motor_ms" || key == "vibration_motor_ms") {
+			const auto ms = std::strtoul(value.c_str(), nullptr, 10);
+			if (ms <= 500) {
+				g_vibration_motor_ms = static_cast<uint32_t>(ms);
+			}
+		} else if (key == "motor_decay" || key == "vibration_motor_decay") {
+			const auto decay = std::strtof(value.c_str(), nullptr);
+			if (decay > 0.0f && decay <= 1.0f) {
+				g_vibration_motor_decay = decay;
+			}
 		}
 	}
 	std::fclose(file);
 
 	std::printf("DualSense: dualsense-haptics.txt: %s, vibration gain %.2f on channels %u-%u, motors "
-	            "%.2f, speaker gain %.2f on channels %u-%u, preamp %s, volume %u, limiter %s%s\n",
+	            "%.2f (%u ms, decay %.2f), speaker gain %.2f on channels %u-%u, preamp %s, volume %u, "
+	            "limiter %s%s\n",
 	            g_enabled ? "on" : "off", static_cast<double>(g_gain), g_first_channel,
 	            g_first_channel + g_channel_count - 1u, static_cast<double>(g_vibration_motor_gain),
+	            g_vibration_motor_ms, static_cast<double>(g_vibration_motor_decay),
 	            static_cast<double>(g_speaker_gain),
 	            g_speaker_first_channel, g_speaker_first_channel + g_speaker_channel_count - 1u,
 	            g_speaker_preamp ? "on (+6 dB)" : "off", g_speaker_volume,
@@ -326,6 +344,20 @@ void ReadSettings() {
 		const auto gain = std::strtof(value, nullptr);
 		if (gain >= 0.0f && gain <= 16.0f) {
 			g_vibration_motor_gain = gain;
+		}
+	}
+	// KYTY_DUALSENSE_VIBRATION_MOTOR_MS=<0..500> and KYTY_DUALSENSE_VIBRATION_MOTOR_DECAY=<0..1>: the
+	// tail of a hit - how long each report lasts and how fast the hold falls between reports.
+	if (const char* value = std::getenv("KYTY_DUALSENSE_VIBRATION_MOTOR_MS"); value != nullptr) {
+		const auto ms = std::strtoul(value, nullptr, 10);
+		if (ms <= 500) {
+			g_vibration_motor_ms = static_cast<uint32_t>(ms);
+		}
+	}
+	if (const char* value = std::getenv("KYTY_DUALSENSE_VIBRATION_MOTOR_DECAY"); value != nullptr) {
+		const auto decay = std::strtof(value, nullptr);
+		if (decay > 0.0f && decay <= 1.0f) {
+			g_vibration_motor_decay = decay;
 		}
 	}
 	// KYTY_DUALSENSE_SPEAKER_CHANNELS=01|23|all and KYTY_DUALSENSE_SPEAKER_GAIN=<float>: which
@@ -664,11 +696,10 @@ void RumbleFromHaptics(float left, float right) {
 	// second. 0.6 per 21.3 ms report falls from a full hit to the floor in about 190 ms, and the
 	// duration below adds its own tail - short enough to end with the hit, long enough to bridge two or
 	// three blocks.
-	constexpr float DECAY = 0.6f;
 	constexpr float FLOOR = 0.01f;
 	static float    held[2] = {0.0f, 0.0f};
-	held[0] = std::max(std::max(left, 0.0f), held[0] * DECAY);
-	held[1] = std::max(std::max(right, 0.0f), held[1] * DECAY);
+	held[0] = std::max(std::max(left, 0.0f), held[0] * g_vibration_motor_decay);
+	held[1] = std::max(std::max(right, 0.0f), held[1] * g_vibration_motor_decay);
 	if (held[0] < FLOOR && held[1] < FLOOR) {
 		held[0] = held[1] = 0.0f;
 		return;
@@ -683,7 +714,8 @@ void RumbleFromHaptics(float left, float right) {
 		if (pad == nullptr || SDL_GameControllerGetType(pad) != SDL_CONTROLLER_TYPE_PS5) {
 			continue;
 		}
-		(void)SDL_GameControllerRumble(pad, to_motor(held[0]), to_motor(held[1]), 60);
+		(void)SDL_GameControllerRumble(pad, to_motor(held[0]), to_motor(held[1]),
+		                               g_vibration_motor_ms);
 		return;
 	}
 }
