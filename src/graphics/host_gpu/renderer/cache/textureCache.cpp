@@ -2448,7 +2448,24 @@ bool TextureCache::UploadImageChunked(Image& image, const std::vector<std::pair<
 	}
 	std::sort(order.begin(), order.end(),
 	          [&](size_t left, size_t right) { return plan.tiles[left].tiled_offset < plan.tiles[right].tiled_offset; });
-	const auto                       start = std::chrono::steady_clock::now();
+	// A whole upload's tiles over no mapped guest memory: zeros, what their staged copy reads (ReadMappedOrZero),
+	// written on the GPU instead of staged, detiled and copied. Texture pools' released layers were most of their bytes
+	// at Stonefang 2-1's entry (10-23: 202 of 352 MiB and 167 of 256 MiB; a 1.47 GB pool's upload made a 780 ms
+	// frame with an 8 GB video memory budget, 234 ms with 32 GB).
+	std::vector<bool> unmapped;
+	if (only == nullptr) {
+		RangeSet mapped;
+		m_buffer_cache.MappedRanges(base, info.data.size, mapped);
+		unmapped.resize(plan.tiles.size());
+		// (Not over GPU-written bytes: their upload reads the buffer the GPU wrote, ObtainBufferForImage's "gpu" path.)
+		for (size_t index = 0; index < plan.tiles.size(); index++) {
+			const auto& tile = plan.tiles[index];
+			unmapped[index]  = !mapped.Intersects(base + tile.tiled_offset, tile.tiled_size) &&
+			                  !m_buffer_cache.IsRegionGpuModified(base + tile.tiled_offset, tile.tiled_size);
+		}
+	}
+	const auto skipped = [&](size_t index) { return !unmapped.empty() && unmapped[index]; };
+	const auto start   = std::chrono::steady_clock::now();
 	std::vector<GpuTileInfo>         tiles;
 	std::vector<vk::BufferImageCopy> regions;
 	uint64_t                         pieces     = 0;
@@ -2458,7 +2475,7 @@ bool TextureCache::UploadImageChunked(Image& image, const std::vector<std::pair<
 		const auto& first   = plan.tiles[order[at]];
 		uint64_t    begin   = base + first.tiled_offset;
 		uint64_t    end     = begin + first.tiled_size;
-		if (!selected(begin, end)) {
+		if (!selected(begin, end) || skipped(order[at])) {
 			at++;
 			continue;
 		}
@@ -2469,7 +2486,7 @@ bool TextureCache::UploadImageChunked(Image& image, const std::vector<std::pair<
 			const uint64_t tile_begin = base + tile.tiled_offset;
 			const uint64_t tile_end   = tile_begin + tile.tiled_size;
 			if (std::max(end, tile_end) - begin > ChunkedUploadPiece || !selected(tile_begin, tile_end) ||
-			    m_buffer_cache.IsRegionGpuModified(tile_begin, tile.tiled_size)) {
+			    skipped(order[next]) || m_buffer_cache.IsRegionGpuModified(tile_begin, tile.tiled_size)) {
 				break;
 			}
 			end = std::max(end, tile_end);
@@ -2506,6 +2523,27 @@ bool TextureCache::UploadImageChunked(Image& image, const std::vector<std::pair<
 		uploaded += end - begin;
 		at = next;
 	}
+	uint64_t zero_bytes = 0;
+	if (!unmapped.empty()) {
+		uint64_t zero_size = 0;
+		regions.clear();
+		for (size_t index = 0; index < plan.tiles.size(); index++) {
+			if (!unmapped[index]) continue;
+			auto region = plan.regions[index];
+			region.bufferOffset -= plan.tiles[index].linear_offset; // (into one tile's zeros: they all read the same)
+			regions.push_back(region);
+			zero_size = std::max(zero_size, plan.tiles[index].linear_size);
+			zero_bytes += plan.tiles[index].tiled_size;
+		}
+		if (!regions.empty()) {
+			const auto zeros = m_tiler.GetScratchBuffer(zero_size);
+			m_scheduler.EndRendering();
+			m_scheduler.Current().Handle().fillBuffer(zeros.buffer, zeros.offset, zeros.size, 0);
+			for (auto& region: regions) region.bufferOffset += zeros.offset;
+			image.Upload(regions, zeros.buffer, zeros.offset, zeros.size); // (its barrier waits for the fill)
+			LiveCounters::Add(LiveCounters::UnmappedUploadBytes, zero_bytes);
+		}
+	}
 	if (only != nullptr) {
 		LiveCounters::Add(LiveCounters::PartialUploads);
 		LiveCounters::Add(LiveCounters::PartialUploadBytes, uploaded);
@@ -2527,10 +2565,10 @@ bool TextureCache::UploadImageChunked(Image& image, const std::vector<std::pair<
 	static std::atomic<uint32_t> reports {0};
 	if (reports.fetch_add(1, std::memory_order_relaxed) < 64) {
 		std::printf("TextureCache: chunked upload addr=0x%llx size=0x%llx layers=%u levels=%u: %llu pieces (%llu with "
-		            "GPU-written bytes) in %.1f ms\n",
+		            "GPU-written bytes), %llu MiB over unmapped memory as zeros, in %.1f ms\n",
 		            static_cast<unsigned long long>(base), static_cast<unsigned long long>(info.data.size),
 		            info.resources.layers, info.resources.levels, static_cast<unsigned long long>(pieces),
-		            static_cast<unsigned long long>(gpu_pieces),
+		            static_cast<unsigned long long>(gpu_pieces), static_cast<unsigned long long>(zero_bytes >> 20u),
 		            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
 	}
 	return true;

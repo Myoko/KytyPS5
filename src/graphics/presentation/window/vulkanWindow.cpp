@@ -1515,7 +1515,8 @@ void WindowContext::CreateVulkan() {
 	                         graphic_ctx.physical_device, queue_family);
 
 	if (graphic_ctx.physical_device == nullptr) {
-		EXIT("Could not find suitable device");
+		EXIT("Could not find suitable device: no Vulkan GPU has what the emulator needs (the log's lines above name what "
+		     "each one lacks; NVIDIA cards need a GeForce GTX 16 or RTX 20 series or newer)");
 	}
 
 	vk::PhysicalDevicePushDescriptorProperties push_descriptor_properties {};
@@ -1794,6 +1795,23 @@ bool CreateHeadlessGraphicContext(GraphicContext& graphic_ctx) {
 		AddPipelineBinaryExtensions(available_extensions, device_extensions);
 		AddCopyMemoryIndirectExtension(available_extensions, device_extensions);
 	}
+#if !defined(__APPLE__)
+	{
+		// VulkanCreateDevice requires barycentrics: say so instead of its "not implemented" exit (a GeForce GTX 970
+		// running the precompile, issue #149).
+		vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR barycentric {};
+		vk::PhysicalDeviceFeatures2                            features {};
+		features.pNext = &barycentric;
+		graphic_ctx.physical_device.getFeatures2(&features);
+		if (barycentric.fragmentShaderBarycentric != VK_TRUE) {
+			std::fprintf(stderr,
+			             "%s has no fragment shader barycentrics (VK_KHR_fragment_shader_barycentric), which the emulator "
+			             "needs: NVIDIA cards need a GeForce GTX 16 or RTX 20 series or newer\n",
+			             physical_device_properties.properties.deviceName.data());
+			return false;
+		}
+	}
+#endif
 	VulkanInitSubgroupSizeControl(graphic_ctx.physical_device, graphic_ctx);
 	const VulkanExtensions no_layers {};
 	graphic_ctx.device = VulkanCreateDevice(graphic_ctx.physical_device, no_layers, queue_family,

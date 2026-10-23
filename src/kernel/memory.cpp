@@ -6,6 +6,7 @@
 #include "fresh-memory.h"
 
 #include "common/assert.h"
+#include "common/hostException.h"
 #include "common/logging/log.h"
 #include "common/magicEnum.h"
 #include "common/stringUtils.h"
@@ -70,6 +71,19 @@ extern "C" {
 // mapping its other parts again (GuestBackingStore::UnmapOne); 2: parked no-access (a stray access faults, for
 // debugging). 0: views with nothing parked yet are split at once, as before (a view holding parked ranges keeps parking).
 [[gnu::used]] volatile std::atomic_uint32_t kyty_local_park_unmaps {1};
+// Windows (KYTY_READ_GUARD=0 turns it off): a guest view's no access (the GPU trackers' read protection of pages the GPU
+// wrote, the texture offload's holds) is a guard page over read-only instead, armed again at once by the fault it raises
+// and the page given its trackers' protection once the fault is served (hostException.cpp). Bug check 0x1A/0x41202
+// (issues #5, #50: a no-access page of a paged section view) came with no access only: the stand-alone reproducer
+// (_transfer/bsod-tests/ptetest4) blue-screened a 32 GB laptop under paging in 15, 529 and 656 s, and ran 1800 s with
+// guard pages, and 1800 s with read-only / read-write only, under the same or heavier paging; the emulator itself with
+// a RAM hog leaving ~0.4 GB free (16 GB policies, deaths and world trips) blue-screened in 7.4 min without guards (the
+// desktop in 5.5) and ran 22 min with them (10-23). (The texture offload's backing view keeps no access:
+// texture-offload.h.) A live change applies to the protections made after it (guards made before are still served).
+[[gnu::used]] volatile std::atomic_uint32_t kyty_local_read_guard {[] {
+	const char* value = std::getenv("KYTY_READ_GUARD");
+	return value != nullptr && value[0] == '0' ? 0u : 1u;
+}()};
 }
 
 namespace VirtualMemory = Common::VirtualMemory;
@@ -1467,9 +1481,39 @@ bool TryPrepareHostOverwrite(uint64_t vaddr, uint64_t size) {
 	       g_gpu_resources->InvalidateMemoryForWrite(vaddr, size);
 }
 
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+// KYTY_READ_GUARD (kyty_local_read_guard): a guest view's page whose guard raised a fault, guarded again at once.
+static bool ArmReadGuard(uint64_t address) {
+	if (g_guest_address_space == nullptr || !IsGpuAddressRange(address, 1) || !g_guest_address_space->ArmReadGuard(address))
+		return false;
+	LiveCounters::Add(LiveCounters::ReadGuardFaults);
+	return true;
+}
+
+// ... and once the fault was served, its trackers' protection, if the page still has a guard (a guard armed again can
+// outlive a change another thread made meanwhile; the fault's own service mostly gave the page its access already).
+static void SettleReadGuard(uint64_t address) {
+	constexpr uint64_t Page = 0x1000;
+	MEMORY_BASIC_INFORMATION info {};
+	if (VirtualQuery(reinterpret_cast<const void*>(address & ~(Page - 1)), &info, sizeof(info)) != sizeof(info) ||
+	    (info.Protect & PAGE_GUARD) == 0 || g_gpu_resources == nullptr)
+		return;
+	LiveCounters::Add(LiveCounters::ReadGuardSettles);
+	g_gpu_resources->SettleProtection(address);
+}
+#endif
+
 void InstallGpuResources(Graphics::GpuResourceManager* resources) noexcept {
 	EXIT_IF(resources != nullptr && g_gpu_resources != nullptr);
 	g_gpu_resources = resources;
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	// (Installed whatever the switch: guards made while it was on are served after it changed.)
+	if (resources != nullptr) {
+		Common::HostException::SetReadGuardHandlers(ArmReadGuard, SettleReadGuard);
+		if (kyty_local_read_guard.load(std::memory_order_relaxed) != 0)
+			std::printf("Memory: guest pages kept from reads by guard pages (KYTY_READ_GUARD)\n");
+	}
+#endif
 }
 
 bool IsGuestMappedAfterChanges(uint64_t vaddr) {
@@ -1518,6 +1562,22 @@ static bool IsInPrtAperture(uint64_t address, uint64_t size = 1) {
 	}
 
 	return false;
+}
+
+// The guest's own protection of [vaddr, vaddr + size) (one guest mapping), whatever it is.
+bool RestoreGuestProtection(uint64_t vaddr, uint64_t size) {
+	VirtualRanges::Range range {};
+	if (g_virtual_ranges == nullptr || g_guest_address_space == nullptr || !g_virtual_ranges->Query(vaddr, 0, &range) ||
+	    range.start > vaddr || vaddr + size > range.start + range.size) {
+		return false;
+	}
+	const bool read = (range.protection & PROT_CPU_READ) != 0, write = (range.protection & PROT_CPU_WRITE) != 0;
+	const auto mode = (range.protection & PROT_CPU_EXEC) != 0
+	                      ? (write ? VirtualMemory::Mode::ExecuteReadWrite
+	                               : read ? VirtualMemory::Mode::ExecuteRead : VirtualMemory::Mode::Execute)
+	                      : (write ? VirtualMemory::Mode::ReadWrite
+	                               : read ? VirtualMemory::Mode::Read : VirtualMemory::Mode::NoAccess);
+	return g_guest_address_space->ProtectTransient(vaddr, size, mode);
 }
 
 bool RestoreGuestWritable(uint64_t vaddr, uint64_t size) {

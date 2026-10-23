@@ -163,6 +163,8 @@ bool                   TryReadMappedOrZero(uint64_t vaddr, void* data, uint64_t 
 // A page no GPU watcher holds that still faults on writes: back to the guest's own writable
 // protection. False when the guest itself made the range read-only (or it is unknown).
 bool                   RestoreGuestWritable(uint64_t vaddr, uint64_t size);
+// The guest's own protection of [vaddr, vaddr + size) (one guest mapping), whatever it is.
+bool                   RestoreGuestProtection(uint64_t vaddr, uint64_t size);
 bool                   TryReadPrtBacking(uint64_t vaddr, void* data, uint64_t size,
                                          const char** failure_reason = nullptr);
 [[nodiscard]] uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size);

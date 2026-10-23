@@ -3067,6 +3067,10 @@ void BufferCache::ProcessFaultBuffer() {
 	m_fault_manager.ProcessFaultBuffer();
 }
 
+void BufferCache::MappedRanges(uint64_t vaddr, uint64_t size, RangeSet& out) const {
+	if (m_resources != nullptr) m_resources->MappedRanges(vaddr, size, out);
+}
+
 void BufferCache::CollectMappedRegisteredRanges(const RangeSet& mapped, uint64_t begin, uint64_t end,
                                                 std::vector<RangeSet::Range>& ranges) const {
 	ranges.clear();
