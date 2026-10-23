@@ -7,8 +7,10 @@
 
 #if defined(_WIN32)
 
+#include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -610,6 +612,27 @@ void Close(bool speaker) {
 	g_buffer_frames = 0;
 }
 
+// Drives the pad's rumble motors from a block of haptic audio: the mainline's fallback for pads with no
+// haptic-audio path (its Queue(): peak -> SDL_RumbleGamepad), used here for a DualSense on Bluetooth,
+// where the actuators are heard far more than they are felt. 100 ms outlives the gaps between blocks.
+void RumbleFromHaptics(float left, float right) {
+	if (left <= 0.0f && right <= 0.0f) {
+		return;
+	}
+	const auto to_motor = [](float value) {
+		return static_cast<uint16_t>(std::clamp(value * 2.0f, 0.0f, 1.0f) * 65535.0f);
+	};
+	const int count = SDL_NumJoysticks();
+	for (int i = 0; i < count; i++) {
+		auto* pad = SDL_GameControllerFromInstanceID(SDL_JoystickGetDeviceInstanceID(i));
+		if (pad == nullptr || SDL_GameControllerGetType(pad) != SDL_CONTROLLER_TYPE_PS5) {
+			continue;
+		}
+		(void)SDL_GameControllerRumble(pad, to_motor(left), to_motor(right), 100);
+		return;
+	}
+}
+
 bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t source_channels,
            bool is_float, bool speaker, const float* gains) {
 	std::lock_guard lock(g_mutex);
@@ -636,6 +659,7 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 		// +12 dB this used to apply drove the pad's small amplifier into clipping - heard as tearing,
 		// never as loudness. The USB path keeps its tuning knobs; this one matches the mainline.
 		const auto         route_gain = speaker ? 1.0f : g_gain;
+		float              motor_peak[2] = {0.0f, 0.0f};
 		for (uint32_t i = 0; i < out_frames; i++) {
 			const auto source_index = source_rate == bt_rate
 			                              ? i
@@ -664,9 +688,13 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 					value = value < -0.8f ? -0.8f + (value + 0.8f) / (1.0f - (value + 0.8f) * 4.0f) : value;
 				}
 				mixed[static_cast<size_t>(i) * 2 + c] = value;
+				motor_peak[c] = std::max(motor_peak[c], std::fabs(value));
 			}
 		}
 		(void)DualSenseBluetooth::Queue(bt, mixed.data(), out_frames);
+		if (!speaker) {
+			RumbleFromHaptics(motor_peak[0], motor_peak[1]);
+		}
 		if (speaker) {
 			g_speaker_writes++;
 		} else {
