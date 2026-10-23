@@ -114,6 +114,11 @@ uint32_t   g_speaker_volume        = 100;
 // scale, where the controller's amplifier clips (heard as tearing). Off by default - it colours
 // what it touches, and the gain knobs are the first thing to try.
 bool       g_speaker_limiter       = false;
+// How hard the rumble motors are driven from a haptic block's peak: 2.0 is the mainline's reference, 0
+// leaves the work to the actuators alone (faint), 4 doubles it. Strength is taste - too low reads as "I
+// cannot feel it", too high as "it buzzes through a whole spell charge" - so it is a setting, not a
+// constant: dualsense-haptics.txt `motor_gain=`, or KYTY_DUALSENSE_VIBRATION_MOTOR_GAIN.
+float      g_vibration_motor_gain  = 2.0f;
 
 // What the routes actually did, so a log can tell clipping from silence and from a stalled endpoint.
 uint64_t   g_speaker_writes        = 0;
@@ -262,14 +267,20 @@ void ReadSettingsFile() {
 			}
 		} else if (key == "speaker_limiter") {
 			g_speaker_limiter = value != "0" && Lowered(value) != "false" && Lowered(value) != "no";
+		} else if (key == "motor_gain" || key == "vibration_motor_gain") {
+			const auto gain = std::strtof(value.c_str(), nullptr);
+			if (gain >= 0.0f && gain <= 16.0f) {
+				g_vibration_motor_gain = gain;
+			}
 		}
 	}
 	std::fclose(file);
 
-	std::printf("DualSense: dualsense-haptics.txt: %s, vibration gain %.2f on channels %u-%u, "
-	            "speaker gain %.2f on channels %u-%u, preamp %s, volume %u, limiter %s%s\n",
+	std::printf("DualSense: dualsense-haptics.txt: %s, vibration gain %.2f on channels %u-%u, motors "
+	            "%.2f, speaker gain %.2f on channels %u-%u, preamp %s, volume %u, limiter %s%s\n",
 	            g_enabled ? "on" : "off", static_cast<double>(g_gain), g_first_channel,
-	            g_first_channel + g_channel_count - 1u, static_cast<double>(g_speaker_gain),
+	            g_first_channel + g_channel_count - 1u, static_cast<double>(g_vibration_motor_gain),
+	            static_cast<double>(g_speaker_gain),
 	            g_speaker_first_channel, g_speaker_first_channel + g_speaker_channel_count - 1u,
 	            g_speaker_preamp ? "on (+6 dB)" : "off", g_speaker_volume,
 	            g_speaker_limiter ? "on" : "off", g_all_channels ? ", all channels" : "");
@@ -307,6 +318,14 @@ void ReadSettings() {
 		const auto gain = std::strtof(value, nullptr);
 		if (gain > 0.0f && gain <= 4.0f) {
 			g_gain = gain;
+		}
+	}
+	// KYTY_DUALSENSE_VIBRATION_MOTOR_GAIN=<float> scales the rumble motors' drive (0 leaves them off
+	// and the actuators alone, 2.0 is the mainline's reference, 4 doubles it).
+	if (const char* value = std::getenv("KYTY_DUALSENSE_VIBRATION_MOTOR_GAIN"); value != nullptr) {
+		const auto gain = std::strtof(value, nullptr);
+		if (gain >= 0.0f && gain <= 16.0f) {
+			g_vibration_motor_gain = gain;
 		}
 	}
 	// KYTY_DUALSENSE_SPEAKER_CHANNELS=01|23|all and KYTY_DUALSENSE_SPEAKER_GAIN=<float>: which
@@ -655,7 +674,8 @@ void RumbleFromHaptics(float left, float right) {
 		return;
 	}
 	const auto to_motor = [](float value) {
-		return static_cast<uint16_t>(std::clamp(value * 2.0f, 0.0f, 1.0f) * 65535.0f);
+		return static_cast<uint16_t>(
+		    std::clamp(value * g_vibration_motor_gain, 0.0f, 1.0f) * 65535.0f);
 	};
 	const int count = SDL_NumJoysticks();
 	for (int i = 0; i < count; i++) {
