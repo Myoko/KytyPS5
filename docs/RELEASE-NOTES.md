@@ -1,5 +1,39 @@
 ## New in this build
 
+Your precompiled shaders stay valid: the shaders are the same as in v20261023.
+
+- **The MEMORY_MANAGEMENT blue screen is fixed** (#50, #5): PCs whose RAM ran full (16 GB, or 32 GB with a browser
+  open) could stop with this blue screen after 10 minutes to an hour, often during a load or after a death. The cause
+  is Windows mishandling "no access" pages of a mapped file when it pages them out; the emulator now keeps guest memory
+  from reads with guard pages instead. On a test laptop with its RAM taken by a test program, the old way blue-screened
+  within 7 minutes of world trips and the new one ran 2 x 22 minutes, at the same frame rates. The launcher's
+  "Keep memory resident" test option is not needed for this any more.
+- **DualSense:** the pad's speaker no longer crackles (it was amplified 8 times and clipped inside the pad, #146), a
+  wired pad's speaker and vibration no longer overwrite each other, and a DualSense connected over Bluetooth gets its
+  speaker and haptic vibration too. Vibration on wired pads is stronger than before (`KYTY_DUALSENSE_HAPTICS_GAIN`
+  sets it). A contribution by @Myoko (PR #148).
+- **Sound:** where the processor is at its limit and the game makes its sound too late, the sound is stretched a
+  little instead of cutting in and out (#85; `run.cmd -Set KYTY_AUDIO_STRETCH=0` turns that off).
+- **DLSS:** it no longer turns off after a while on cards whose video memory is full (6 GB cards, #85), and where DLSS
+  cannot run (no RTX card, or FSR 3.1 frame generation on), FSR 3 upscaling takes its place instead of the game's TAA.
+- **Smoother on PCs with few cores:** the emulator's helper threads no longer keep processor cores busy waiting when
+  the game needs them (4 cores of the test PC at Boletaria's start: 43-50 -> 57-63 fps, far fewer long frames);
+  PCs with many cores run as before.
+- **Shorter hitches entering new areas:** big texture pools no longer upload their empty layers (about 1 GB less in a
+  round of world trips), most of all on 8 GB graphics cards. The README's 8 GB numbers are measured again: the heavy
+  areas run about as fast as with all the video memory.
+- **Precompile:**
+  - After a precompile, the launcher no longer keeps offering it again (PCs west of UTC, #143).
+  - A slow compile no longer restarts its shard over and over (@intellq, PR #145: an RX 6600's 5-hour loop is now
+    69 minutes).
+  - A graphics card the emulator cannot use (GeForce GTX 10 series and older: no fragment shader barycentrics) is
+    named as such instead of "merge failed" (#149).
+- **FSR 3 frame generation:** the HUD stays in place after level loads (@intellq, PR #142); on Linux it works with HDR10
+  output too (@intellq, PR #140).
+- **Thanks** to @Myoko, @intellq, and everyone who posted bug check lines and dumps of the blue screen (#5, #50).
+
+## New in v20261023
+
 Your precompiled shaders stay valid: the shaders are the same as in v20261022. The release's hints now hold two
 more whole playthroughs, so the launcher offers the precompile once more: only the new part is compiled (minutes).
 
@@ -45,46 +79,34 @@ more whole playthroughs, so the launcher offers the precompile once more: only t
   FSR 3 upscaling is as sharp as it should be (@Bios2000, PR #131).
 - **Thanks** to @noir39, @the2ndday, @Bios2000, @DevList1454, @Mvii7 and everyone who reported problems and tested.
 
-## New in v20261022
-
-![KytyLauncher.exe](https://raw.githubusercontent.com/chenxiao07/KytyPS5/v20261022/docs/images/launcher.png)
-
-With an NVIDIA graphics card the shaders are the same as in v20261021b: your precompiled store stays valid. With an AMD
-graphics card the launcher offers the precompile once, for the faster float min/max below (only the shaders it changes
-are compiled).
-
-- **A new launcher, `KytyLauncher.exe`:** double-click it (or `launcher.cmd`). The settings are on pages (Play,
-  Display, Graphics, Game, Shaders, Advanced), each with a line on what it does, in English or Chinese (as Windows is,
-  or chosen under Advanced). Before you start, the Play page checks the game and its version, the graphics card, the
-  RAM, the precompiled shaders and DLSS/FSR. It keeps the old launcher's settings and starts the game the same way.
-  Windows may ask before its first start ("More info", "Run anyway"): it is not signed. (The look follows a
-  suggestion in issue #111.)
-- **Low latency** in the launcher (off by default; `run.cmd -LowLatency`): one finished frame waits for the screen
-  instead of about two, so what you press shows sooner (at 60 Hz about 15-23 ms instead of about 30); the frame pacing
-  is a little less even.
-- **The render height follows the window** when none is set (`run.cmd` without `-RenderHeight`): on a 1080p screen the
-  3D renders at 1080 (faster), on larger screens at the game's 1440. A height chosen in the launcher or with
-  `-RenderHeight` stays as chosen. (A contribution by @Bios2000, PR #121.)
-- **Fixes:**
-  - Low and Lowest graphics: surfaces past the shortened sun-shadow distance could look dark.
-  - PCs with 16 GB of RAM: some textures could come back dark after a death or a level reload.
-  - Ultrawide (21:9, 43:18): the tool belt menu and other menus drawn over the HUD were torn (reported by @intellq).
-  The first two were found in the todojuegos67-bot fork, thanks.
-- **AMD graphics cards:** float min/max as the GPU's own instructions, +8% where the graphics card limits the frame
-  rate (measured on Linux; PR #114). AMD Anti-Lag can be tried with `run.cmd -LowLatency -Set KYTY_ANTI_LAG=1` (tested
-  on Linux; PR #119).
-- **Linux:**
-  - AMD FSR 3 upscaling and frame generation are built in, for any graphics card: `KYTY_UPSCALER=fsr` and
-    `KYTY_FRAMEGEN_BACKEND=fsr` (PRs #117 and #118).
-  - Wider aspect ratios (`KYTY_RENDER_ASPECT`) ran at 2-3 fps: fixed (a contribution by @intellq, PR #123).
-  - KDE Plasma on Wayland showed 1-2 frames a second: fixed (PR #113). On AMD (RADV), a pipeline seen for the first
-    time stalls less (PR #115). Above 60 Hz the game keeps its speed without the Windows script's setting (PR #116).
-  - The package has `precompile-linux.sh` (the shader precompile) and `get-dlss-linux.sh` (DLSS from NVIDIA's SDK,
-    built on your PC) (a contribution by @Tutuzaooo, PR #110).
-- **Thanks** to @Bios2000 (PRs #113 to #122), @Tutuzaooo, @intellq and the todojuegos67-bot fork for their
-  contributions, and to everyone who reported problems and tested.
-
 ## 本版本的变化
+
+已有的预编译着色器继续有效：着色器与 v20261023 相同。
+
+- **修复了 MEMORY_MANAGEMENT 蓝屏**（#50、#5）：内存被占满的电脑（16 GB，或开着浏览器的 32 GB）可能在玩 10 分钟到 1
+  小时后蓝屏，常出现在载入或死亡之后。原因是 Windows 在换出映射文件的"禁止访问"页面时处理有误；模拟器现在改用 guard
+  页来拦截对客户机内存的读取。在一台被测试程序占满内存的笔记本上，旧方式在世界往返 7 分钟内蓝屏，新方式连续跑了 2 次
+  各 22 分钟都没有蓝屏，帧数相同。启动器里"常驻内存"这个试验选项不再需要。
+- **DualSense：** 手柄扬声器不再爆音（之前放大 8 倍，在手柄内部削波，#146）；USB 连接时扬声器和振动不再互相覆盖；
+  蓝牙连接的 DualSense 也支持扬声器和触觉振动。有线手柄的振动比以前更强（可用 `KYTY_DUALSENSE_HAPTICS_GAIN` 调整）。
+  由 @Myoko 贡献（PR #148）。
+- **声音：** CPU 跑满、游戏声音生成太晚时，声音会被略微拉伸，不再断断续续（#85；
+  `run.cmd -Set KYTY_AUDIO_STRETCH=0` 可关闭）。
+- **DLSS：** 显存占满的显卡（6 GB，#85）上不再过一段时间就失效；DLSS 不可用时（非 RTX 显卡，或开着 FSR 3.1 插帧），
+  改用 FSR 3 超分，而不是游戏自带的 TAA。
+- **核心少的电脑更流畅：** 游戏需要 CPU 时，模拟器的辅助线程不再空转占着核心（测试机限 4 核，Boletaria 起点：43-50 ->
+  57-63 fps，长帧大幅减少）；核心多的电脑不受影响。
+- **进入新区域的卡顿更短：** 大纹理池不再上传其中的空层（一轮世界往返少上传约 1 GB），8 GB 显卡上最明显。README 中
+  8 GB 显存的数据已重新测量：重场景的速度与显存充足时基本相同。
+- **预编译：**
+  - 预编译完成后，启动器不再反复提示重新预编译（UTC 以西时区的电脑，#143）。
+  - 慢的编译不再让分片一遍遍重来（@intellq，PR #145：RX 6600 上 5 小时的循环缩短到 69 分钟）。
+  - 模拟器无法使用的显卡（GeForce GTX 10 系列及更早：不支持 fragment shader barycentrics）会直接报出，而不是
+    "merge failed"（#149）。
+- **FSR 3 插帧：** 读取关卡后 HUD 不再错位（@intellq，PR #142）；Linux 上 HDR10 输出也能用（@intellq，PR #140）。
+- **感谢** @Myoko、@intellq，以及所有贴出蓝屏代码和转储文件的用户（#5、#50）。
+
+## v20261023 的变化
 
 已经预编译的着色器继续有效：着色器与 v20261022 相同。发布包的提示新增了两份完整通关的记录，所以启动器会再提示一次预编译：只编译新增的部分（几分钟）。
 
@@ -106,23 +128,3 @@ are compiled).
 - **着色器提示：** 加入了 @DevList1454（#124）和 @Mvii7（#134）的两份完整通关记录：在我们自己的录制没有覆盖到的地方，首次出现的卡顿更少。
 - **Linux：** 发布包用 Linux 的 PGO 配置文件构建（+3.4%，@the2ndday，PR #133）；渲染线程的锁和内存保护更省（`KYTY_LINUX_FAST_LOCKS`、`KYTY_LINUX_COALESCE_MPROTECT`，默认开启；i5-14400 上 +8%，@the2ndday，PR #125）；面向 16 GB 电脑的纹理卸载在 Linux 上也启用了（@Bios2000，PR #136 和 #137）；FSR 3 超分恢复了应有的清晰度（@Bios2000，PR #131）。
 - **感谢** @noir39、@the2ndday、@Bios2000、@DevList1454、@Mvii7 以及所有报告问题和帮忙测试的玩家。
-
-## v20261022 的变化
-
-NVIDIA 显卡：着色器与 v20261021b 相同，已经预编译的存储继续有效。AMD 显卡：启动器会提示预编译一次，用于下面更快的浮点 min/max（只编译受影响的着色器）。
-
-- **全新启动器 `KytyLauncher.exe`：** 双击它（或 `launcher.cmd`）即可。设置分成几页（开始游戏、画面、画质、游戏、着色器、高级），每项下面都有一行说明，界面为英文或中文（跟随 Windows，也可以在「高级」里选择）。开始游戏页会在启动前检查游戏和版本、显卡、内存、预编译的着色器以及 DLSS/FSR。旧启动器的设置会保留，启动游戏的方式也完全相同。它没有数字签名，第一次运行时 Windows 可能会提示（点「更多信息」→「仍要运行」）。（界面风格参考了 issue #111 的建议。）
-- **启动器中的「低延迟」**（默认关闭；`run.cmd -LowLatency`）：只让一帧等待显示（而不是约两帧），按键反馈更快（60 Hz 下约 15–23 ms，原来约 30 ms）；帧间隔会稍微不那么均匀。
-- **未设置渲染高度时跟随窗口**（`run.cmd` 不带 `-RenderHeight`）：1080p 屏幕上 3D 以 1080 渲染（更快），更大的屏幕保持游戏的 1440。在启动器里或用 `-RenderHeight` 选择的高度保持不变。（@Bios2000 的贡献，PR #121。）
-- **修正：**
-  - 「低」和「最低」画质：超出缩短后日光阴影距离的表面可能显示发黑。
-  - 16 GB 内存的电脑：死亡或重新载入关卡后，部分贴图可能变黑。
-  - 超宽屏（21:9、43:18）：工具栏等压在 HUD 上的菜单会被撕开（@intellq 报告）。
-  前两项是在 todojuegos67-bot 的 fork 中发现的，感谢。
-- **AMD 显卡：** 浮点 min/max 改用 GPU 自己的指令，在显卡限制帧率时 +8%（在 Linux 上测得；PR #114）。可以用 `run.cmd -LowLatency -Set KYTY_ANTI_LAG=1` 试用 AMD Anti-Lag（在 Linux 上测试过；PR #119）。
-- **Linux：**
-  - 内置 AMD FSR 3 超分辨率和帧生成，任何显卡都可用：`KYTY_UPSCALER=fsr` 和 `KYTY_FRAMEGEN_BACKEND=fsr`（PR #117 和 #118）。
-  - 更宽的画面比例（`KYTY_RENDER_ASPECT`）只有 2–3 fps 的问题已修正（@intellq 的贡献，PR #123）。
-  - KDE Plasma（Wayland）上每秒只显示 1–2 帧的问题已修正（PR #113）。AMD（RADV）上首次遇到的管线卡顿更少（PR #115）。高于 60 Hz 时不需要 Windows 脚本的设置，游戏速度也保持正常（PR #116）。
-  - 发布包中加入了 `precompile-linux.sh`（着色器预编译）和 `get-dlss-linux.sh`（用 NVIDIA 的 SDK 在你的电脑上构建 DLSS）（@Tutuzaooo 的贡献，PR #110）。
-- **感谢** @Bios2000（PR #113 至 #122）、@Tutuzaooo、@intellq 以及 todojuegos67-bot 的 fork 的贡献，也感谢所有报告问题和帮忙测试的玩家。
