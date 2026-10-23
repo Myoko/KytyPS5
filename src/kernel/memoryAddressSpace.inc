@@ -278,6 +278,21 @@ public:
 		}
 	};
 
+	// Linux, the texture offload: the pages of [address, address + size) of the backing view freed
+	// (a hole punched in the store's memfd: gone from every view of them, a later read gets zeros).
+	// False elsewhere.
+	bool DiscardPages(uint64_t address, uint64_t size) {
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX && !defined(__APPLE__)
+		const auto base = reinterpret_cast<uint64_t>(m_backing_base);
+		return IsAvailable() && address >= base && RangeOk(address - base, size) &&
+		       fallocate(m_fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
+		                 static_cast<off_t>(address - base), static_cast<off_t>(size)) == 0;
+#else
+		(void)address, (void)size;
+		return false;
+#endif
+	}
+
 	bool ZeroRange(uint64_t backing_offset, uint64_t size) {
 		GuestBackingMutation mutation;
 		if (!IsAvailable() || !RangeOk(backing_offset, size)) {
@@ -1663,6 +1678,9 @@ public:
 
 	const uint8_t* BackingPointer(uint64_t vaddr, uint64_t size) { return m_backing->BackingPointer(vaddr, size); }
 	uint64_t       BackingMappingEnd(uint64_t vaddr) { return m_backing->MappingEndOf(vaddr); }
+	bool           DiscardBacking(uint64_t address, uint64_t size) {
+		return m_backing->DiscardPages(address, size);
+	}
 	bool BackingPieces(uint64_t vaddr, uint64_t size, std::vector<std::pair<const uint8_t*, uint64_t>>& pieces) {
 		return m_backing->BackingPieces(vaddr, size, pieces);
 	}

@@ -24,7 +24,7 @@ $resolutionsByRatio = @{
 $renderHeights = '2160 (native 4K)', '1800', '1620', '1512 (PS5 Pro)', '1440 (PS5)', '1296', '1152', '1080', '900', '720'
 # What makes the 3840x2160 image of the 3D (run-windows.ps1 -Upscaler): the game's TAA and stretch (the PS5's), or DLSS in
 # place of Sony's PS5 Pro upscaler on the game's PS5 Pro path (NVIDIA's Streamline runtime, as frame generation).
-$upscalers = 'Game (PS5)', 'DLSS (PS5 Pro path)'
+$upscalers = 'Game (PS5)', 'DLSS (PS5 Pro path)', 'FSR 3 (PS5 Pro path)'
 # The aspect ratio of Demon's Souls' 3D (run-windows.ps1 -Aspect): wider sees more to the sides.
 $ratios = '16:9 (PS5)', '21:9', '32:9'
 # Demon's Souls' own settings for what a frame draws (run-windows.ps1 -Quality): shorter shadows, simpler distant detail;
@@ -48,12 +48,15 @@ $safeGpuTip = "Prevents the crashes and blue screens that come from the graphics
 
 $settings = [ordered]@{ game = ''; resolution = '2560x1440'; fullscreen = $false; aspect = $true; language = 1; redzone = $true; cheats = $false;
 	ecores = $false; fps120 = $false; render = 1440; ratio = '16:9'; quality = 'standard'; vsync = $false; hdr = $false; framegen = 0
-	hud = 0; streamline = ''; safegpu = $false; upscaler = ''; render_dlss = 1080; fsr = $false; output = '4k'
+	hud = 0; streamline = ''; safegpu = $false; upscaler = ''; render_dlss = 1080; fsr = $false; output = 'auto'
 	lowlatency = $false; present_direct = $false; antilag = $false; keep_resident = $false; fps30 = $false
-	extra_args = ''; dlss_preset = ''; gpu = '' }
+	extra_args = ''; dlss_preset = ''; gpu = ''; output_auto = $true }
 if (Test-Path $settingsPath) {
 	$saved = Get-Content $settingsPath -Raw | ConvertFrom-Json
 	foreach ($property in $saved.PSObject.Properties) { if ($settings.Contains($property.Name)) { $settings[$property.Name] = $property.Value } }
+	# 4K was the game output's default, written by every save: a file from before Automatic has it as Automatic once
+	# (KytyLauncher.exe's Settings does the same); a 4K chosen since stays.
+	if (!$saved.PSObject.Properties['output_auto'] -and $settings.output -eq '4k') { $settings.output = 'auto' }
 }
 if (!$settings.game -and (Test-Path "$root\game-path.txt")) { $settings.game = (Get-Content "$root\game-path.txt" -TotalCount 1).Trim() }
 
@@ -91,6 +94,52 @@ public static int[] Query() {
 	return $mask
 }
 $efficiencyMask = Get-EfficiencyMask
+
+# The primary display's height in pixels, its current mode's (not scaled by Windows' display scaling), or 0
+# (KytyLauncher.exe's Native.DisplayHeight).
+function Get-DisplayHeight {
+	Add-Type -Namespace KytyLauncher -Name Display -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+public struct DevMode {
+	[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+	public ushort dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;
+	public uint dmFields;
+	public int dmPositionX, dmPositionY;
+	public uint dmDisplayOrientation, dmDisplayFixedOutput;
+	public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+	[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+	public ushort dmLogPixels;
+	public uint dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+}
+[DllImport("user32.dll", CharSet = CharSet.Unicode)]
+static extern bool EnumDisplaySettingsW(string deviceName, int modeNumber, ref DevMode mode);
+public static int Height() {
+	var mode = new DevMode();
+	mode.dmSize = (ushort)Marshal.SizeOf(typeof(DevMode));
+	return EnumDisplaySettingsW(null, -1, ref mode) ? (int)mode.dmPelsHeight : 0;
+}
+'@
+	return [KytyLauncher.Display]::Height()
+}
+$displayHeight = Get-DisplayHeight
+
+# Game output "Automatic" (KytyLauncher.exe's Commands.AutoHdOutput): the game's 1080p output for a 16:9 game window (in
+# full screen, the screen) at most 1080 lines high, 4K otherwise. A window larger than the display is shrunk to it.
+function Test-AutoHdOutput([string]$size, [bool]$full, [string]$shape) {
+	$height = 0
+	if ($full) {
+		$height = $displayHeight
+	} else {
+		$parts = $size -split 'x'
+		if ($parts.Count -lt 2 -or ![int]::TryParse($parts[1], [ref]$height)) { $height = 0 }
+		elseif ($displayHeight -gt 0 -and $height -gt $displayHeight) { $height = $displayHeight }
+	}
+	return $shape -eq '16:9' -and $height -gt 0 -and $height -le 1080
+}
+function Test-HdOutput {
+	return $settings.output -eq '1080p' -or
+		($settings.output -eq 'auto' -and (Test-AutoHdOutput ([string]$settings.resolution) ([bool]$settings.fullscreen) ([string]$settings.ratio)))
+}
 # Frame generation needs NVIDIA's Streamline runtime, which no release ships: the Streamline SDK
 # (github.com/NVIDIA-RTX/Streamline/releases) chosen with "Streamline..." (settings: streamline), else a "streamline"
 # folder next to the emulator, else the SDK beside a local build (_Build\deps\streamline\sdk). The emulator loads
@@ -322,8 +371,10 @@ function Get-PlayCommand {
 		if ($patch) { $arguments += @('-Patch', "`"$patch`"") }
 	}
 	$dlss = $frameGenAvailable -and $settings.upscaler -eq 'dlss'
-	# The upscaler's own render height (with DLSS always passed: the PS5 Pro path's own height is 1512).
-	$height = if ($dlss) { [int]$settings.render_dlss } else { [int]$settings.render }
+	# FSR 3 upscaling, built into the emulator: any graphics card (KytyLauncher.exe's Commands.FsrUpscaler).
+	$fsrUpscaler = $settings.upscaler -eq 'fsr'
+	# The upscaler's own render height (with DLSS or FSR 3 always passed: the PS5 Pro path's own height is 1512).
+	$height = if ($dlss -or $fsrUpscaler) { [int]$settings.render_dlss } else { [int]$settings.render }
 	if ($height -gt 0) { $arguments += @('-RenderHeight', $height) }
 	if ($settings.ratio -in '21:9', '32:9') { $arguments += @('-Aspect', $settings.ratio) }
 	if ($settings.quality -in 'low', 'lowest') {
@@ -332,9 +383,9 @@ function Get-PlayCommand {
 	$fsrOn = $fsrAvailable -and $settings.fsr
 	if ($fsrOn) { $arguments += '-Fsr' }
 	if (!$fsrOn -and $frameGenAvailable -and [int]$settings.framegen -ge 2) { $arguments += @('-FrameGen', ([int]$settings.framegen - 1)) }
-	if ($dlss) { $arguments += @('-Upscaler', 'dlss') }
+	if ($dlss) { $arguments += @('-Upscaler', 'dlss') } elseif ($fsrUpscaler) { $arguments += @('-Upscaler', 'fsr') }
 	# (DLSS makes the 4K output: the 1080p output only with the game's own upscale.)
-	if ($settings.output -eq '1080p') { $arguments += '-HdOutput' }
+	if (Test-HdOutput) { $arguments += '-HdOutput' }
 	if ($frameGenAvailable -and ((!$fsrOn -and [int]$settings.framegen -ge 2) -or $dlss)) { $arguments += @('-StreamlineDir', "`"$streamline`"") }
 	$arguments += @(Get-GpuArguments)
 	# Switches of the config, one -Set argument (run-windows.ps1 splits it at the commas).
@@ -425,6 +476,7 @@ if ($DryRun) {
 	"precompile: cmd /s /c `"$(Get-PrecompileCommand)`""
 	"hints:      cmd /s /c `"$(Get-PrecompileCommand '-ExportHints')`""
 	"efficiency cores: 0x{0:X}" -f $efficiencyMask
+	"display: $displayHeight lines"
 	"frame generation: $(if ($frameGenAvailable) { "NVIDIA's Streamline runtime in $streamline" } elseif (!$rtxGpu) { 'no NVIDIA RTX graphics card (DLSS off)' } else { "no NVIDIA-signed Streamline runtime (settings: '$($settings.streamline)')" })"
 	return
 }
@@ -540,13 +592,19 @@ function Select-RenderHeight {
 	}
 }
 $renderNote = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
+# The game output shown: 1080p chosen, or Automatic for the window chosen above (Test-AutoHdOutput).
+function Test-HdOutputShown {
+	if (!$output) { return $false }
+	return $output.SelectedIndex -eq 2 -or ($output.SelectedIndex -eq 0 -and
+		(Test-AutoHdOutput ([string]$resolution.SelectedItem) ([bool]($fullscreen -and $fullscreen.Checked)) (Get-Ratio)))
+}
 function Update-RenderNote {
 	$h = [int](([string]$render.SelectedItem -split ' ')[0])
 	# (The 1080p output's 3D is at most 1080 high: $output below.)
-	$capped = $output -and $output.Enabled -and $output.SelectedIndex -eq 1 -and $h -gt 1080
+	$capped = (Test-HdOutputShown) -and $h -gt 1080
 	if ($capped) { $h = 1080 }
 	# (DLSS's 4K output takes 1080 at least.)
-	$raised = $upscaler.SelectedIndex -eq 1 -and !($output -and $output.SelectedIndex -eq 1) -and $h -lt 1080
+	$raised = $upscaler.SelectedIndex -ge 1 -and !(Test-HdOutputShown) -and $h -lt 1080 -and $h -ne 720
 	if ($raised) { $h = 1080 }
 	$w = [Math]::Floor($h * (Get-RatioAspect) / 8.0 + 0.5) * 8
 	$renderNote.Text = if ($capped) { "Demon's Souls' 3D at ${w}x${h} (1080 at most with the 1080p output)" } elseif ($raised) { "Demon's Souls' 3D at ${w}x${h} (1080 at least with DLSS's 4K output)" } else { "Demon's Souls' 3D at ${w}x${h}; higher = sharper, needs more GPU" }
@@ -555,7 +613,7 @@ $render.Add_SelectedIndexChanged({
 	if (!$script:fillingRender) { $script:renderWanted = [int](([string]$render.SelectedItem -split ' ')[0]) }
 	Update-RenderNote
 })
-$renderForDlss = $frameGenAvailable -and $settings.upscaler -eq 'dlss'
+$renderForDlss = ($frameGenAvailable -and $settings.upscaler -eq 'dlss') -or $settings.upscaler -eq 'fsr'
 $renderWanted = [int]$(if ($renderForDlss) { $settings.render_dlss } else { $settings.render })
 Select-RenderHeight
 Update-RenderNote
@@ -564,9 +622,9 @@ $ratio.Add_SelectedIndexChanged({
 	Select-RenderHeight
 	Update-RenderNote
 })
-$upscaler = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 205; Enabled = $frameGenAvailable }
+$upscaler = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 205 }
 $upscaler.Items.AddRange($upscalers)
-$upscaler.SelectedIndex = if ($frameGenAvailable -and $settings.upscaler -eq 'dlss') { 1 } else { 0 }
+$upscaler.SelectedIndex = if ($frameGenAvailable -and $settings.upscaler -eq 'dlss') { 1 } elseif ($settings.upscaler -eq 'fsr') { 2 } else { 0 }
 $upscalerNote = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
 function Update-UpscalerNote {
 	$upscalerNote.Text = if ($frameGenAvailable) { 'DLSS: NVIDIA RTX; 1440 = Quality, 1080 = Performance, 2160 = DLAA' }
@@ -584,7 +642,7 @@ Update-UpscalerNote
 $upscaler.Add_SelectedIndexChanged({
 	# The height chosen goes back to the upscaler it was for; the newly chosen one's is shown.
 	if ($script:renderForDlss) { $settings.render_dlss = $script:renderWanted } else { $settings.render = $script:renderWanted }
-	$script:renderForDlss = $upscaler.SelectedIndex -eq 1
+	$script:renderForDlss = $upscaler.SelectedIndex -ge 1
 	$script:renderWanted = [int]$(if ($script:renderForDlss) { $settings.render_dlss } else { $settings.render })
 	Select-RenderHeight
 	Update-RenderNote
@@ -596,18 +654,20 @@ Add-Row 'Upscaler' @($upscaler, $upscalerNote)
 # The game's output (run-windows.ps1 -HdOutput, src/loader/demonsSoulsHdOutput.h): 4K, or the game's own 1080p mode, its
 # post-processing and HUD at 1920x1080 and its 3D at most 1080 high (with DLSS: DLSS upscales the 3D to that 1080p).
 $output = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 205 }
-$output.Items.AddRange(@('4K (PS5)', '1080p'))
-$output.SelectedIndex = if ($settings.output -eq '1080p') { 1 } else { 0 }
+$output.Items.AddRange(@('Automatic', '4K (PS5)', '1080p'))
+$output.SelectedIndex = [Math]::Max(0, [Array]::IndexOf(@('auto', '4k', '1080p'), [string]$settings.output))
 $outputNote = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0'
-	Text = '1080p: the game''s HD layout, effects and HUD at 1920x1080; less GPU work; with DLSS, DLSS makes the 1080p picture' }
+	Text = 'Automatic: 1080p for a 16:9 window (full screen: the screen) up to 1080 lines, else 4K. 1080p: the game''s HD layout, effects and HUD at 1920x1080; less GPU work; with DLSS, DLSS makes the 1080p picture' }
 $output.Add_SelectedIndexChanged({ Update-RenderNote })
 $upscaler.Add_SelectedIndexChanged({ Update-RenderNote })
 Add-Row 'Game output' @($output, $outputNote)
+# (Automatic follows the window's size.)
+$resolution.Add_SelectedIndexChanged({ Update-RenderNote })
 Update-RenderNote
 $fullscreen = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Fullscreen'; AutoSize = $true; Checked = [bool]$settings.fullscreen }
 $aspect = New-Object System.Windows.Forms.CheckBox -Property @{ Text = 'Keep the aspect ratio (black bars)'; AutoSize = $true; Checked = [bool]$settings.aspect }
 $aspect.Enabled = $fullscreen.Checked
-$fullscreen.Add_CheckedChanged({ $aspect.Enabled = $fullscreen.Checked })
+$fullscreen.Add_CheckedChanged({ $aspect.Enabled = $fullscreen.Checked; Update-RenderNote })
 Add-Row '' @($fullscreen, $aspect)
 $language = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 320 }
 $language.Items.AddRange($languages)
@@ -680,7 +740,6 @@ $frameGenFolder.Add_Click({
 	# (Without an NVIDIA RTX graphics card the folder is kept, the rows stay off.)
 	$script:frameGenAvailable = $rtxGpu
 	$frameGen.Enabled = $rtxGpu
-	$upscaler.Enabled = $rtxGpu
 	Update-FrameGenNote
 	Update-UpscalerNote
 })
@@ -735,10 +794,13 @@ function Read-Form {
 	if ($renderForDlss) { $settings.render_dlss = $height } else { $settings.render = $height }
 	$settings.ratio      = ([string]$ratio.SelectedItem -split ' ')[0]
 	$settings.quality    = ([string]$quality.SelectedItem -split ' ')[0].ToLowerInvariant()
-	$settings.output     = if ($output.SelectedIndex -eq 1) { '1080p' } else { '4k' }
+	$settings.output     = @('auto', '4k', '1080p')[[Math]::Max(0, $output.SelectedIndex)]
 	# (Kept as it was where the DLLs are missing.)
 	if ($frameGenAvailable) { $settings.framegen = if ($frameGen.SelectedIndex -gt 0) { $frameGen.SelectedIndex + 1 } else { 0 } }
-	if ($frameGenAvailable) { $settings.upscaler = if ($upscaler.SelectedIndex -eq 1) { 'dlss' } else { '' } }
+	# (DLSS kept as it was where its DLLs are missing; FSR 3 and the game's own anywhere.)
+	if ($upscaler.SelectedIndex -eq 2) { $settings.upscaler = 'fsr' }
+	elseif ($upscaler.SelectedIndex -eq 1) { if ($frameGenAvailable) { $settings.upscaler = 'dlss' } }
+	elseif ($frameGenAvailable -or $settings.upscaler -ne 'dlss') { $settings.upscaler = '' }
 	if ($fsrAvailable) { $settings.fsr = $fsr.Checked }
 	$settings.ecores     = $ecores.Checked
 	Save-Settings

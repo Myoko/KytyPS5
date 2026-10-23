@@ -8,9 +8,11 @@ struct Program;
 // KYTY_HD_OUTPUT=1 (the launcher's "Game output: 1080p"): Demon's Souls 01.007.000 runs its own HD path, the one a PS5
 // takes on a 1080p TV: its output, post-processing and interface at 1920x1080 instead of 3840x2160 (the HUD in the
 // game's own HD layout, not the 4K one scaled), the presenter (or Gamescope) scaling that to the window. GPU-bound PCs
-// save the 4K post-processing the performance mode does after its 2560x1440 3D. Its display mode is 2 (3D at 1920x1080)
-// or, with another render size (KYTY_RENDER_HEIGHT below 1080, KYTY_RENDER_ASPECT: loader/demonsSoulsRenderSize.h),
-// 1 (the game's 1600x900 3D upscaled to the 1080p output), its render size made that size.
+// save the 4K post-processing the performance mode does after its 2560x1440 3D. Its display mode is 1 (the game's
+// 1600x900 3D upscaled to the 1080p output), its render size made the render height's (KYTY_RENDER_HEIGHT,
+// KYTY_RENDER_ASPECT: loader/demonsSoulsRenderSize.h; 1920x1080 by default). Display mode 2 (its own 3D at 1920x1080)
+// is Install's first choice only: it leaves the menus' 3D black (the equipment menu's character, the character
+// creator; issue #138).
 // The game picks its display mode in three places - its video out, its renderer and its interface (which lays out at
 // 4K for modes 3-5) - each the same way: r_Wants4K, else r_Wants4K_Game (kept in the save), else a compiled 3. Each
 // gets the HD mode, its two overrides removed (a save's 4K mode would come back on loading it). The mode alone keeps

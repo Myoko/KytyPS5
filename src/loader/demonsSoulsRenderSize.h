@@ -15,7 +15,8 @@ struct Program;
 // the 4K layout (off screen); KYTY_HD_OUTPUT (loader/demonsSoulsHdOutput.h) runs them whole, the height then sizing
 // their 3D (at most 1080; the aspect as here, squeezed into the 1920x1080 output). With the game's super resolution path on (KYTY_UPSCALER,
 // loader/demonsSoulsSuperResolution.h) the performance mode is display mode 5: the height sizes its 3D instead
-// (unset: the PS5 Pro's 2688x1512; at least 1080), the upscaler making the 3840x2160 image from it.
+// (unset: the PS5 Pro's 2688x1512; 1080 and up, or 720 for DLSS's ultra performance), the upscaler making the
+// 3840x2160 image from it.
 // KYTY_RENDER_ASPECT=<w>:<h> (run-windows.ps1 -Aspect, the launcher's "Aspect ratio"; 21:9 is taken as 64:27): the 3D
 // rendered wider than 16:9, up to 32:9, at the render height - 3416x1440 for 21:9 - and its projection's aspect (the
 // render setup's 16:9, AspectStore) to match: more of the world to the sides, not a stretched 16:9 view. The game's

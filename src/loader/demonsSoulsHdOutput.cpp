@@ -29,13 +29,13 @@ void Nop(uint64_t address, uint32_t length) {
 
 bool Requested() {
 	const char* value = std::getenv("KYTY_HD_OUTPUT");
-	if (value == nullptr || *value == 0) return false;
-	if (std::strcmp(value, "auto") != 0) return std::strcmp(value, "0") != 0;
-	// "auto": the HD output when the automatic render height (the window's) is at most 1080 lines, so that the game's
-	// output is the window's 1920x1080 (loader/demonsSoulsRenderSize.h); never with the PS5 Pro path (KYTY_UPSCALER: its
-	// output is 4K) or a wider aspect (KYTY_RENDER_ASPECT). Not the default: on an RX 9070 XT (RADV) the HD path's
-	// picture was about 15 times darker than the 4K path's at Boletaria's start (mean luma 1.1 against 16), and no faster
-	// (67.5 against 71 fps with the 3D at 1080 both ways).
+	if (value != nullptr && *value != 0 && std::strcmp(value, "auto") != 0) return std::strcmp(value, "0") != 0;
+	// Unset or "auto" (the default): the HD output when the automatic render height (the window's) is at most 1080 lines,
+	// so that the game's output is the window's 1920x1080 (loader/demonsSoulsRenderSize.h); never with the PS5 Pro path
+	// (KYTY_UPSCALER: its automatic height is the 4K output's) or a wider aspect (KYTY_RENDER_ASPECT). A render height set
+	// (the launchers': they choose the output themselves) keeps the 4K output. Once not the default: an RX 9070 XT
+	// (RADV) showed the HD path's picture far darker and no faster; on current Mesa the same card measured the same
+	// brightness and 4.6% more fps (issue #80), and the menus' 3D it left black at 1080 is drawn now (#138).
 	const char* upscaler = std::getenv("KYTY_UPSCALER");
 	const char* aspect   = std::getenv("KYTY_RENDER_ASPECT");
 	if ((upscaler != nullptr && *upscaler != 0 && std::strcmp(upscaler, "off") != 0) || (aspect != nullptr && *aspect != 0))

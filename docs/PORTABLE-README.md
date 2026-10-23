@@ -129,20 +129,24 @@ and the shadows of torches and other lamps. Each thing drawn costs the emulator 
 help where the processor limits the frame rate (a laptop Ryzen 9 5900HX standing at the Gates of
 Boletaria: 21.9 fps at Standard, 25.6 at Lowest).
 "Upscaler" (Game by default, as on the PS5) with "DLSS (PS5 Pro path)" runs the game's own PS5 Pro mode:
-its 3D at the render height (1080 at least) is made a real 3840x2160 image by NVIDIA DLSS in place of Sony's
+its 3D at the render height (1080 at least, or 720 for DLSS's Ultra Performance) is made a real 3840x2160 image by NVIDIA DLSS in place of Sony's
 PS5 Pro upscaler, and the game finishes it at 4K (bloom, depth of field, the HUD), instead of anti-aliasing
 at the render height and stretching to 4K. The launcher keeps a render height for each upscaler: DLSS starts
 at 1080, DLSS's Performance (on an RTX 5090 about the frame rate of the game's own TAA at 1440, with a
 sharper picture); 1440 is its Quality, 1512 the PS5 Pro's own 2688x1512, 2160 DLAA. NVIDIA RTX only, with
 NVIDIA's Streamline runtime as for frame generation below: on a PC without an NVIDIA RTX graphics card (AMD,
-Intel, GeForce GTX) the launcher keeps this row and frame generation off, and the game's own TAA makes the
-picture at its own render height. The in-game "Cinematic" mode stays native 4K without DLSS.
+Intel, GeForce GTX) the launcher offers no DLSS. "FSR 3 (PS5 Pro path)" does the same with AMD's FSR 3 in place of
+DLSS, on any graphics card, AMD and Intel included: it is built into the emulator, nothing to download
+(`run.cmd -Upscaler fsr`; on an RTX 5090 at Boletaria's start 75.8 fps from 1080 to 4K, a picture close to DLSS's).
+The render heights show their mode as with DLSS (FSR's "Native AA" at the output's own size). The in-game
+"Cinematic" mode stays native 4K without DLSS or FSR.
 With an "Aspect ratio" wider than 16:9, DLSS makes the picture at its full width: 5120x2160 at 21:9 (from
 2560x1080 at render height 1080), and the game finishes it at that size, with the HUD at the screen's edges,
 instead of a 3840x2160 picture widened on the screen. On an RTX 5090 at Boletaria's start that ran at 64.5 fps,
 the game's TAA at 21:9 at 59.3. Screens without the 3D (movies, the title, loading) are stretched to the
 width, as without DLSS.
-"Game output" (4K by default, as on the PS5) with "1080p" runs the game's own HD mode, the one a PS5 takes on
+"Game output" ("Automatic" by default: 1080p for a 16:9 game window, or screen in full screen, at most 1080 lines
+high, else 4K as on the PS5) with "1080p" runs the game's own HD mode, the one a PS5 takes on
 a 1080p TV: its post-processing and HUD at 1920x1080 instead of 3840x2160 scaled down to the window afterwards,
 and its 3D at most 1080 high (a higher render height is lowered to 1080). Less work for the graphics card: at
 Boletaria's start on an RTX 5090, 69.8 fps at 4K, 78.3 at 1080p. It suits 1080p screens; on larger ones the
@@ -210,8 +214,9 @@ shortcut):
 | `-Width 1920 -Height 1080` | The window size (default 2560×1440, shrunk when the screen is smaller) |
 | `-Game <folder>` | The game folder (or a `.zar` archive of it) |
 | `-Language 11` | The console language, as the PS5 numbers them (0 Japanese, 1 English (US), 11 Chinese (Simplified), ...; the launcher lists them) |
+| `-Set KYTY_ALL_LANGUAGES=0` | Demon's Souls' language settings offer every language the package has, in every region: the text of 23 (a US game Russian, Japanese or Korean too) and the voices of 9 (English, French, German, Italian, Spanish, Japanese, Brazilian Portuguese, Latin American Spanish; British English speaks English); this keeps only the console region's |
 | `-RenderHeight 1080` | The height the game renders its 3D at (360–2160; below 720 is meant for the 1080p output, `-HdOutput`, e.g. 540 = DLSS Performance there): lower is faster on a slow graphics card and less sharp. Without it the height follows the window, at most 1440 as on the PS5 (1080 on a 1080p screen) |
-| `-HdOutput` | The game's own 1080p output (the launcher's "Game output: 1080p"): post-processing and HUD at 1920×1080, the 3D at most 1080 high; with `-Upscaler dlss`, DLSS makes the 1080p picture from it |
+| `-HdOutput` | The game's own 1080p output (the launcher's "Game output: 1080p"): post-processing and HUD at 1920×1080, the 3D at most 1080 high; with `-Upscaler dlss`, DLSS makes the 1080p picture from it. Without it (and without `-RenderHeight`, `-Upscaler` or `-Aspect`) the game takes it by itself for a window or screen at most 1080 lines high; `-Set KYTY_HD_OUTPUT=0` keeps the 4K output |
 | `-Aspect 21:9` | The 3D rendered wider (`21:9` or `32:9`) for ultrawide displays; the HUD keeps its shape at the sides; in-game menus, movies and loading screens are stretched to the width (with `-AspectFit` too: movies, the title and loading screens keep their 16:9, with black bars at the sides) |
 | `-Quality low` | How much the game draws: `low` or `lowest` (shorter shadows, simpler distant detail), faster where the processor limits the frame rate |
 | `-TextureReduce 2` | Large textures without their largest levels: `1` half the size per side (the default with less than 12 GB of video memory), `2` a quarter, `0` whole |
@@ -221,6 +226,7 @@ shortcut):
 | `-LowLatency` | Less input lag: one frame waiting for the screen instead of about two (the launcher's "Low latency") |
 | `-Hdr` | HDR10 output when Windows' "Use HDR" is on for the display |
 | `-Upscaler dlss` | DLSS super resolution through the game's PS5 Pro path (NVIDIA RTX, needs Streamline: see "Upscaler" above) |
+| `-Upscaler fsr` | The same with AMD FSR 3, built in: any graphics card |
 | `-FrameGen 1` | DLSS frame generation, the number of generated frames per rendered one (`1` = 2x, up to `5`; RTX 40 or newer, needs Streamline) |
 | `-Gpu 1` | The graphics card on a PC with more than one: its number in the log's `Vulkan GPU <n>:` lines, or a part of its name (`-Gpu 4090`); give `precompile.cmd` the same `-Gpu`, so the shaders are compiled for that card. Without it the first discrete GPU, in the order Windows' graphics settings give |
 | `-Set KEY=VALUE` | An emulator switch, e.g. `-Set KYTY_SHADER_PREFETCH=0` (several: `-Set A=1,B=2`); the issues name the ones worth trying |
@@ -231,6 +237,12 @@ launcher's of the same name, e.g. `-RenderHeight 900` or `-Set KYTY_DLSS_PRESET=
 clear the box.
 
 ## Game language (Chinese, Japanese, Korean and others)
+
+The emulator makes the game's language settings offer every language in every release: the text of 23
+(Chinese, Japanese and Korean too) and the voices of 9 (Settings > Language in the game; the voice
+language from the title screen's settings). `-Set KYTY_ALL_LANGUAGES=0` turns that off. The edit below
+is only needed with it off, or for a game version where the emulator does not find the language sets
+(the log says so: `Demon's Souls languages: ...`).
 
 The game files hold every language of the game, but the game offers only those of its release. It
 picks the release from `userDefinedParam1` in the game folder's `sce_sys\param.json`, an index into a

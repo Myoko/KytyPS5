@@ -1280,6 +1280,14 @@ bool PipelineCache::StaticInputsCurrent(GraphicContext& graphics, const std::fil
 	return true;
 }
 
+// Shard files the store's signature does not open (another graphics driver or GPU made them, or they were cut short):
+// never mergeable here, and run-windows.ps1 took them for an unfinished precompile at every start (issue #126).
+static void RemoveStaleShards(const std::vector<std::filesystem::path>& stale, const char* what) {
+	std::error_code error;
+	for (const auto& file: stale) std::filesystem::remove(file, error);
+	if (!stale.empty()) PipelineCacheLog("Static pipeline {}: removed {} shard file(s) of another driver or GPU", what, stale.size());
+}
+
 // The store and its shards' files (or only the shards': prune), into a new store; the shard files are
 // removed once merged. Their data is copied from the files when the new one is written.
 bool PipelineCache::MergeBinaryShards(GraphicContext& graphics, bool prune, bool keep_shards) {
@@ -1287,7 +1295,7 @@ bool PipelineCache::MergeBinaryShards(GraphicContext& graphics, bool prune, bool
 	const auto                                     signature = StaticBinariesSignature(graphics);
 	PipelineBinaryWriter                           writer(graphics.device);
 	std::vector<std::unique_ptr<PipelineBinaries>> sources;
-	std::vector<std::filesystem::path>             files;
+	std::vector<std::filesystem::path>             files, stale;
 	if (!prune) {
 		if (auto store = PipelineBinaries::Open(graphics.device, path, signature)) {
 			writer.CopyAll(*store);
@@ -1302,8 +1310,11 @@ bool PipelineCache::MergeBinaryShards(GraphicContext& graphics, bool prune, bool
 			writer.CopyAll(*shard);
 			sources.push_back(std::move(shard));
 			files.push_back(entry.path());
+		} else {
+			stale.push_back(entry.path());
 		}
 	}
+	if (!keep_shards) RemoveStaleShards(stale, "binaries");
 	if (files.empty()) {
 		PipelineCacheLog("Static pipeline binaries: no shards to merge");
 		return true;
@@ -1329,7 +1340,7 @@ static bool MergeBlobShards(GraphicContext& graphics, bool prune, bool keep_shar
 	const auto                                       signature = StaticBlobsSignature(graphics.GetPhysicalDeviceProperties());
 	PipelineCacheBlobWriter                          writer;
 	std::vector<std::unique_ptr<PipelineCacheBlobs>> sources;
-	std::vector<std::filesystem::path>               files;
+	std::vector<std::filesystem::path>               files, stale;
 	if (!prune) {
 		if (auto store = PipelineCacheBlobs::Open(path, signature)) {
 			writer.CopyAll(*store);
@@ -1344,8 +1355,11 @@ static bool MergeBlobShards(GraphicContext& graphics, bool prune, bool keep_shar
 			writer.CopyAll(*shard);
 			sources.push_back(std::move(shard));
 			files.push_back(entry.path());
+		} else {
+			stale.push_back(entry.path());
 		}
 	}
+	if (!keep_shards) RemoveStaleShards(stale, "blobs");
 	if (files.empty()) {
 		PipelineCacheLog("Static pipeline blobs: no shards to merge");
 		return true;
@@ -1371,6 +1385,21 @@ bool PipelineCache::MergePrecompileShards(GraphicContext& graphics, bool prune, 
 		if (merged && (prune || stamp)) WriteStaticFeatures(prune);
 		return merged;
 	};
+	// The shards of the other two kinds of store (made by another driver, with or without pipeline binaries): never
+	// merged here, gone with the rest (issue #126).
+	if (!keep_shards) {
+		const auto active = graphics.pipeline_binaries_enabled ? StaticBinariesPath()
+		                    : StaticBlobsMode(graphics)         ? StaticBlobsPath()
+		                                                        : StaticCachePath();
+		std::vector<std::filesystem::path> stale;
+		std::error_code                    error;
+		for (const auto& other: {StaticBinariesPath(), StaticBlobsPath(), StaticCachePath()}) {
+			if (other == active) continue;
+			for (const auto& entry: std::filesystem::directory_iterator(other.parent_path(), error))
+				if (entry.path().filename().string().starts_with(other.filename().string() + ".shard")) stale.push_back(entry.path());
+		}
+		RemoveStaleShards(stale, "stores");
+	}
 	if (graphics.pipeline_binaries_enabled) return stamped(MergeBinaryShards(graphics, prune, keep_shards));
 	if (StaticBlobsMode(graphics)) return stamped(MergeBlobShards(graphics, prune, keep_shards));
 	PipelineCache cache(graphics);
@@ -1379,20 +1408,24 @@ bool PipelineCache::MergePrecompileShards(GraphicContext& graphics, bool prune, 
 	const auto                         path      = StaticCachePath();
 	const auto                         signature = StaticCacheSignature(graphics.GetPhysicalDeviceProperties());
 	std::vector<vk::PipelineCache>     shards;
-	std::vector<std::filesystem::path> files;
+	std::vector<std::filesystem::path> files, stale;
 	std::error_code                    error;
 	for (const auto& entry: std::filesystem::directory_iterator(path.parent_path(), error)) {
-		if (!entry.path().filename().string().starts_with(path.filename().string() + ".shard")) continue;
+		const auto name = entry.path().filename().string();
+		if (!name.starts_with(path.filename().string() + ".shard") || name.ends_with(".tmp")) continue;
 		const auto payload = ReadPipelineCacheFile(entry.path(), signature);
-		if (payload.empty()) continue;
 		vk::PipelineCacheCreateInfo info {};
 		info.initialDataSize = payload.size();
 		info.pInitialData    = payload.data();
 		vk::PipelineCache shard = nullptr;
-		if (graphics.device.createPipelineCache(&info, nullptr, &shard) != vk::Result::eSuccess) continue;
+		if (payload.empty() || graphics.device.createPipelineCache(&info, nullptr, &shard) != vk::Result::eSuccess) {
+			stale.push_back(entry.path());
+			continue;
+		}
 		shards.push_back(shard);
 		files.push_back(entry.path());
 	}
+	if (!keep_shards) RemoveStaleShards(stale, "cache");
 	const bool merged = shards.empty() ||
 	                    (graphics.device.mergePipelineCaches(cache.m_static_cache, static_cast<uint32_t>(shards.size()),
 	                                                         shards.data()) == vk::Result::eSuccess &&

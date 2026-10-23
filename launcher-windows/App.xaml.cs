@@ -36,6 +36,7 @@ public partial class App : Application {
 			text.AppendLine("precompile: cmd " + commands.PrecompileArguments(""));
 			text.AppendLine("hints:      cmd " + commands.PrecompileArguments("-ExportHints"));
 			text.AppendLine(string.Format("efficiency cores: 0x{0:X}", context.EfficiencyMask));
+			text.AppendLine(string.Format("display: {0} lines", context.DisplayHeight));
 			text.AppendLine("frame generation: " + (context.FrameGenAvailable ? "NVIDIA's Streamline runtime in " + context.Streamline
 				: !context.RtxGpu ? "no NVIDIA RTX graphics card (DLSS off)" : "no NVIDIA-signed Streamline runtime (settings: '" + context.Settings.Str("streamline") + "')"));
 			File.WriteAllText(dryRun, text.ToString(), new UTF8Encoding(false));

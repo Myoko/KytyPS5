@@ -798,7 +798,7 @@ struct Presenter::Impl {
 			const FrameGen::UpscaleImage backbuffer {composed.image, composed_view, vk::ImageLayout::eGeneral, format, extent,
 			                                         composed.usage, 0, 0};
 			count = FrameGen::Generate(window.graphic_ctx, command.Handle(), frame.fg.valid && !frame.reusing_last ? &frame.fg : nullptr,
-			                           backbuffer, swapchain.PresentRegion(), outputs);
+			                           backbuffer, swapchain.PresentRegion(), outputs, frame.hdr);
 			// (A live `screenshot`: the finished frame and the frame generated before it.)
 			const auto shot      = Screenshot::Take();
 			auto       capture   = Screenshot::Record(window.graphic_ctx, command.Handle(), composed, shot);
@@ -1607,10 +1607,11 @@ void Presenter::Present(Frame& frame, bool reuse) {
 	KYTY_PROFILER_FUNCTION();
 	m_impl->frames.ValidateForPresent(&frame, reuse);
 #if defined(__linux__)
-	// Linux frame generation: a new frame, and those NGX makes before it (PresentGenerated). A cleared or HDR frame goes
-	// the normal way, and DLSS-G starts again after it; a last frame shown again (an idle refresh) is not new.
+	// Linux frame generation: a new frame, and those NGX makes before it (PresentGenerated). A cleared frame, or an HDR
+	// one for DLSS-G (FSR 3 built in takes PQ frames too), goes the normal way, and generation starts again after it; a
+	// last frame shown again (an idle refresh) is not new.
 	if (FrameGen::PresenterGenerates() && !reuse) {
-		if (!frame.blank && !frame.hdr && m_impl->PresentGenerated(frame)) return;
+		if (!frame.blank && (!frame.hdr || FrameGen::PresenterGeneratesHdr()) && m_impl->PresentGenerated(frame)) return;
 		FrameGen::SwapchainChanging();
 	}
 #endif

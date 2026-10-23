@@ -14,8 +14,8 @@ struct Program;
 // the PS5's) and the performance mode's render config asks for mode 5 (kernel/fileSystem.cpp: loader/gameArgs.h);
 // libs/libPsml.cpp hands the dispatch to the emulator's upscaler (graphics/guest_gpu/superResolution.h). Only where
 // DLSS is ready on the device (frame-gen.h UpscalerReady, made before the game is loaded); elsewhere the game's TAA.
-// KYTY_RENDER_HEIGHT then sizes mode 5 (loader/demonsSoulsRenderSize.h), at least 1080: the game's super resolution
-// is off below (SuperResolution::IsEnabled).
+// KYTY_RENDER_HEIGHT then sizes mode 5 (loader/demonsSoulsRenderSize.h): 1080 and up, or 720 with SetLeastHeight (the
+// game's super resolution is off below its least height, SuperResolution::IsEnabled).
 // With KYTY_HD_OUTPUT=1 too, the same path makes a 1920x1080 output instead of 3840x2160 (the upscaler's image, the
 // processing after it and the interface at 1080p, loader/demonsSoulsHdOutput.h, demonsSoulsRenderSize.h): DLSS from
 // a lower render height to 1080p, where the game's own HD path has no upscaler (its TAA, bloom and depth of field run

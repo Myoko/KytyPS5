@@ -1194,6 +1194,10 @@ uint64_t BackingMappingEnd(uint64_t vaddr) {
 	return g_guest_address_space != nullptr ? g_guest_address_space->BackingMappingEnd(vaddr) : 0;
 }
 
+bool DiscardBacking(uint64_t address, uint64_t size) {
+	return g_guest_address_space != nullptr && g_guest_address_space->DiscardBacking(address, size);
+}
+
 void TrimGuestRange(uint64_t vaddr, uint64_t size) {
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	if (size != 0) ParkedRangeTrimmer::Trim(vaddr, size);
