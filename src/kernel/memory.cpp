@@ -71,18 +71,27 @@ extern "C" {
 // mapping its other parts again (GuestBackingStore::UnmapOne); 2: parked no-access (a stray access faults, for
 // debugging). 0: views with nothing parked yet are split at once, as before (a view holding parked ranges keeps parking).
 [[gnu::used]] volatile std::atomic_uint32_t kyty_local_park_unmaps {1};
-// Windows (KYTY_READ_GUARD=0 turns it off): a guest view's no access (the GPU trackers' read protection of pages the GPU
-// wrote, the texture offload's holds) is a guard page over read-only instead, armed again at once by the fault it raises
-// and the page given its trackers' protection once the fault is served (hostException.cpp). Bug check 0x1A/0x41202
-// (issues #5, #50: a no-access page of a paged section view) came with no access only: the stand-alone reproducer
-// (_transfer/bsod-tests/ptetest4) blue-screened a 32 GB laptop under paging in 15, 529 and 656 s, and ran 1800 s with
-// guard pages, and 1800 s with read-only / read-write only, under the same or heavier paging; the emulator itself with
-// a RAM hog leaving ~0.4 GB free (16 GB policies, deaths and world trips) blue-screened in 7.4 min without guards (the
-// desktop in 5.5) and ran 22 min with them (10-23). (The texture offload's backing view keeps no access:
-// texture-offload.h.) A live change applies to the protections made after it (guards made before are still served).
+// Windows (KYTY_READ_GUARD=1 turns it on; off by default): a guest view's no access (the GPU trackers' read
+// protection of pages the GPU wrote, the texture offload's holds) would be a guard page over read-only instead,
+// armed again at once by the fault it raises and the page given its trackers' protection once the fault is
+// served (hostException.cpp). Bug check 0x1A/0x41202 (issues #5, #50: a no-access page of a paged section view)
+// came with no access only: the stand-alone reproducer (_transfer/bsod-tests/ptetest4) blue-screened a 32 GB
+// laptop under paging in 15, 529 and 656 s, and ran 1800 s with guard pages, and 1800 s with read-only /
+// read-write only, under the same or heavier paging; the emulator itself with a RAM hog leaving ~0.4 GB free
+// (16 GB policies, deaths and world trips) blue-screened in 7.4 min without guards (the desktop in 5.5) and ran
+// 22 min with them (10-23). (The texture offload's backing view keeps no access: texture-offload.h.) A live
+// change applies to the protections made after it (guards made before are still served).
+//
+// Off by default since 10-23: with guards on, textures went stale - the picture flickered and tore as areas
+// streamed in (Demon's Souls, PPSA01341). Same binary, one variable: KYTY_READ_GUARD=0 clean, default not. A
+// guard is served by re-arming it and then handing the page its trackers' protection, and a guest write that
+// lands in that window does not fault, so the tracker never learns the page changed and the cache keeps its
+// stale upload. That is a tracking defect, not something the guard can paper over, so the default goes back to
+// no access until the window is closed properly; KYTY_READ_GUARD=1 still asks for guards where the blue screen
+// of #50 is the worse risk (little RAM, heavy paging).
 [[gnu::used]] volatile std::atomic_uint32_t kyty_local_read_guard {[] {
 	const char* value = std::getenv("KYTY_READ_GUARD");
-	return value != nullptr && value[0] == '0' ? 0u : 1u;
+	return value != nullptr && value[0] == '1' ? 1u : 0u;
 }()};
 }
 
