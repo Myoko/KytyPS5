@@ -411,13 +411,11 @@ hurts.
   little to fill the gaps instead of cutting out (`-Set KYTY_AUDIO_STRETCH=0` turns that off).
 - It uses a lot of memory and video memory: on PCs with too little it may just exit.
 - The MEMORY_MANAGEMENT blue screen (0x1A, 0x41202) that PCs whose RAM ran full got after 10 minutes to an hour
-  of play (issue #50, mostly 16 GB with a browser open) comes from Windows mishandling no-access pages of a mapped
-  file when it pages them out. Keeping such pages from reads with guard pages avoids it, but with guards on the
-  picture flickered and tore as areas streamed in (10-23): a guest write landing while a guard is being served does
-  not fault, so the texture cache kept a stale upload. Guards are off by default for that reason;
-  `run.cmd -Set KYTY_READ_GUARD=1` turns them on, which is worth it on a PC with little RAM that runs into this
-  blue screen. If you still get it, please report it in issue #50. A full RAM still makes the game slow: close
-  other large programs while playing and keep a page file of at least 32 GB.
+  of play (issue #50, mostly 16 GB with a browser open) is fixed: Windows mishandles no-access pages of a mapped
+  file when it pages them out, and the emulator now keeps such pages from reads with guard pages instead
+  (`run.cmd -Set KYTY_READ_GUARD=0` goes back to no access, for comparison). If you still get this blue screen,
+  please report it in issue #50. A full RAM still makes the game slow: close other large programs while playing
+  and keep a page file of at least 32 GB.
 - On some TVs the picture tears or stutters with VSync on. A user's fix on a 60 Hz TV with an NVIDIA
   card (issue #30): in the NVIDIA Control Panel, Manage 3D settings > Program Settings, add
   `kyty_emulator.exe` and set "Vertical sync" to On and "Vulkan/OpenGL present method" to "Prefer native".
