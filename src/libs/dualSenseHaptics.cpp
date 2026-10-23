@@ -635,14 +635,23 @@ void Close(bool speaker) {
 
 // Drives the pad's rumble motors from a block of haptic audio: the mainline's fallback for pads with no
 // haptic-audio path (its Queue(): peak -> SDL_RumbleGamepad), used here for a DualSense on Bluetooth,
-// where the actuators are heard far more than they are felt. 100 ms outlives the gaps between blocks.
+// where the actuators are heard far more than they are felt.
 void RumbleFromHaptics(float left, float right) {
 	// Hold with a decay instead of dropping to the block's own peak: consecutive hits arrive in separate
 	// blocks, and the motors should not fall silent in the gaps between them.
-	static float held[2] = {0.0f, 0.0f};
-	held[0] = std::max(std::max(left, 0.0f), held[0] * 0.8f);
-	held[1] = std::max(std::max(right, 0.0f), held[1] * 0.8f);
-	if (held[0] <= 0.0f && held[1] <= 0.0f) {
+	//
+	// The decay ends at a floor, on purpose. An asymptotic one never reached zero, so every block kept
+	// re-arming the motors with a smaller-but-nonzero strength and a single hit rumbled for over a
+	// second. 0.6 per 21.3 ms report falls from a full hit to the floor in about 190 ms, and the
+	// duration below adds its own tail - short enough to end with the hit, long enough to bridge two or
+	// three blocks.
+	constexpr float DECAY = 0.6f;
+	constexpr float FLOOR = 0.01f;
+	static float    held[2] = {0.0f, 0.0f};
+	held[0] = std::max(std::max(left, 0.0f), held[0] * DECAY);
+	held[1] = std::max(std::max(right, 0.0f), held[1] * DECAY);
+	if (held[0] < FLOOR && held[1] < FLOOR) {
+		held[0] = held[1] = 0.0f;
 		return;
 	}
 	const auto to_motor = [](float value) {
@@ -654,7 +663,7 @@ void RumbleFromHaptics(float left, float right) {
 		if (pad == nullptr || SDL_GameControllerGetType(pad) != SDL_CONTROLLER_TYPE_PS5) {
 			continue;
 		}
-		(void)SDL_GameControllerRumble(pad, to_motor(held[0]), to_motor(held[1]), 100);
+		(void)SDL_GameControllerRumble(pad, to_motor(held[0]), to_motor(held[1]), 60);
 		return;
 	}
 }
