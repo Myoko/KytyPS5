@@ -607,8 +607,7 @@ void Close(bool speaker) {
 bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t source_channels,
            bool is_float, bool speaker, const float* gains) {
 	std::lock_guard lock(g_mutex);
-	if (g_client == nullptr || data == nullptr || frames == 0 || source_channels == 0 ||
-	    g_mix == nullptr) {
+	if (data == nullptr || frames == 0 || source_channels == 0) {
 		return false;
 	}
 	if ((g_routes & (speaker ? ROUTE_SPEAKER : ROUTE_VIBRATION)) == 0U) {
@@ -665,6 +664,13 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 		}
 		return true;
 	}
+
+	// The USB endpoint's own client; a Bluetooth pad never has one, so this comes after the branch above.
+	if (g_client == nullptr || g_mix == nullptr) {
+		return false;
+	}
+
+
 
 	const auto target_rate     = g_mix->nSamplesPerSec;
 	const auto target_channels = g_mix->nChannels;
