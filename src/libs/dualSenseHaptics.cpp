@@ -280,12 +280,16 @@ void ReadSettingsFile() {
 			}
 		} else if (key == "motor_ms" || key == "vibration_motor_ms") {
 			const auto ms = std::strtoul(value.c_str(), nullptr, 10);
-			if (ms <= 500) {
+			// At least 1: SDL2 reads 0 ms as "no expiry", and a game that stops writing in the middle of
+			// a hit would then leave the motors running at their last level.
+			if (ms >= 1 && ms <= 500) {
 				g_vibration_motor_ms = static_cast<uint32_t>(ms);
 			}
 		} else if (key == "motor_decay" || key == "vibration_motor_decay") {
 			const auto decay = std::strtof(value.c_str(), nullptr);
-			if (decay > 0.0f && decay <= 1.0f) {
+			// Below 1.0: at exactly 1 the hold never falls, so it never reaches the floor and a single
+			// hit would rumble until the next one.
+			if (decay > 0.0f && decay < 1.0f) {
 				g_vibration_motor_decay = decay;
 			}
 		}
@@ -350,13 +354,15 @@ void ReadSettings() {
 	// tail of a hit - how long each report lasts and how fast the hold falls between reports.
 	if (const char* value = std::getenv("KYTY_DUALSENSE_VIBRATION_MOTOR_MS"); value != nullptr) {
 		const auto ms = std::strtoul(value, nullptr, 10);
-		if (ms <= 500) {
+		// At least 1: SDL2 reads 0 ms as "no expiry" (see the file key above).
+		if (ms >= 1 && ms <= 500) {
 			g_vibration_motor_ms = static_cast<uint32_t>(ms);
 		}
 	}
 	if (const char* value = std::getenv("KYTY_DUALSENSE_VIBRATION_MOTOR_DECAY"); value != nullptr) {
 		const auto decay = std::strtof(value, nullptr);
-		if (decay > 0.0f && decay <= 1.0f) {
+		// Below 1.0, as in dualsense-haptics.txt: at exactly 1 the hold never reaches the floor.
+		if (decay > 0.0f && decay < 1.0f) {
 			g_vibration_motor_decay = decay;
 		}
 	}
@@ -700,9 +706,16 @@ void RumbleFromHaptics(float left, float right) {
 	static float    held[2] = {0.0f, 0.0f};
 	held[0] = std::max(std::max(left, 0.0f), held[0] * g_vibration_motor_decay);
 	held[1] = std::max(std::max(right, 0.0f), held[1] * g_vibration_motor_decay);
-	if (held[0] < FLOOR && held[1] < FLOOR) {
+	const bool live = held[0] >= FLOOR || held[1] >= FLOOR;
+	// Just crossed the floor: stop the motors explicitly. Relying on the report's own duration would not
+	// do - SDL2 reads 0 ms as "no expiry" - and a game that stops writing in the middle of a hit would
+	// otherwise leave them running at the last level, a fade that never finishes.
+	const bool stop = !live && (held[0] != 0.0f || held[1] != 0.0f);
+	if (!live) {
 		held[0] = held[1] = 0.0f;
-		return;
+		if (!stop) {
+			return;
+		}
 	}
 	const auto to_motor = [](float value) {
 		return static_cast<uint16_t>(
@@ -714,8 +727,12 @@ void RumbleFromHaptics(float left, float right) {
 		if (pad == nullptr || SDL_GameControllerGetType(pad) != SDL_CONTROLLER_TYPE_PS5) {
 			continue;
 		}
-		(void)SDL_GameControllerRumble(pad, to_motor(held[0]), to_motor(held[1]),
-		                               g_vibration_motor_ms);
+		if (stop) {
+			(void)SDL_GameControllerRumble(pad, 0, 0, 0);
+		} else {
+			(void)SDL_GameControllerRumble(pad, to_motor(held[0]), to_motor(held[1]),
+			                               g_vibration_motor_ms);
+		}
 		return;
 	}
 }
