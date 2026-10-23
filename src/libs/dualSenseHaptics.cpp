@@ -631,7 +631,11 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 			return false;
 		}
 		std::vector<float> mixed(static_cast<size_t>(out_frames) * 2);
-		const auto         route_gain = speaker ? g_speaker_gain : g_gain;
+		// Unity gain for the speaker, not the USB path's g_speaker_gain: the mainline's Bluetooth path
+		// multiplies only by the guest's per-channel gains (its Queue() uses gain = 1), and the extra
+		// +12 dB this used to apply drove the pad's small amplifier into clipping - heard as tearing,
+		// never as loudness. The USB path keeps its tuning knobs; this one matches the mainline.
+		const auto         route_gain = speaker ? 1.0f : g_gain;
 		for (uint32_t i = 0; i < out_frames; i++) {
 			const auto source_index = source_rate == bt_rate
 			                              ? i
