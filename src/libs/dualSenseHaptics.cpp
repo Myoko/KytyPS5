@@ -40,10 +40,15 @@ constexpr const char* PAD_DEVICE_PATH = "VID_054C&PID_0CE6";
 constexpr uint32_t ROUTE_SPEAKER   = 1U << 0U;
 constexpr uint32_t ROUTE_VIBRATION = 1U << 1U;
 
-IAudioClient*       g_client        = nullptr;
-IAudioRenderClient* g_render        = nullptr;
-WAVEFORMATEX*       g_mix           = nullptr;
-uint32_t            g_buffer_frames = 0;
+// One client per route - [0] the actuators, [1] the speaker - as the mainline has one audio stream per
+// route. Sharing one client meant each route's whole-buffer memset silenced the other route's channels,
+// and both routes counted into the same padding, so the endpoint kept dropping writes: the speaker then
+// sounded muffled and chopped. Each client now writes only its own channel pair and leaves the rest at
+// zero, which the endpoint's mixer sums back together.
+IAudioClient*       g_client[2]        = {nullptr, nullptr};
+IAudioRenderClient* g_render[2]        = {nullptr, nullptr};
+WAVEFORMATEX*       g_mix[2]           = {nullptr, nullptr};
+uint32_t            g_buffer_frames[2] = {0, 0};
 uint32_t            g_routes        = 0;
 
 std::mutex g_mutex;
@@ -457,12 +462,14 @@ bool Available() {
 
 uint32_t SampleRate() {
 	std::lock_guard lock(g_mutex);
-	return g_mix != nullptr ? g_mix->nSamplesPerSec : 0;
+	const auto* mix = g_mix[0] != nullptr ? g_mix[0] : g_mix[1];
+	return mix != nullptr ? mix->nSamplesPerSec : 0;
 }
 
 uint32_t EndpointChannels() {
 	std::lock_guard lock(g_mutex);
-	return g_mix != nullptr ? g_mix->nChannels : 0;
+	const auto* mix = g_mix[0] != nullptr ? g_mix[0] : g_mix[1];
+	return mix != nullptr ? mix->nChannels : 0;
 }
 
 bool SpeakerActive() {
@@ -478,11 +485,12 @@ bool Open(bool speaker) {
 
 	std::lock_guard lock(g_mutex);
 	const auto route = speaker ? ROUTE_SPEAKER : ROUTE_VIBRATION;
+	const int  index = speaker ? 1 : 0;
 	if ((g_routes & route) != 0U) {
 		return true; // this route is already playing
 	}
 
-	if (g_client == nullptr) {
+	if (g_client[index] == nullptr) {
 		// A Bluetooth pad first: it has no audio endpoint; its speaker and actuators are HID reports.
 		if (!g_bt_tried) {
 			g_bt_tried     = true;
@@ -515,37 +523,38 @@ bool Open(bool speaker) {
 		bool opened = false;
 		do {
 			if (FAILED(device->Activate(__uuidof(IAudioClient), CLSCTX_INPROC_SERVER, nullptr,
-			                            reinterpret_cast<void**>(&g_client))) ||
-			    g_client == nullptr) {
+			                            reinterpret_cast<void**>(&g_client[index]))) ||
+			    g_client[index] == nullptr) {
 				break;
 			}
 
-			if (FAILED(g_client->GetMixFormat(&g_mix)) || g_mix == nullptr) {
+			if (FAILED(g_client[index]->GetMixFormat(&g_mix[index])) || g_mix[index] == nullptr) {
 				break;
 			}
-			if (g_mix->wFormatTag != WAVE_FORMAT_IEEE_FLOAT &&
-			    g_mix->wFormatTag != WAVE_FORMAT_EXTENSIBLE) {
+			if (g_mix[index]->wFormatTag != WAVE_FORMAT_IEEE_FLOAT &&
+			    g_mix[index]->wFormatTag != WAVE_FORMAT_EXTENSIBLE) {
 				break;
 			}
-			if (g_mix->wBitsPerSample != 32) {
+			if (g_mix[index]->wBitsPerSample != 32) {
 				break;
 			}
 
 			// 100 ms of buffer; the pad's own path starts about a second late, which the queue
 			// covers as long as the game keeps writing.
 			if (FAILED(
-			        g_client->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 1000000LL, 0, g_mix, nullptr))) {
+			        g_client[index]->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 1000000LL, 0, g_mix[index],
+			                                   nullptr))) {
 				break;
 			}
-			if (FAILED(g_client->GetBufferSize(&g_buffer_frames))) {
+			if (FAILED(g_client[index]->GetBufferSize(&g_buffer_frames[index]))) {
 				break;
 			}
-			if (FAILED(g_client->GetService(__uuidof(IAudioRenderClient),
-			                                reinterpret_cast<void**>(&g_render))) ||
-			    g_render == nullptr) {
+			if (FAILED(g_client[index]->GetService(__uuidof(IAudioRenderClient),
+			                                       reinterpret_cast<void**>(&g_render[index]))) ||
+			    g_render[index] == nullptr) {
 				break;
 			}
-			if (FAILED(g_client->Start())) {
+			if (FAILED(g_client[index]->Start())) {
 				break;
 			}
 			opened = true;
@@ -559,10 +568,11 @@ bool Open(bool speaker) {
 			return false;
 		}
 
-		std::printf("DualSense: stream open: %u Hz, %u ch, buffer %u frames, gains %.2f/%.2f "
+		std::printf("DualSense: %s stream open: %u Hz, %u ch, buffer %u frames, gains %.2f/%.2f "
 		            "(vibration/speaker)\n",
-		            static_cast<unsigned>(g_mix->nSamplesPerSec),
-		            static_cast<unsigned>(g_mix->nChannels), g_buffer_frames,
+		            speaker ? "speaker" : "vibration",
+		            static_cast<unsigned>(g_mix[index]->nSamplesPerSec),
+		            static_cast<unsigned>(g_mix[index]->nChannels), g_buffer_frames[index],
 		            static_cast<double>(g_gain), static_cast<double>(g_speaker_gain));
 	}
 
@@ -599,27 +609,33 @@ void Close(bool speaker) {
 		g_bt_vibration = nullptr;
 	}
 
-	if (g_client != nullptr) {
-		g_client->Stop();
-		g_client->Release();
-		g_client = nullptr;
+	const int index = speaker ? 1 : 0;
+	if (g_client[index] != nullptr) {
+		g_client[index]->Stop();
+		g_client[index]->Release();
+		g_client[index] = nullptr;
 	}
-	if (g_render != nullptr) {
-		g_render->Release();
-		g_render = nullptr;
+	if (g_render[index] != nullptr) {
+		g_render[index]->Release();
+		g_render[index] = nullptr;
 	}
-	if (g_mix != nullptr) {
-		CoTaskMemFree(g_mix);
-		g_mix = nullptr;
+	if (g_mix[index] != nullptr) {
+		CoTaskMemFree(g_mix[index]);
+		g_mix[index] = nullptr;
 	}
-	g_buffer_frames = 0;
+	g_buffer_frames[index] = 0;
 }
 
 // Drives the pad's rumble motors from a block of haptic audio: the mainline's fallback for pads with no
 // haptic-audio path (its Queue(): peak -> SDL_RumbleGamepad), used here for a DualSense on Bluetooth,
 // where the actuators are heard far more than they are felt. 100 ms outlives the gaps between blocks.
 void RumbleFromHaptics(float left, float right) {
-	if (left <= 0.0f && right <= 0.0f) {
+	// Hold with a decay instead of dropping to the block's own peak: consecutive hits arrive in separate
+	// blocks, and the motors should not fall silent in the gaps between them.
+	static float held[2] = {0.0f, 0.0f};
+	held[0] = std::max(std::max(left, 0.0f), held[0] * 0.8f);
+	held[1] = std::max(std::max(right, 0.0f), held[1] * 0.8f);
+	if (held[0] <= 0.0f && held[1] <= 0.0f) {
 		return;
 	}
 	const auto to_motor = [](float value) {
@@ -631,7 +647,7 @@ void RumbleFromHaptics(float left, float right) {
 		if (pad == nullptr || SDL_GameControllerGetType(pad) != SDL_CONTROLLER_TYPE_PS5) {
 			continue;
 		}
-		(void)SDL_GameControllerRumble(pad, to_motor(left), to_motor(right), 100);
+		(void)SDL_GameControllerRumble(pad, to_motor(held[0]), to_motor(held[1]), 100);
 		return;
 	}
 }
@@ -706,15 +722,16 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 		return true;
 	}
 
-	// The USB endpoint's own client; a Bluetooth pad never has one, so this comes after the branch above.
-	if (g_client == nullptr || g_mix == nullptr) {
+	// The USB endpoint's own client, one per route, so neither silences the other's channels.
+	const int index = speaker ? 1 : 0;
+	if (g_client[index] == nullptr || g_mix[index] == nullptr) {
 		return false;
 	}
 
 
 
-	const auto target_rate     = g_mix->nSamplesPerSec;
-	const auto target_channels = g_mix->nChannels;
+	const auto target_rate     = g_mix[index]->nSamplesPerSec;
+	const auto target_channels = g_mix[index]->nChannels;
 	if (target_rate == 0 || target_channels < 2) {
 		return false;
 	}
@@ -734,17 +751,18 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 	}
 
 	UINT32 padding = 0;
-	if (FAILED(g_client->GetCurrentPadding(&padding))) {
+	if (FAILED(g_client[index]->GetCurrentPadding(&padding))) {
 		return false;
 	}
-	const auto free = g_buffer_frames > padding ? g_buffer_frames - padding : 0;
+	const auto free =
+	    g_buffer_frames[index] > padding ? g_buffer_frames[index] - padding : 0;
 	if (free < out_frames) {
 		g_dropped_writes++;
 		return false; // behind: drop rather than delay the guest's audio thread
 	}
 
 	BYTE* buffer = nullptr;
-	if (FAILED(g_render->GetBuffer(out_frames, &buffer)) || buffer == nullptr) {
+	if (FAILED(g_render[index]->GetBuffer(out_frames, &buffer)) || buffer == nullptr) {
 		return false;
 	}
 
@@ -826,7 +844,7 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 		}
 	}
 
-	g_render->ReleaseBuffer(out_frames, 0);
+	g_render[index]->ReleaseBuffer(out_frames, 0);
 
 	if (!speaker) {
 		// The same motor drive the Bluetooth route uses, from the same block: the endpoint's actuator
@@ -853,7 +871,7 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 		            static_cast<double>(gains != nullptr ? gains[0] : 1.0f),
 		            static_cast<double>(peak), static_cast<double>(route_peak),
 		            static_cast<unsigned long long>(route_clips),
-		            static_cast<unsigned long long>(g_dropped_writes), padding, g_buffer_frames);
+		            static_cast<unsigned long long>(g_dropped_writes), padding, g_buffer_frames[index]);
 	}
 	return true;
 }
