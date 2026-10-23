@@ -81,9 +81,16 @@ extern "C" {
 // a RAM hog leaving ~0.4 GB free (16 GB policies, deaths and world trips) blue-screened in 7.4 min without guards (the
 // desktop in 5.5) and ran 22 min with them (10-23). (The texture offload's backing view keeps no access:
 // texture-offload.h.) A live change applies to the protections made after it (guards made before are still served).
+// On by default with 20 GiB of RAM or less only (KYTY_READ_GUARD=1|0 sets it): a guard is gone from its page the moment
+// it raises the fault, and other threads read the page meanwhile without one. The game reads GPU-written pages from
+// several threads at once: with guards, whole areas lost their light, screen tiles turned black or the picture showed at
+// twice its size (issues #157, #158, #159; reproduced at the Tower of Latria with a 1080p render and DLSS: black and
+// dark frames from the second point of the tour, every frame right without guards), and putting the guard back without
+// waiting (f2ecf299) did not help. The blue screen needs the RAM to run full: the PCs with little of it keep the guards.
 [[gnu::used]] volatile std::atomic_uint32_t kyty_local_read_guard {[] {
-	const char* value = std::getenv("KYTY_READ_GUARD");
-	return value != nullptr && value[0] == '0' ? 0u : 1u;
+	if (const char* value = std::getenv("KYTY_READ_GUARD"); value != nullptr && *value != '\0') return value[0] == '0' ? 0u : 1u;
+	const auto ram = LocalPlatform::PhysicalMemory();
+	return ram != 0 && ram <= (uint64_t {20} << 30u) ? 1u : 0u;
 }()};
 }
 
@@ -1521,8 +1528,9 @@ void InstallGpuResources(Graphics::GpuResourceManager* resources) noexcept {
 	// (Installed whatever the switch: guards made while it was on are served after it changed.)
 	if (resources != nullptr) {
 		Common::HostException::SetReadGuardHandlers(ArmReadGuard, SettleReadGuard);
-		if (kyty_local_read_guard.load(std::memory_order_relaxed) != 0)
-			std::printf("Memory: guest pages kept from reads by guard pages (KYTY_READ_GUARD)\n");
+		std::printf(kyty_local_read_guard.load(std::memory_order_relaxed) != 0
+		                ? "Memory: guest pages kept from reads by guard pages (KYTY_READ_GUARD=0: no access)\n"
+		                : "Memory: guest pages kept from reads by no access (KYTY_READ_GUARD=1: guard pages)\n");
 	}
 #endif
 }
