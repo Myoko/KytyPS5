@@ -26,7 +26,7 @@
 //   KYTY_DUALSENSE_SPEAKER_GAIN=<float>         0..64, default 1.0 (unity). The pad's own amplifier and
 //                                  the +6 dB preamp below make the speaker audible; digital gain on
 //                                  top of them clips inside the pad, heard as tearing rather than as
-//                                  loudness - which is what the earlier 4.0 here did. The Bluetooth
+//                                  loudness - which is what the released 8.0 (+18 dB) here did. The Bluetooth
 //                                  route uses the same unity gain, so both routes sound alike.
 //   KYTY_DUALSENSE_SPEAKER_PREAMP=0|1  the controller's own +6 dB speaker preamp (default: on).
 //                                  github.com/Jetsku/KytyPS5 sends it, Linux does too, and so does

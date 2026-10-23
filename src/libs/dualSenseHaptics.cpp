@@ -58,7 +58,6 @@ bool       g_enabled  = true;
 // HID reports (dualSenseBluetooth.cpp). One stream per route, opened on first use.
 DualSenseBluetooth::Stream* g_bt_speaker   = nullptr;
 DualSenseBluetooth::Stream* g_bt_vibration = nullptr;
-bool                        g_bt_tried    = false;
 
 // True when a DualSense sits on the Bluetooth bus. SDL2's hidapi has no bus type, so the Windows
 // device path's HID-over-Bluetooth service GUID says which bus it is on.
@@ -496,10 +495,15 @@ bool Open(bool speaker) {
 
 	if (g_client[index] == nullptr) {
 		// A Bluetooth pad first: it has no audio endpoint; its speaker and actuators are HID reports.
-		if (!g_bt_tried) {
-			g_bt_tried     = true;
-			g_bt_vibration = DualSenseBluetooth::Open(48000, false, 0, nullptr);
-			g_bt_speaker   = DualSenseBluetooth::Open(48000, true, 0, nullptr);
+		// Tried per route rather than once: the game can close a route and open it again, and a close
+		// takes this route's stream away. A pad that had already given up on Bluetooth would then look
+		// for a USB endpoint it does not have and stay silent until the game restarted.
+		if (speaker ? g_bt_speaker == nullptr : g_bt_vibration == nullptr) {
+			if (speaker) {
+				g_bt_speaker = DualSenseBluetooth::Open(48000, true, 0, nullptr);
+			} else {
+				g_bt_vibration = DualSenseBluetooth::Open(48000, false, 0, nullptr);
+			}
 			if (g_bt_vibration != nullptr || g_bt_speaker != nullptr) {
 				std::printf("DualSense: a Bluetooth pad carries the haptics (%s) and the speaker (%s)\n",
 				            g_bt_vibration != nullptr ? "yes" : "no",
@@ -607,7 +611,6 @@ void Close(bool speaker) {
 	if (speaker) {
 		DualSenseBluetooth::Close(g_bt_speaker);
 		g_bt_speaker = nullptr;
-		(void)RouteSpeaker(false); // the pad's headphone routing goes back, as on the console
 	} else {
 		DualSenseBluetooth::Close(g_bt_vibration);
 		g_bt_vibration = nullptr;
