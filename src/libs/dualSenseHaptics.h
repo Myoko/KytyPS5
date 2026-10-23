@@ -19,16 +19,15 @@
 //   KYTY_DUALSENSE_HAPTICS=0|1     off when 0 (default: on)
 //   KYTY_DUALSENSE_HAPTICS_CHANNELS=23|01|all   which of the endpoint's channels take the vibration
 //                                  (default: 23, the actuator pair)
-//   KYTY_DUALSENSE_HAPTICS_GAIN=<float>         applied to the vibration samples (default: 1.0)
+//   KYTY_DUALSENSE_HAPTICS_GAIN=<float>         applied to the vibration samples (default: 4.0 - the
+//                                  actuators are felt rather than heard, and at 1.0 they are barely
+//                                  there in play)
 //   KYTY_DUALSENSE_SPEAKER_CHANNELS=01|23|all   the same for the pad speaker (default: 01)
-//   KYTY_DUALSENSE_SPEAKER_GAIN=<float>         0..64 (default: 1.0, unity - the Bluetooth route uses the same). What the guest sends
-//                                  to a pad speaker port is quiet - Demon's Souls peaks at about
-//                                  -40 dB - so some digital gain is what makes it clear. Past 4.0 the
-//                                  loudest moments reach full scale inside the controller, once its
-//                                  own +6 dB preamp below is counted, and the pad's small amplifier
-//                                  clamps - heard in play as tearing. 4.0 measures about 0.98 of full
-//                                  scale at the loudest moment; the add-on known to play without
-//                                  tearing uses 1.0, which is clean but quiet.
+//   KYTY_DUALSENSE_SPEAKER_GAIN=<float>         0..64, default 1.0 (unity). The pad's own amplifier and
+//                                  the +6 dB preamp below make the speaker audible; digital gain on
+//                                  top of them clips inside the pad, heard as tearing rather than as
+//                                  loudness - which is what the earlier 4.0 here did. The Bluetooth
+//                                  route uses the same unity gain, so both routes sound alike.
 //   KYTY_DUALSENSE_SPEAKER_PREAMP=0|1  the controller's own +6 dB speaker preamp (default: on).
 //                                  github.com/Jetsku/KytyPS5 sends it, Linux does too, and so does
 //                                  that add-on - so it is the preamp plus too much gain, not the

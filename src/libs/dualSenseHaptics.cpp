@@ -87,13 +87,16 @@ bool BluetoothPadPresent() {
 	return false;
 }
 bool       g_log      = false;
-float      g_gain     = 4.0f; // the tested setting: 1.0 leaves the actuators faint in play
+// 4.0 on the vibration route is deliberate: the actuators are felt rather than heard, and at unity they
+// are barely there in play. The speaker route below stays at unity because there the pad's own amplifier
+// turns the same difference into clipping. Both are overridable (KYTY_DUALSENSE_HAPTICS_GAIN and
+// _SPEAKER_GAIN), and the per-route "clipped" count in KYTY_DUALSENSE_HAPTICS_LOG output says whether a
+// value runs past full scale.
+float      g_gain     = 4.0f;
 bool       g_all_channels  = false;
 uint32_t   g_first_channel = 2; // the actuator pair; KYTY_DUALSENSE_HAPTICS_CHANNELS overrides it
 uint32_t   g_channel_count = 2;
-// The speaker route has its own channels and gain. 4.0 is the measured safe level: the loudest pad
-// speaker moments peak around 0.49 there, and with the controller's own +6 dB preamp that is 0.98 of
-// full scale inside the pad - at 8.0 the same peak reaches full scale and the pad's amplifier clips.
+// The speaker route has its own channels and gain; the gain itself is explained below.
 uint32_t   g_speaker_first_channel = 0;
 uint32_t   g_speaker_channel_count = 2;
 // Unity by default, as the Bluetooth route uses: the pad's own amplifier and the +6 dB preamp the
@@ -328,8 +331,9 @@ void ReadSettings() {
 			g_speaker_gain = gain;
 		}
 	}
-	// KYTY_DUALSENSE_SPEAKER_PREAMP=1 asks for the controller's own +6 dB speaker preamp (off by
-	// default: with this route's digital gain the loudest moments then clip inside the controller).
+	// KYTY_DUALSENSE_SPEAKER_PREAMP=0 turns the controller's own +6 dB speaker preamp off. It is on by
+	// default: the mainline, Linux and the DualSense add-on all send it, and with unity digital gain it
+	// is what makes the speaker audible without clipping inside the pad.
 	if (const char* value = std::getenv("KYTY_DUALSENSE_SPEAKER_PREAMP"); value != nullptr) {
 		g_speaker_preamp = std::string(value) != "0";
 	}
