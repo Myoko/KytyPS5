@@ -17,7 +17,7 @@ $languages = 'Japanese', 'English (United States)', 'French (France)', 'Spanish 
 	'Arabic', 'French (Canada)', 'Czech', 'Hungarian', 'Greek', 'Romanian', 'Thai', 'Vietnamese', 'Indonesian'
 # The window's sizes for each aspect ratio of the 3D (below).
 $resolutionsByRatio = @{
-	'16:9' = '1280x720', '1920x1080', '2560x1440', '3840x2160'
+	'16:9' = '1280x720', '1600x900', '1920x1080', '2560x1440', '3840x2160'
 	'21:9' = '2560x1080', '3440x1440', '3840x1600', '5120x2160'
 	'32:9' = '3840x1080', '5120x1440', '7680x2160' }
 # The height Demon's Souls renders its 3D at (run-windows.ps1 -RenderHeight); its output and UI stay 3840x2160.

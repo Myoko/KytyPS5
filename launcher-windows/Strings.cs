@@ -121,6 +121,8 @@ static class Strings {
 
 		{"game.title", "Game"}, {"game.console", "Console"}, {"game.controller", "Controller"}, {"game.cheats", "Cheats"},
 		{"language", "Console language"}, {"language.desc", "The language the game is told; it decides which text and voices it has."},
+		{"reopen", "Back to the launcher after the game"},
+		{"reopen.desc", "The launcher waits in the background while the game runs and comes back when it ends, for another start with other settings. Off: it closes when the game starts."},
 		{"padspeaker", "Controller speaker"},
 		{"padspeaker.desc", "The game plays some of its sounds on the DualSense's speaker, as on the console, over USB or Bluetooth. Off: the speaker stays silent and those sounds are not heard; the vibration stays."},
 		{"padvolume", "Controller speaker volume"},
@@ -273,6 +275,8 @@ static class Strings {
 
 		{"game.title", "游戏"}, {"game.console", "主机"}, {"game.controller", "手柄"}, {"game.cheats", "作弊"},
 		{"language", "主机语言"}, {"language.desc", "告诉游戏的系统语言；游戏支持哪些文字与语音由游戏决定。"},
+		{"reopen", "游戏结束后回到启动器"},
+		{"reopen.desc", "游戏运行时启动器在后台等待，游戏结束后重新出现，方便换一组设置再启动。关闭：游戏启动后启动器随即关闭。"},
 		{"padspeaker", "手柄扬声器"},
 		{"padspeaker.desc", "游戏会像在主机上一样，把部分声音放到 DualSense 的扬声器里（USB 或蓝牙）。关闭：扬声器保持静音，这些声音不再播放；振动不受影响。"},
 		{"padvolume", "手柄扬声器音量"},
