@@ -100,7 +100,7 @@ uint32_t   g_speaker_first_channel = 0;
 uint32_t   g_speaker_channel_count = 2;
 // Unity by default, as the Bluetooth route uses: the pad's own amplifier and the +6 dB preamp the
 // routing report asks for are what make this audible, and anything above unity clips in the pad -
-// heard as tearing, not as loudness. Raise it here (or in dualsense-haptics.txt) only to taste.
+// heard as tearing, not as loudness. Raise it here only to taste.
 float      g_speaker_gain          = 1.0f;
 // The controller's own +6 dB speaker preamp (HID output report byte 37). github.com/Jetsku/KytyPS5
 // sends it, Linux does too, and so does the DualSense add-on that is known to play without tearing -
@@ -117,7 +117,7 @@ bool       g_speaker_limiter       = false;
 // How hard the rumble motors are driven from a haptic block's peak: 2.0 is the mainline's reference, 0
 // leaves the work to the actuators alone (faint), 4 doubles it. Strength is taste - too low reads as "I
 // cannot feel it", too high as "it buzzes through a whole spell charge" - so it is a setting, not a
-// constant: dualsense-haptics.txt `motor_gain=`, or KYTY_DUALSENSE_VIBRATION_MOTOR_GAIN.
+// constant: KYTY_DUALSENSE_VIBRATION_MOTOR_GAIN.
 float      g_vibration_motor_gain  = 2.0f;
 // How long the motors stay on after each block, and how fast the hold falls between blocks. Together
 // they are the tail of a hit: a report lasts motor_ms, and the level carries over at motor_decay per
@@ -180,134 +180,6 @@ bool RouteSpeaker(bool speaker) {
 	return false;
 }
 
-std::string Trimmed(std::string text) {	const auto spaces = " \t\r\n";
-	const auto first  = text.find_first_not_of(spaces);
-	if (first == std::string::npos) {
-		return {};
-	}
-	const auto last = text.find_last_not_of(spaces);
-	return text.substr(first, last - first + 1);
-}
-
-std::string Lowered(std::string text) {
-	for (auto& c : text) {
-		if (c >= 'A' && c <= 'Z') {
-			c = static_cast<char>(c - 'A' + 'a');
-		}
-	}
-	return text;
-}
-
-// Channel pairs as text: "01" (the speaker pair), "23" (the actuator pair), "all".
-void ParseChannels(const std::string& text, uint32_t* first, uint32_t* count, bool* all) {
-	if (text == "all" || text == "4") {
-		*all = true;
-		return;
-	}
-	if (text == "01" || text == "0") {
-		*first = 0;
-		*count = 2;
-	} else if (text == "23" || text == "2") {
-		*first = 2;
-		*count = 2;
-	}
-}
-
-// dualsense-haptics.txt next to the emulator (the launcher's working directory): one "key=value" a
-// line, "#" starts a comment. The environment is awkward to set under the launcher - editing
-// run.cmd or a shortcut - and this file is easy to edit, to keep, and to delete. It is applied
-// after the environment, so a line here wins.
-void ReadSettingsFile() {
-	static bool read = false;
-	if (read) {
-		return;
-	}
-	read = true;
-
-	auto* file = std::fopen("dualsense-haptics.txt", "rb");
-	if (file == nullptr) {
-		return;
-	}
-
-	char line[256] = {};
-	while (std::fgets(line, sizeof(line), file) != nullptr) {
-		std::string text(line);
-		const auto  hash = text.find('#');
-		if (hash != std::string::npos) {
-			text.erase(hash);
-		}
-		const auto equals = text.find('=');
-		if (equals == std::string::npos) {
-			continue;
-		}
-		const auto key   = Lowered(Trimmed(text.substr(0, equals)));
-		const auto value = Trimmed(text.substr(equals + 1));
-		if (key.empty() || value.empty()) {
-			continue;
-		}
-
-		if (key == "enabled") {
-			g_enabled = value != "0" && Lowered(value) != "false" && Lowered(value) != "no";
-		} else if (key == "log") {
-			g_log = value != "0" && Lowered(value) != "false" && Lowered(value) != "no";
-		} else if (key == "gain" || key == "vibration_gain") {
-			const auto gain = std::strtof(value.c_str(), nullptr);
-			if (gain > 0.0f && gain <= 8.0f) {
-				g_gain = gain;
-			}
-		} else if (key == "speaker_gain") {
-			const auto gain = std::strtof(value.c_str(), nullptr);
-			if (gain >= 0.0f && gain <= 64.0f) {
-				g_speaker_gain = gain;
-			}
-		} else if (key == "channels" || key == "vibration_channels") {
-			ParseChannels(value, &g_first_channel, &g_channel_count, &g_all_channels);
-		} else if (key == "speaker_channels") {
-			ParseChannels(value, &g_speaker_first_channel, &g_speaker_channel_count, &g_all_channels);
-		} else if (key == "speaker_preamp") {
-			g_speaker_preamp = value != "0" && Lowered(value) != "false" && Lowered(value) != "no";
-		} else if (key == "speaker_volume") {
-			const auto volume = std::strtoul(value.c_str(), nullptr, 10);
-			if (volume <= 100) {
-				g_speaker_volume = static_cast<uint32_t>(volume);
-			}
-		} else if (key == "speaker_limiter") {
-			g_speaker_limiter = value != "0" && Lowered(value) != "false" && Lowered(value) != "no";
-		} else if (key == "motor_gain" || key == "vibration_motor_gain") {
-			const auto gain = std::strtof(value.c_str(), nullptr);
-			if (gain >= 0.0f && gain <= 16.0f) {
-				g_vibration_motor_gain = gain;
-			}
-		} else if (key == "motor_ms" || key == "vibration_motor_ms") {
-			const auto ms = std::strtoul(value.c_str(), nullptr, 10);
-			// At least 1: SDL2 reads 0 ms as "no expiry", and a game that stops writing in the middle of
-			// a hit would then leave the motors running at their last level.
-			if (ms >= 1 && ms <= 500) {
-				g_vibration_motor_ms = static_cast<uint32_t>(ms);
-			}
-		} else if (key == "motor_decay" || key == "vibration_motor_decay") {
-			const auto decay = std::strtof(value.c_str(), nullptr);
-			// Below 1.0: at exactly 1 the hold never falls, so it never reaches the floor and a single
-			// hit would rumble until the next one.
-			if (decay > 0.0f && decay < 1.0f) {
-				g_vibration_motor_decay = decay;
-			}
-		}
-	}
-	std::fclose(file);
-
-	std::printf("DualSense: dualsense-haptics.txt: %s, vibration gain %.2f on channels %u-%u, motors "
-	            "%.2f (%u ms, decay %.2f), speaker gain %.2f on channels %u-%u, preamp %s, volume %u, "
-	            "limiter %s%s\n",
-	            g_enabled ? "on" : "off", static_cast<double>(g_gain), g_first_channel,
-	            g_first_channel + g_channel_count - 1u, static_cast<double>(g_vibration_motor_gain),
-	            g_vibration_motor_ms, static_cast<double>(g_vibration_motor_decay),
-	            static_cast<double>(g_speaker_gain),
-	            g_speaker_first_channel, g_speaker_first_channel + g_speaker_channel_count - 1u,
-	            g_speaker_preamp ? "on (+6 dB)" : "off", g_speaker_volume,
-	            g_speaker_limiter ? "on" : "off", g_all_channels ? ", all channels" : "");
-}
-
 void ReadSettings() {
 	static bool read = false;
 	if (read) {
@@ -354,14 +226,14 @@ void ReadSettings() {
 	// tail of a hit - how long each report lasts and how fast the hold falls between reports.
 	if (const char* value = std::getenv("KYTY_DUALSENSE_VIBRATION_MOTOR_MS"); value != nullptr) {
 		const auto ms = std::strtoul(value, nullptr, 10);
-		// At least 1: SDL2 reads 0 ms as "no expiry" (see the file key above).
+		// At least 1: SDL2 reads 0 ms as "no expiry", which would run until the next call.
 		if (ms >= 1 && ms <= 500) {
 			g_vibration_motor_ms = static_cast<uint32_t>(ms);
 		}
 	}
 	if (const char* value = std::getenv("KYTY_DUALSENSE_VIBRATION_MOTOR_DECAY"); value != nullptr) {
 		const auto decay = std::strtof(value, nullptr);
-		// Below 1.0, as in dualsense-haptics.txt: at exactly 1 the hold never reaches the floor.
+		// Below 1.0: at exactly 1 the hold never reaches the floor.
 		if (decay > 0.0f && decay < 1.0f) {
 			g_vibration_motor_decay = decay;
 		}
@@ -408,8 +280,16 @@ void ReadSettings() {
 		g_log = std::string(value) != "0";
 	}
 
-	// The file last, so it wins over the environment.
-	ReadSettingsFile();
+	// The settings actually in use, once: the values the routes and the motors run with.
+	std::printf("DualSense: settings: %s, vibration gain %.2f on channels %u-%u, motors %.2f (%u ms, "
+	            "decay %.2f), speaker gain %.2f on channels %u-%u, preamp %s, volume %u, limiter %s%s\n",
+	            g_enabled ? "on" : "off", static_cast<double>(g_gain), g_first_channel,
+	            g_first_channel + g_channel_count - 1u, static_cast<double>(g_vibration_motor_gain),
+	            g_vibration_motor_ms, static_cast<double>(g_vibration_motor_decay),
+	            static_cast<double>(g_speaker_gain),
+	            g_speaker_first_channel, g_speaker_first_channel + g_speaker_channel_count - 1u,
+	            g_speaker_preamp ? "on (+6 dB)" : "off", g_speaker_volume,
+	            g_speaker_limiter ? "on" : "off", g_all_channels ? ", all channels" : "");
 }
 
 // COM is initialized per thread and never uninitialized: the stream outlives any single call, and
@@ -812,8 +692,6 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 	if (g_client[index] == nullptr || g_mix[index] == nullptr) {
 		return false;
 	}
-
-
 
 	const auto target_rate     = g_mix[index]->nSamplesPerSec;
 	const auto target_channels = g_mix[index]->nChannels;
