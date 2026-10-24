@@ -134,6 +134,10 @@ sealed class Commands {
         if (padStrength != 200) sets.Add("KYTY_DUALSENSE_VIBRATION_MOTOR_GAIN=" + (padStrength / 100.0).ToString("0.##", CultureInfo.InvariantCulture));
         var padLength = Math.Max(1, Math.Min(S.Int("pad_vibration_ms"), 500));
         if (padLength != 60) sets.Add("KYTY_DUALSENSE_VIBRATION_MOTOR_MS=" + Number(padLength));
+        // The actuators (the sustained part of a hit - a spell's whole charge is mostly these). A percent of the
+        // emulator's 4.0, sent only when moved.
+        var padActuator = Math.Max(5, Math.Min(S.Int("pad_actuator"), 400));
+        if (padActuator != 400) sets.Add("KYTY_DUALSENSE_HAPTICS_GAIN=" + (padActuator / 100.0).ToString("0.##", CultureInfo.InvariantCulture));
 		// The DLSS model chosen on the Graphics page (a preset letter; none: the DLSS version's own choice).
 		var preset = S.Str("dlss_preset");
 		if (dlss && preset.Length == 1 && preset[0] >= 'A' && preset[0] <= 'O') sets.Add("KYTY_DLSS_PRESET=" + preset);
