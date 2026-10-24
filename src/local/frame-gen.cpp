@@ -637,12 +637,13 @@ bool FsrEnsureFrameGeneration(vk::Extent2D render) {
 #endif
 
 #ifdef KYTY_FRAMEGEN_FSR_HUD
-// The game's interface canvas (NoteUiCanvas: its guest address; the GPU thread's): 3840x2160, or the HD output's
-// 1920x1080 (loader/demonsSoulsHdOutput.h).
+// The game's interface canvas (NoteUiCanvas: its guest address; the GPU thread's): 3840x2160, the HD output's
+// 1920x1080, or KYTY_OUTPUT_HEIGHT's output where the interface is scaled to it (loader/demonsSoulsHdOutput.h).
 std::atomic<uint64_t> g_ui_canvas {0};
 
 vk::Extent2D UiCanvasExtent() {
 	namespace Hd = ::Loader::DemonsSoulsHdOutput;
+	if (Hd::InterfaceScaled()) return vk::Extent2D {Hd::UpscaledWidth(), Hd::UpscaledHeight()};
 	return Hd::Active() ? vk::Extent2D {Hd::HdWidth, Hd::HdHeight} : vk::Extent2D {3840, 2160};
 }
 

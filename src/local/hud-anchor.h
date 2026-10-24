@@ -233,13 +233,18 @@ inline bool IsReticle(const HW::VertexShaderInfo& vs, uint32_t first) {
 	});
 }
 
+inline float OutputScale();
+inline bool  OutputTarget(const HW::Context& ctx);
+
 // KYTY_FRAMEGEN_BACKEND=fsr: an interface draw names the canvas (its render target) whose alpha marks the HUD for FSR
-// (FrameGen::NoteUiCanvas).
+// (FrameGen::NoteUiCanvas). With the interface scaled to KYTY_OUTPUT_HEIGHT's output the canvas is the output's size
+// (OutputTarget): at 1440 FSR found none and generated the HUD too, which flickered (issue #170).
 inline void NoteCanvas(const HW::Context& ctx, const HW::VertexShaderInfo& vs) {
 	const auto& target = ctx.GetRenderTarget(0);
-	if (target.base.addr == 0 || target.attrib2.width + 1u != CanvasWidth() ||
-	    target.attrib2.height + 1u != CanvasHeight())
-		return;
+	const bool  canvas = OutputScale() > 0.0f ? OutputTarget(ctx)
+	                                          : target.attrib2.width + 1u == CanvasWidth() &&
+	                                               target.attrib2.height + 1u == CanvasHeight();
+	if (target.base.addr == 0 || !canvas) return;
 	const uint64_t hash = HashAt(vs.es_regs.data_addr);
 	if (hash == PixelShader || std::find(ClipShaders.begin(), ClipShaders.end(), hash) != ClipShaders.end())
 		FrameGen::NoteUiCanvas(target.base.addr);
