@@ -3,9 +3,10 @@
 // uploaded and clean for a while, duplicates its image in video memory: on a PS5 the game's memory holds it once.
 //
 // KYTY_TEXTURE_OFFLOAD_PROBE=1 (diagnostics): such a texture's pages are made inaccessible in both views of guest memory
-// (the guest's mapping: read watchers of the page manager; the backing view the emulator reads and writes: no access) and
-// nothing else. Every later touch faults, is counted with who made it and how long after, and gives the range its
-// protection back for good: what keeping the texture only in video memory would cost.
+// (the guest's mapping: read watchers of the page manager; the backing view the emulator reads and writes: no access, a
+// guard page on Windows with guards, KYTY_READ_GUARD) and nothing else. Every later touch faults, is counted with who
+// made it and how long after, and gives the range its protection back for good: what keeping the texture only in video
+// memory would cost.
 //
 // KYTY_TEXTURE_OFFLOAD=1 (default with 20 GiB of RAM or less): the same for textures whose download was checked to give
 // their guest bytes back exactly (16 MiB of images a scan: the downloads go with the frame's GPU work), and their pages
@@ -263,7 +264,11 @@ enum class Access { None, Read, ReadWrite };
 
 #if defined(_WIN32)
 inline bool Protect(uint64_t address, uint64_t size, Access access) {
-	const DWORD protection = access == Access::None   ? PAGE_NOACCESS
+	// (With guard pages (KYTY_READ_GUARD) a guard over read-only, as in the guest view: a page of a paged section view
+	// with no access blue-screens Windows once its memory leaves RAM (memory.cpp kyty_local_read_guard), and a
+	// discarded one has left it. A guard goes with the fault it raises: RearmBackingGuard puts it back.)
+	const DWORD none       = Libs::LibKernel::Memory::ReadGuardsOn() ? PAGE_GUARD | PAGE_READONLY : PAGE_NOACCESS;
+	const DWORD protection = access == Access::None   ? none
 	                         : access == Access::Read ? PAGE_READONLY
 	                                                  : PAGE_READWRITE;
 	// (Windows unlocks a locked page given no access: the pages read back there leave the hot set first.)
@@ -1016,6 +1021,33 @@ inline bool OnFaultTaken(uint64_t address, uint64_t rip, const void* native_cont
 	RemoveAll(state, now); // (a game thread: no lock of the emulator's held)
 	return true;
 }
+
+#if defined(_WIN32)
+// The exception filter's (memory.cpp ArmReadGuard, any thread, before OnFault): a guard of the backing view raised a
+// fault and went with it. The page of a taken range neither touched nor being restored gets it back at once (the next
+// read would see the discarded bytes without a fault). Under the state's lock, as the touches and restores that give
+// the pages their access: one put back after a restore gave them access would fault the restore's writes (the offload
+// worker's, which would wait for its own restore). Other pages have their access, or get it from the restore.
+inline void RearmBackingGuard(uint64_t address) {
+	auto& state = Get();
+	if (address < state.backing_lo.load(std::memory_order_relaxed) ||
+	    address >= state.backing_hi.load(std::memory_order_relaxed))
+		return;
+	std::lock_guard lock(state.mutex);
+	auto            piece = state.backing.upper_bound(address);
+	if (piece == state.backing.begin()) return;
+	--piece;
+	const auto range = state.guest.find(piece->second);
+	if (range == state.guest.end() || range->second.touched || range->second.restoring) return;
+	const bool inside = std::any_of(range->second.pieces.begin(), range->second.pieces.end(), [&](const Piece& p) {
+		return address >= p.backing && address < p.backing + p.size;
+	});
+	if (!inside) return;
+	constexpr uint64_t Page = 0x1000;
+	DWORD              old  = 0;
+	(void)VirtualProtect(reinterpret_cast<void*>(address & ~(Page - 1)), Page, PAGE_GUARD | PAGE_READONLY, &old);
+}
+#endif
 
 inline bool OnFault(uint64_t address, uint64_t rip, const void* native_context, bool write) {
 	const bool handled = OnFaultTaken(address, rip, native_context, write);

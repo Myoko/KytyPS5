@@ -211,6 +211,9 @@ void CoolHotReads();
 // Windows: the texture offload is about to give part of the backing view no access or discard it (texture-offload.h); the
 // pages read back there leave GuestAddressSpace::NoteRead's set, their locks with them.
 void DropHotReadsBacking(uint64_t backing, uint64_t size);
+// Windows: whether a no-access protection is a guard page (KYTY_READ_GUARD, kyty_local_read_guard); the texture
+// offload's backing view takes the same (texture-offload.h Protect). False elsewhere.
+[[nodiscard]] bool ReadGuardsOn();
 
 int KYTY_SYSV_ABI KernelMapNamedFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags,
                                                const char* name);

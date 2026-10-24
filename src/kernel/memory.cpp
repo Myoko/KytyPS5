@@ -79,8 +79,9 @@ extern "C" {
 // (_transfer/bsod-tests/ptetest4) blue-screened a 32 GB laptop under paging in 15, 529 and 656 s, and ran 1800 s with
 // guard pages, and 1800 s with read-only / read-write only, under the same or heavier paging; the emulator itself with
 // a RAM hog leaving ~0.4 GB free (16 GB policies, deaths and world trips) blue-screened in 7.4 min without guards (the
-// desktop in 5.5) and ran 22 min with them (10-23). (The texture offload's backing view keeps no access:
-// texture-offload.h.) A live change applies to the protections made after it (guards made before are still served).
+// desktop in 5.5) and ran 22 min with them (10-23). (The texture offload's backing view takes guards too:
+// texture-offload.h Protect.) A live change applies to the protections made after it (guards made before are still
+// served).
 // On by default with 20 GiB of RAM or less only (KYTY_READ_GUARD=1|0 sets it): a guard is gone from its page the moment
 // it raises the fault, and other threads read the page meanwhile without one. The game reads GPU-written pages from
 // several threads at once: with guards, whole areas lost their light, screen tiles turned black or the picture showed at
@@ -1508,8 +1509,20 @@ bool TryPrepareHostOverwrite(uint64_t vaddr, uint64_t size) {
 }
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
-// KYTY_READ_GUARD (kyty_local_read_guard): a guest view's page whose guard raised a fault, guarded again at once.
+// The emulator's view of the backing store: its only guards are the texture offload's (texture-offload.h Protect).
+static bool InBackingView(uint64_t address) {
+	if (g_guest_address_space == nullptr) return false;
+	const uint64_t base = g_guest_address_space->GetBackingBase();
+	return base != 0 && address >= base && address - base < g_guest_address_space->GetBackingSize();
+}
+
+// KYTY_READ_GUARD (kyty_local_read_guard): a guest view's page whose guard raised a fault, guarded again at once (one
+// of the backing view by the texture offload, which knows whether its range is still to be guarded).
 static bool ArmReadGuard(uint64_t address) {
+	if (InBackingView(address)) {
+		TextureOffload::RearmBackingGuard(address);
+		return true;
+	}
 	if (g_guest_address_space == nullptr || !IsGpuAddressRange(address, 1) || !g_guest_address_space->ArmReadGuard(address))
 		return false;
 	LiveCounters::Add(LiveCounters::ReadGuardFaults);
@@ -1520,6 +1533,7 @@ static bool ArmReadGuard(uint64_t address) {
 // outlive a change another thread made meanwhile; the fault's own service mostly gave the page its access already).
 static void SettleReadGuard(uint64_t address) {
 	constexpr uint64_t Page = 0x1000;
+	if (InBackingView(address)) return; // (the texture offload's: no trackers there)
 	MEMORY_BASIC_INFORMATION info {};
 	if (VirtualQuery(reinterpret_cast<const void*>(address & ~(Page - 1)), &info, sizeof(info)) != sizeof(info) ||
 	    (info.Protect & PAGE_GUARD) == 0 || g_gpu_resources == nullptr)
@@ -1570,6 +1584,14 @@ bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr) noex
 void CoolHotReads() {
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	if (g_guest_address_space != nullptr) g_guest_address_space->CoolHotReads();
+#endif
+}
+
+bool ReadGuardsOn() {
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	return kyty_local_read_guard.load(std::memory_order_relaxed) != 0;
+#else
+	return false;
 #endif
 }
 
