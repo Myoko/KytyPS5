@@ -130,7 +130,7 @@ static class Strings {
 		{"padactuator.desc", "The actuators carry the sustained part of a hit: a spell's whole charge is mostly these, so lower this first when a cast still feels strong with the motors turned down."},
 		{"padvibration.desc", "How strongly the pad's rumble motors are driven: raise it when a sword hit is barely there, lower it when that thump is too much."},
 		{"padlength", "Vibration length"},
-		{"padlength.desc", "How long one drive report lasts, in ms: 60 ends a sword hit in about a quarter of a second, and a larger value makes a hit linger."},
+		{"padlength.desc", "How long a hit lingers: 60 leaves it about a quarter of a second, smaller is a tap and larger rumbles on. It moves both the drive report and how fast the fade falls, because the fade is what the length really is."},
 		{"padStrengthValue", "{0}x"}, {"padLengthValue", "{0} ms"},
 		{"cheats", "Cheats"}, {"cheats.desc", "_Patches\\<title id>.json (GoldHEN style): the emulator applies the cheats left on in it."},
 		{"cheats.count", "{0} of {1} on"}, {"cheats.noFile", "No cheat file for this game"}, {"cheats.noGame", "Choose the game first"},
