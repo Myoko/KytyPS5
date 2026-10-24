@@ -132,7 +132,7 @@ sealed class Commands {
         sets.Add("KYTY_DUALSENSE_SPEAKER_VOLUME=" + Number(S.Bool("pad_speaker") ? Math.Max(0, Math.Min(S.Int("pad_speaker_volume"), 100)) : 0));
         var padStrength = Math.Max(0, Math.Min(S.Int("pad_vibration"), 400));
         if (padStrength != 200) sets.Add("KYTY_DUALSENSE_VIBRATION_MOTOR_GAIN=" + (padStrength / 100.0).ToString("0.##", CultureInfo.InvariantCulture));
-        var padLength = Math.Max(20, Math.Min(S.Int("pad_vibration_ms"), 500));
+        var padLength = Math.Max(5, Math.Min(S.Int("pad_vibration_ms"), 500));
         if (padLength != 60) {
                 sets.Add("KYTY_DUALSENSE_VIBRATION_MOTOR_MS=" + Number(padLength));
                 // The report's own length cannot lengthen the tail by itself: the hold falls to its floor first and
@@ -140,7 +140,7 @@ sealed class Commands {
                 // the slider scales both - 20 ms is a tap (0.35 per report), 60 ms the emulator's own 0.6, 500 ms a
                 // long rumble (0.92).
                 var padDecay = padLength <= 60
-                        ? 0.35 + (0.60 - 0.35) * (padLength - 20) / 40.0
+                        ? 0.30 + (0.60 - 0.30) * (padLength - 5) / 55.0
                         : 0.60 + (0.92 - 0.60) * (padLength - 60) / 440.0;
                 sets.Add("KYTY_DUALSENSE_VIBRATION_MOTOR_DECAY=" + padDecay.ToString("0.###", CultureInfo.InvariantCulture));
         }

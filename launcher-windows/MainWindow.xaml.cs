@@ -762,7 +762,7 @@ partial class MainWindow : Window {
                                 v => F("padStrengthValue", (v / 100.0).ToString("0.0#", CultureInfo.InvariantCulture)), v => S.Set("pad_vibration", (int)v)), Desc(T("padvibration.desc"))),
                         Row("padactuator", SliderRow(5, 400, 5, S.Int("pad_actuator"),
                                 v => F("padStrengthValue", (v / 100.0).ToString("0.0#", CultureInfo.InvariantCulture)), v => S.Set("pad_actuator", (int)v)), Desc(T("padactuator.desc"))),
-                        Row("padlength", SliderRow(20, 500, 10, S.Int("pad_vibration_ms"),
+                        Row("padlength", SliderRow(5, 500, 5, S.Int("pad_vibration_ms"),
                                 v => F("padLengthValue", ((int)v).ToString(CultureInfo.InvariantCulture)), v => S.Set("pad_vibration_ms", (int)v)), Desc(T("padlength.desc"))),
 			Section("game.cheats"),
 			Row("cheats", Horizontal(cheats, choose, cheatState), Desc(T("cheats.desc"))));
