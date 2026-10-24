@@ -1813,6 +1813,104 @@ public:
 		DWORD old = 0;
 		return VirtualProtect(reinterpret_cast<void*>(page), Page, PAGE_GUARD | PAGE_READONLY, &old) != 0;
 	}
+
+	// KYTY_READ_GUARD with KYTY_HOT_READS: a guest page the game read back (a read fault the GPU trackers served) keeps no
+	// access instead of a guard while it is read back every few seconds, its page of the backing view locked in RAM. A
+	// guard is one-shot, and the game's job threads read the same GPU results at once: the others read the page stale
+	// before its guard was back (1 in ~90 guard faults at the Tower of Latria, whose lights went out: issues #158, #159).
+	// No access keeps every reader out, and its blue screen (0x1A/0x41202, issues #5, #50) needs a no-access page whose
+	// memory Windows took out of RAM, which a locked page never is. The pages read back are few (~1,100 a second at
+	// Latria): the rest of the watched memory keeps its guards.
+	void NoteRead(uint64_t vaddr) {
+		constexpr uint64_t Page    = 0x1000;
+		const uint64_t     page    = vaddr & ~(Page - 1);
+		auto*              backing = const_cast<uint8_t*>(m_backing->BackingPointer(page, Page));
+		// (Not in the texture offload's ranges: it gives their backing pages no access and discards them, and Windows
+		// unlocks a locked page given no access. DropHotBacking.)
+		if (backing == nullptr || TextureOffload::MayOverlap(page, Page) ||
+		    TextureOffload::MayOverlapBacking(reinterpret_cast<uint64_t>(backing), Page))
+			return;
+		const uint64_t  now = GetTickCount64();
+		std::lock_guard lock(m_hot_mutex);
+		auto            it = m_hot.find(page);
+		if (it != m_hot.end() && it->second.backing == backing) {
+			it->second.noted = now;
+			return;
+		}
+		if (it == m_hot.end() && m_hot.size() >= HotReadsMax) {
+			LiveCounters::Add(LiveCounters::ReadHotFull);
+			return;
+		}
+		if (!LockHotBacking(backing)) return;
+		LiveCounters::Add(LiveCounters::ReadHotLocks);
+		if (it != m_hot.end()) {
+			// (Mapped again over other memory since.)
+			UnlockHotBacking(it->second.backing);
+			it->second = {backing, now};
+			return;
+		}
+		m_hot.emplace(page, HotRead {backing, now});
+	}
+
+	// The pages not read back for a while (HotReadsKeepMs) go back to guards, their backing pages unlocked: twice a
+	// second, under the lock held exclusively (no protection of the trackers changes meanwhile) when it is free at once.
+	// The render thread's (GpuResourceManager::RunCollectors).
+	void CoolHotReads() {
+		constexpr uint64_t Page = 0x1000;
+		const uint64_t     now  = GetTickCount64();
+		if (now - m_hot_cooled < 500) return;
+		m_hot_cooled = now;
+		{
+			std::lock_guard hot_lock(m_hot_mutex);
+			if (std::none_of(m_hot.begin(), m_hot.end(),
+			                 [&](const auto& hot) { return now - hot.second.noted >= HotReadsKeepMs; }))
+				return;
+		}
+		std::unique_lock lock(m_mutex, std::try_to_lock);
+		if (!lock.owns_lock()) return;
+		std::lock_guard hot_lock(m_hot_mutex);
+		uint64_t        cooled = 0;
+		for (auto it = m_hot.begin(); it != m_hot.end() && cooled < 512;) {
+			const auto page = it->first;
+			if (now - it->second.noted < HotReadsKeepMs || BusyUnlocked(page, Page)) {
+				++it;
+				continue;
+			}
+			// (In guard mode only these pages of the views have no access: ProtectView.)
+			MEMORY_BASIC_INFORMATION info {};
+			if (kyty_local_read_guard.load(std::memory_order_relaxed) != 0 &&
+			    VirtualQuery(reinterpret_cast<const void*>(page), &info, sizeof(info)) == sizeof(info) &&
+			    info.Type == MEM_MAPPED && info.State == MEM_COMMIT && info.Protect == PAGE_NOACCESS) {
+				DWORD old = 0;
+				(void)VirtualProtect(reinterpret_cast<void*>(page), Page, PAGE_GUARD | PAGE_READONLY, &old);
+			}
+			UnlockHotBacking(it->second.backing);
+			it = m_hot.erase(it);
+			++cooled;
+		}
+		LiveCounters::Add(LiveCounters::ReadHotCools, cooled);
+	}
+
+	// The texture offload is about to give [backing, backing + size) of the backing view no access, or discard it: the
+	// pages read back there are no longer locked (Windows unlocks a locked page given no access; a discard would keep a
+	// locked one in RAM), so they leave the set. Their guest pages have guards by then: the offload counts its range
+	// (TextureOffload::MayOverlap) before its watchers protect the guest view, and ProtectView gives such pages guards.
+	// (Bios2000's point in PR #164.)
+	void DropHotBacking(uint64_t backing, uint64_t size) {
+		constexpr uint64_t Page  = 0x1000;
+		const auto         begin = reinterpret_cast<uint8_t*>(backing & ~(Page - 1));
+		const auto         end   = reinterpret_cast<uint8_t*>(backing + size);
+		std::lock_guard    lock(m_hot_mutex);
+		if (m_hot_locks.empty() || m_hot_locks.lower_bound(begin) == m_hot_locks.lower_bound(end)) return;
+		for (auto it = m_hot.begin(); it != m_hot.end();) {
+			if (it->second.backing >= begin && it->second.backing < end) {
+				UnlockHotBacking(it->second.backing);
+				it = m_hot.erase(it);
+			} else {
+				++it;
+			}
+		}
+	}
 #endif
 
 	bool MapBacking(uint64_t vaddr, uint64_t size, uint64_t backing_offset,
@@ -2202,13 +2300,44 @@ private:
 	}
 
 	// A guest mapping's protection; on Windows with KYTY_READ_GUARD, a view's no access as a read guard
-	// (kyty_local_read_guard: private memory is no section's).
-	static bool ProtectView(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode, MappingType type) {
+	// (kyty_local_read_guard: private memory is no section's), but for the pages read back lately (NoteRead).
+	bool ProtectView(uint64_t vaddr, uint64_t size, VirtualMemory::Mode mode, MappingType type) {
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 		if (mode == VirtualMemory::Mode::NoAccess && type == MappingType::Backing &&
 		    kyty_local_read_guard.load(std::memory_order_relaxed) != 0) {
-			DWORD old = 0;
-			return VirtualProtect(reinterpret_cast<void*>(vaddr), size, PAGE_GUARD | PAGE_READONLY, &old) != 0;
+			constexpr uint64_t Page = 0x1000;
+			const uint64_t     end  = vaddr + size;
+			const auto         set  = [](uint64_t begin, uint64_t until, DWORD protection) {
+				DWORD old = 0;
+				return begin >= until ||
+				       VirtualProtect(reinterpret_cast<void*>(begin), until - begin, protection, &old) != 0;
+			};
+			if (kyty_local_hot_reads.load(std::memory_order_relaxed) == 0) return set(vaddr, end, PAGE_GUARD | PAGE_READONLY);
+			thread_local std::vector<std::pair<uint64_t, uint64_t>> hot;
+			hot.clear();
+			{
+				std::lock_guard lock(m_hot_mutex);
+				for (auto it = m_hot.lower_bound(vaddr & ~(Page - 1)); it != m_hot.end() && it->first < end; ++it) {
+					// (A page mapped again over other memory is no longer the one locked; one the texture offload takes is
+					// its guard's: DropHotBacking.)
+					if (m_backing->BackingPointer(it->first, Page) != it->second.backing ||
+					    TextureOffload::MayOverlap(it->first, Page))
+						continue;
+					const auto begin = std::max(it->first, vaddr);
+					const auto until = std::min(it->first + Page, end);
+					if (!hot.empty() && hot.back().second == begin) {
+						hot.back().second = until;
+					} else {
+						hot.emplace_back(begin, until);
+					}
+				}
+			}
+			uint64_t at = vaddr;
+			for (const auto& [begin, until]: hot) {
+				if (!set(at, begin, PAGE_GUARD | PAGE_READONLY) || !set(begin, until, PAGE_NOACCESS)) return false;
+				at = until;
+			}
+			return set(at, end, PAGE_GUARD | PAGE_READONLY);
 		}
 #endif
 		return VirtualMemory::Protect(vaddr, size, mode);
@@ -2766,6 +2895,35 @@ private:
 	std::vector<std::pair<uint64_t, uint64_t>> m_owned;
 	uint64_t                                   m_granularity = 0x10000;
 	GuestBackingStore*                         m_backing     = nullptr;
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	// The pages read back lately (NoteRead) by guest address, with their locked page of the backing view and the time
+	// of their last read fault; the locks per backing page (aliases share one).
+	struct HotRead {
+		uint8_t* backing = nullptr;
+		uint64_t noted   = 0;
+	};
+	static constexpr size_t   HotReadsMax    = 8192; // 32 MiB locked at most (memory.cpp AllowHotReadLocks)
+	static constexpr uint64_t HotReadsKeepMs = 8000;
+	bool LockHotBacking(uint8_t* backing) {
+		auto [it, inserted] = m_hot_locks.try_emplace(backing, 0);
+		if (inserted && VirtualLock(backing, 0x1000) == 0) {
+			m_hot_locks.erase(it);
+			return false;
+		}
+		++it->second;
+		return true;
+	}
+	void UnlockHotBacking(uint8_t* backing) {
+		auto it = m_hot_locks.find(backing);
+		if (it == m_hot_locks.end() || --it->second != 0) return;
+		(void)VirtualUnlock(backing, 0x1000);
+		m_hot_locks.erase(it);
+	}
+	std::mutex                   m_hot_mutex;
+	std::map<uint64_t, HotRead>  m_hot;
+	std::map<uint8_t*, uint32_t> m_hot_locks;
+	uint64_t                     m_hot_cooled = 0; // (CoolHotReads: one thread)
+#endif
 };
 
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS

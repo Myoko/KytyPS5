@@ -2463,7 +2463,7 @@ void OnFsrQueues(GraphicContext& graphics) {
 #ifdef KYTY_FRAMEGEN_FSR
 	if (!g_fsr) return;
 	if (graphics.fsr_present_queue == nullptr || graphics.fsr_compute_queue == nullptr ||
-	    graphics.fsr_acquire_queue == nullptr || graphics.present_queue == nullptr) {
+	    graphics.fsr_acquire_queue == nullptr) {
 		LOGF("frame generation: no queues for FSR's swapchain\n");
 		std::printf("Frame generation: the GPU lacks the queues FSR's swapchain needs, FSR off\n");
 		std::fflush(stdout);
@@ -2493,11 +2493,13 @@ vk::Result CreateSwapchain(GraphicContext& graphics, const vk::SwapchainCreateIn
 	create.swapchain      = &handle;
 	create.allocator      = nullptr;
 	create.createInfo     = static_cast<VkSwapchainCreateInfoKHR>(info);
-	// The game queue is the emulator's present queue (presents go through QueuePresent there, under its lock): the
-	// swapchain records the generated frame's work on it in the present call.
-	create.gameQueue         = {static_cast<VkQueue>(graphics.present_queue), graphics.queue_family, nullptr};
+	// The game queue is the emulator's present queue (presents go through QueuePresent there, under its lock), or without
+	// one its graphics queue (under queue_mutex): the swapchain records the generated frame's work on it in the present
+	// call.
+	const vk::Queue game = graphics.present_queue != nullptr ? graphics.present_queue : graphics.queue;
+	create.gameQueue         = {static_cast<VkQueue>(game), graphics.queue_family, nullptr};
 	create.asyncComputeQueue = {static_cast<VkQueue>(graphics.fsr_compute_queue), graphics.fsr_compute_family, nullptr};
-	create.presentQueue      = {static_cast<VkQueue>(graphics.fsr_present_queue), graphics.queue_family, nullptr};
+	create.presentQueue      = {static_cast<VkQueue>(graphics.fsr_present_queue), graphics.fsr_present_family, nullptr};
 	create.imageAcquireQueue = {static_cast<VkQueue>(graphics.fsr_acquire_queue), graphics.fsr_compute_family, nullptr};
 	if (!FsrOk(s.api.CreateContext(&s.swapchain_context, &create.header, nullptr), "swapchain")) {
 		s.swapchain_context = nullptr;

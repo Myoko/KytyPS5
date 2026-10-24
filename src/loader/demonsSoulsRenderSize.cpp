@@ -174,17 +174,20 @@ void Install(Program* program) {
 	const uint32_t game_width  = hd ? DemonsSoulsHdOutput::HdWidth : trinity ? TrinityWidth : RenderWidth;
 	const uint32_t game_height = hd ? DemonsSoulsHdOutput::HdHeight : trinity ? TrinityHeight : RenderHeight;
 	const int      mode        = hd ? HdUpscaledMode : trinity ? TrinityMode : PerformanceMode;
-	const uint32_t out_width   = hd || hd_pro ? DemonsSoulsHdOutput::HdWidth : OutputWidth;
-	const uint32_t out_height  = hd || hd_pro ? DemonsSoulsHdOutput::HdHeight : OutputHeight;
+	// (hd_pro's output: 1920x1080, or KYTY_OUTPUT_HEIGHT's, DemonsSoulsHdOutput::UpscaledWidth/Height.)
+	const uint32_t pro_width   = DemonsSoulsHdOutput::UpscaledWidth();
+	const uint32_t pro_height  = DemonsSoulsHdOutput::UpscaledHeight();
+	const uint32_t out_width   = hd ? DemonsSoulsHdOutput::HdWidth : hd_pro ? pro_width : OutputWidth;
+	const uint32_t out_height  = hd ? DemonsSoulsHdOutput::HdHeight : hd_pro ? pro_height : OutputHeight;
 	auto requested = automatic != 0 ? automatic
 	                 : numeric      ? static_cast<uint32_t>(std::strtoul(setting, nullptr, 10))
-	                 : hd_pro       ? DemonsSoulsHdOutput::HdHeight
+	                 : hd_pro       ? pro_height
 	                                : game_height;
-	if (hd_pro && requested > DemonsSoulsHdOutput::HdHeight) {
-		std::printf("Demon's Souls render size: %u is above the 1080p output's 1080 (the HD output with the upscaler); "
-		            "1080 instead\n",
-		            requested);
-		requested = DemonsSoulsHdOutput::HdHeight;
+	if (hd_pro && requested > pro_height) {
+		std::printf("Demon's Souls render size: %u is above the %ux%u output (the upscaler's, KYTY_HD_OUTPUT or "
+		            "KYTY_OUTPUT_HEIGHT); %u instead\n",
+		            requested, pro_width, pro_height, pro_height);
+		requested = pro_height;
 	}
 	if (automatic != 0) {
 		uint32_t window_width = 0, window_height = 0;
@@ -206,16 +209,30 @@ void Install(Program* program) {
 	if (wide != nullptr && *wide != 0 && aspect == 0.0)
 		std::printf("Demon's Souls render size: KYTY_RENDER_ASPECT=%s is not wider than 16:9 and at most 32:9; 16:9 kept\n",
 		            wide);
-	if (hd_pro && aspect != 0.0) {
-		std::printf("Demon's Souls render size: a wider aspect is not with the 1080p output (the HD output with the "
-		            "upscaler); 16:9\n");
+	// The PS5 Pro path with a smaller output (KYTY_HD_OUTPUT or KYTY_OUTPUT_HEIGHT) takes a wider aspect squeezed into its
+	// 16:9 output (KYTY_WIDE_OUTPUT=0, as the 4K output's), the 3D as wide as the output and as high as the aspect
+	// makes it: 2560x1072 into 2560x1440 was right, 1912x800 and 1872x784 into 1920x1080 showed the 3D deep green.
+	// Its own wide output is not made (InstallWideOutput sizes that output already).
+	const char* wide_output = std::getenv("KYTY_WIDE_OUTPUT");
+	uint32_t    squeezed_width = 0;
+	if (hd_pro && aspect != 0.0 && wide_output != nullptr && std::strcmp(wide_output, "0") == 0) {
+		const auto fitted = static_cast<uint32_t>(std::lround(pro_width / aspect / 8.0)) * 8u;
+		if (fitted != requested)
+			std::printf("Demon's Souls render size: %u at the wider aspect squeezed into the %ux%u output: %ux%u instead\n",
+			            requested, pro_width, pro_height, pro_width, fitted);
+		requested      = fitted;
+		squeezed_width = pro_width;
+	} else if (hd_pro && aspect != 0.0) {
+		std::printf("Demon's Souls render size: a wider aspect with the %ux%u output (the upscaler's, KYTY_HD_OUTPUT or "
+		            "KYTY_OUTPUT_HEIGHT) only squeezed (KYTY_WIDE_OUTPUT=0); 16:9\n",
+		            pro_width, pro_height);
 		aspect = 0.0;
 	}
 	// The super resolution path: a third of the output's height (DLSS's ultra performance, which takes only that) or half
 	// of it and more (its other modes); a height between the two goes up to the half, one below the third up to it
 	// (issue #129: 720 with the 4K output, 360 with the 1080p one).
 	if (trinity && requested >= LeastRenderHeight) {
-		const uint32_t output = hd_pro ? DemonsSoulsHdOutput::HdHeight : OutputHeight;
+		const uint32_t output = hd_pro ? pro_height : OutputHeight;
 		const uint32_t third = output / 3, half = output / 2;
 		const uint32_t fitted = requested < third ? third : requested > third && requested < half ? half : requested;
 		if (fitted != requested) {
@@ -236,6 +253,7 @@ void Install(Program* program) {
 		            size.width, size.height, lower.width, lower.height);
 		size = lower;
 	}
+	if (squeezed_width != 0 && size.height != 0) size.width = squeezed_width;
 	if (size.height == 0) {
 		std::printf("Demon's Souls render size: KYTY_RENDER_HEIGHT=%s is not %u-2160; the game's %ux%u kept\n", setting,
 		            LeastRenderHeight, game_width, game_height);
@@ -270,13 +288,12 @@ void Install(Program* program) {
 		g_wide_aspect = value;
 	}
 	// The super resolution path with a wider aspect: the upscaler makes the wide output (WideOutputWidth).
-	const char* wide_output = std::getenv("KYTY_WIDE_OUTPUT");
 	if (!trinity && aspect != 0.0 && wide_output != nullptr && std::strcmp(wide_output, "1") == 0) {
 		std::printf("Demon's Souls render size: the wide output (KYTY_WIDE_OUTPUT=1) is the PS5 Pro path's only (KYTY_UPSCALER)%s; "
 		            "the 3D squeezed into the %ux%u output\n",
 		            hd ? ", not the HD output's" : "", out_width, out_height);
 	}
-	if (trinity && aspect != 0.0 && (wide_output == nullptr || std::strcmp(wide_output, "0") != 0)) {
+	if (trinity && !hd_pro && aspect != 0.0 && (wide_output == nullptr || std::strcmp(wide_output, "0") != 0)) {
 		const auto output = RenderSizeFor(OutputHeight, aspect);
 		if (InstallWideOutput(*program, mode, output.width)) {
 			g_wide_output = output.width;
@@ -286,8 +303,8 @@ void Install(Program* program) {
 		}
 	}
 	if (hd_pro) {
-		// The PS5 Pro path's 1080p output (the wide output's places at 1920x1080).
-		if (!InstallWideOutput(*program, mode, DemonsSoulsHdOutput::HdWidth, DemonsSoulsHdOutput::HdHeight))
+		// The PS5 Pro path's 1080p output (the wide output's places at 1920x1080), or KYTY_OUTPUT_HEIGHT's.
+		if (!InstallWideOutput(*program, mode, pro_width, pro_height))
 			std::printf("Demon's Souls render size: the PS5 Pro path's output settings of a known build not found; its "
 			            "4K output kept\n");
 	}

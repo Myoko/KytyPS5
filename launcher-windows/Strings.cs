@@ -68,7 +68,7 @@ static class Strings {
 
 		{"summary.window", "{0} window"}, {"summary.fullscreen", "{0} fullscreen"}, {"summary.render", "3D {0}p"},
 		{"summary.taa", "game's TAA"}, {"summary.dlss", "DLSS"}, {"summary.fsr3", "FSR 3"}, {"summary.fg", "frame generation {0}"},
-		{"summary.fsr", "FSR 3 frame generation"}, {"summary.hd", "1080p output"}, {"summary.hdr", "HDR"},
+		{"summary.fsr", "FSR 3 frame generation"}, {"summary.hd", "1080p output"}, {"summary.1440", "1440p output"}, {"summary.hdr", "HDR"},
 		{"summary.vsync", "VSync"}, {"summary.fps120", "up to 120 fps"},
 
 		{"display.title", "Display"}, {"display.window", "Window"}, {"display.rate", "Frame rate"},
@@ -89,6 +89,8 @@ static class Strings {
 		{"render.desc", "Demon's Souls' 3D at {0}x{1}; higher is sharper and needs more of the graphics card."},
 		{"render.capped", "Demon's Souls' 3D at {0}x{1} (1080 at most with the 1080p output)."},
 		{"render.raised", "Demon's Souls' 3D at {0}x{1} (with DLSS's 4K output 1080 at least, or 720 for its Ultra Performance)."},
+		{"render.capped1440", "Demon's Souls' 3D at {0}x{1} (1440 at most with the 1440p output)."},
+		{"render.raised1440", "Demon's Souls' 3D at {0}x{1} (with the 1440p output 720 at least, or 480 for its Ultra Performance)."},
 		{"render.native", "native 4K"}, {"render.pro", "PS5 Pro"}, {"render.ps5", "PS5"},
 		{"upscaler", "Upscaler"}, {"upscaler.game", "Game (PS5)"}, {"upscaler.dlss", "DLSS (PS5 Pro path)"}, {"upscaler.fsr", "FSR 3 (PS5 Pro path)"},
 		{"upscaler.fsrNote", "AMD FSR 3 in place of Sony's PS5 Pro upscaler, on any graphics card (built in, nothing to download): sharper than the game's stretch. Each render height shows the mode it runs in with the chosen game output."},
@@ -97,9 +99,10 @@ static class Strings {
 		{"upscaler.ok", "DLSS in place of Sony's PS5 Pro upscaler: sharper than the game's stretch. Each render height shows the DLSS mode it runs in with the chosen game output."},
 		{"upscaler.noRtx", "DLSS needs an NVIDIA RTX graphics card: here the game's own TAA makes the picture."},
 		{"upscaler.noStreamline", "DLSS needs NVIDIA's Streamline SDK: choose its folder under Frame generation."},
-		{"output", "Game output"}, {"output.auto", "Automatic"}, {"output.4k", "4K (PS5)"}, {"output.1080", "1080p"},
+		{"output", "Game output"}, {"output.auto", "Automatic"}, {"output.4k", "4K (PS5)"}, {"output.1080", "1080p"}, {"output.1440", "1440p (DLSS / FSR 3)"},
 		{"output.autoNow", "Automatic: 1080p for a 16:9 game window (in full screen, the screen) at most 1080 lines high, 4K otherwise. Here: {0}."},
-		{"output.desc", "1080p: the game's HD layout, its effects and HUD at 1920x1080; less work for the graphics card. With DLSS, DLSS makes the 1080p picture from the 3D (for 1080p screens)."},
+		{"output.desc", "1080p: the game's HD layout, its effects and HUD at 1920x1080; less work for the graphics card. With DLSS, DLSS makes the 1080p picture from the 3D (for 1080p screens). 1440p: DLSS or FSR 3 makes a 2560x1440 picture (for 1440p screens), the HUD in its HD layout scaled to it."},
+		{"output.1440NoUpscaler", "1440p needs DLSS or FSR 3 as the upscaler; with the game's TAA the output stays 4K."},
 		{"dlssmodel", "DLSS model"}, {"dlssmodel.auto", "Automatic"}, {"dlssmodel.k", "Transformer (preset K)"}, {"dlssmodel.e", "CNN (preset E)"},
 		{"dlssmodel.desc", "With DLSS: Automatic leaves the model to the DLSS version. Transformer is the newer, sharper model; CNN the older one, lighter on RTX 20 and 30 cards, where the transformer model costs more."},
 		{"dlss.dlaa", "DLAA"}, {"dlss.quality", "Quality"}, {"dlss.balanced", "Balanced"}, {"dlss.performance", "Performance"}, {"dlss.ultra", "Ultra Performance"},
@@ -116,8 +119,10 @@ static class Strings {
 		{"fsr.desc", "One generated frame between two of the game's, from its depth and motion. With VSync the shown frames are capped at the display's refresh."},
 		{"fsr.missing", "Needs AMD's amd_fidelityfx_vk.dll next to the emulator (see the README)."},
 
-		{"game.title", "Game"}, {"game.console", "Console"}, {"game.cheats", "Cheats"},
+		{"game.title", "Game"}, {"game.console", "Console"}, {"game.controller", "Controller"}, {"game.cheats", "Cheats"},
 		{"language", "Console language"}, {"language.desc", "The language the game is told; it decides which text and voices it has."},
+		{"padspeaker", "Controller speaker"},
+		{"padspeaker.desc", "The game plays some of its sounds on the DualSense's speaker, as on the console, over USB or Bluetooth. Off: the speaker stays silent and those sounds are not heard; the vibration stays."},
 		{"cheats", "Cheats"}, {"cheats.desc", "_Patches\\<title id>.json (GoldHEN style): the emulator applies the cheats left on in it."},
 		{"cheats.count", "{0} of {1} on"}, {"cheats.noFile", "No cheat file for this game"}, {"cheats.noGame", "Choose the game first"},
 
@@ -159,6 +164,7 @@ static class Strings {
 		{"feedback", "Feedback: issue #{0}"},
 		{"summary.presentDirect", "direct presentation"}, {"summary.antilag", "Anti-Lag"},
 		{"summary.keepResident", "memory kept resident"}, {"summary.fps30", "30 fps lock"},
+		{"summary.padSpeakerOff", "controller speaker off"},
 
 		{"dialog.game", "The game folder (eboot.bin, sce_sys)"},
 		{"dialog.zar", "The game folder packed into a ZArchive"},
@@ -205,7 +211,7 @@ static class Strings {
 
 		{"summary.window", "窗口 {0}"}, {"summary.fullscreen", "全屏 {0}"}, {"summary.render", "3D {0}p"},
 		{"summary.taa", "游戏 TAA"}, {"summary.dlss", "DLSS"}, {"summary.fsr3", "FSR 3"}, {"summary.fg", "帧生成 {0}"},
-		{"summary.fsr", "FSR 3 帧生成"}, {"summary.hd", "1080p 输出"}, {"summary.hdr", "HDR"},
+		{"summary.fsr", "FSR 3 帧生成"}, {"summary.hd", "1080p 输出"}, {"summary.1440", "1440p 输出"}, {"summary.hdr", "HDR"},
 		{"summary.vsync", "垂直同步"}, {"summary.fps120", "最高 120 帧"},
 
 		{"display.title", "画面"}, {"display.window", "窗口"}, {"display.rate", "帧率"},
@@ -226,6 +232,8 @@ static class Strings {
 		{"render.desc", "3D 画面为 {0}x{1}；越高越清晰，显卡负担越大。"},
 		{"render.capped", "3D 画面为 {0}x{1}（1080p 输出时最高 1080）。"},
 		{"render.raised", "3D 画面为 {0}x{1}（DLSS 的 4K 输出时最低 1080，或 720 用于超级性能模式）。"},
+		{"render.capped1440", "3D 画面为 {0}x{1}（1440p 输出时最高 1440）。"},
+		{"render.raised1440", "3D 画面为 {0}x{1}（1440p 输出时最低 720，或 480 用于超级性能模式）。"},
 		{"render.native", "原生 4K"}, {"render.pro", "PS5 Pro"}, {"render.ps5", "PS5"},
 		{"upscaler", "超分辨率"}, {"upscaler.game", "游戏自带（PS5）"}, {"upscaler.dlss", "DLSS（PS5 Pro 路径）"}, {"upscaler.fsr", "FSR 3（PS5 Pro 路径）"},
 		{"upscaler.fsrNote", "用 AMD FSR 3 替代索尼的 PS5 Pro 超分，任何显卡都能用（已内置，无需下载）：比游戏自带的拉伸更清晰。渲染高度列表标出了每个高度在所选游戏输出下对应的模式。"},
@@ -234,9 +242,10 @@ static class Strings {
 		{"upscaler.ok", "用 DLSS 替代索尼的 PS5 Pro 超分：比游戏自带的拉伸更清晰。渲染高度列表标出了每个高度在所选游戏输出下对应的 DLSS 模式。"},
 		{"upscaler.noRtx", "DLSS 需要 NVIDIA RTX 显卡：当前由游戏自带的 TAA 生成画面。"},
 		{"upscaler.noStreamline", "DLSS 需要 NVIDIA Streamline SDK：请在下方「帧生成」中选择其文件夹。"},
-		{"output", "游戏输出"}, {"output.auto", "自动"}, {"output.4k", "4K（PS5）"}, {"output.1080", "1080p"},
+		{"output", "游戏输出"}, {"output.auto", "自动"}, {"output.4k", "4K（PS5）"}, {"output.1080", "1080p"}, {"output.1440", "1440p（DLSS / FSR 3）"},
 		{"output.autoNow", "自动：16:9 且游戏窗口（全屏时为屏幕）高度不超过 1080 时用 1080p，否则用 4K。当前：{0}。"},
-		{"output.desc", "1080p：游戏的 HD 布局，特效与 HUD 为 1920x1080；显卡负担更低。配合 DLSS 时由 DLSS 把 3D 画面放大到 1080p（适合 1080p 屏幕）。"},
+		{"output.desc", "1080p：游戏的 HD 布局，特效与 HUD 为 1920x1080；显卡负担更低。配合 DLSS 时由 DLSS 把 3D 画面放大到 1080p（适合 1080p 屏幕）。1440p：由 DLSS 或 FSR 3 输出 2560x1440 画面（适合 1440p 屏幕），HUD 按 HD 布局放大。"},
+		{"output.1440NoUpscaler", "1440p 需要选择 DLSS 或 FSR 3 作为放大方式；使用游戏自带 TAA 时输出仍为 4K。"},
 		{"dlssmodel", "DLSS 模型"}, {"dlssmodel.auto", "自动"}, {"dlssmodel.k", "Transformer（预设 K）"}, {"dlssmodel.e", "CNN（预设 E）"},
 		{"dlssmodel.desc", "使用 DLSS 时生效。自动：由 DLSS 版本决定模型。Transformer：更新、更清晰的模型；CNN：旧模型，在 RTX 20 和 30 系显卡上更轻（Transformer 模型在这些显卡上开销更大）。"},
 		{"dlss.dlaa", "DLAA"}, {"dlss.quality", "质量"}, {"dlss.balanced", "平衡"}, {"dlss.performance", "性能"}, {"dlss.ultra", "超级性能"},
@@ -253,8 +262,10 @@ static class Strings {
 		{"fsr.desc", "根据游戏的深度与运动，在两帧之间生成一帧。开启垂直同步时显示帧数不超过显示器刷新率。"},
 		{"fsr.missing", "需要将 AMD 的 amd_fidelityfx_vk.dll 放到模拟器旁（见说明文档）。"},
 
-		{"game.title", "游戏"}, {"game.console", "主机"}, {"game.cheats", "作弊"},
+		{"game.title", "游戏"}, {"game.console", "主机"}, {"game.controller", "手柄"}, {"game.cheats", "作弊"},
 		{"language", "主机语言"}, {"language.desc", "告诉游戏的系统语言；游戏支持哪些文字与语音由游戏决定。"},
+		{"padspeaker", "手柄扬声器"},
+		{"padspeaker.desc", "游戏会像在主机上一样，把部分声音放到 DualSense 的扬声器里（USB 或蓝牙）。关闭：扬声器保持静音，这些声音不再播放；振动不受影响。"},
 		{"cheats", "作弊"}, {"cheats.desc", "_Patches\\<title id>.json（GoldHEN 格式）：模拟器会应用其中开启的作弊项。"},
 		{"cheats.count", "已开启 {0}/{1} 项"}, {"cheats.noFile", "本游戏没有作弊文件"}, {"cheats.noGame", "请先选择游戏"},
 
@@ -296,6 +307,7 @@ static class Strings {
 		{"feedback", "反馈：issue #{0}"},
 		{"summary.presentDirect", "直接呈现"}, {"summary.antilag", "Anti-Lag"},
 		{"summary.keepResident", "常驻内存"}, {"summary.fps30", "锁定 30 帧"},
+		{"summary.padSpeakerOff", "手柄扬声器关闭"},
 
 		{"dialog.game", "游戏文件夹（eboot.bin、sce_sys）"},
 		{"dialog.zar", "打包为 ZArchive 的游戏文件夹"},

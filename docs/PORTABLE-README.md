@@ -156,6 +156,11 @@ into the 1080p picture, and the game finishes it at 1080p, HUD included. For 108
 that find DLSS's 4K output too heavy (RTX 20/30): the game's own 1080p mode has no upscaler (its 3D, anti-aliasing
 and effects at the render height, stretched at the end). On an RTX 5090 at Boletaria's start (its processor the
 limit there): DLSS from 720 to 1080p 75.2 fps, DLSS from 1080 to 4K 68.8, the game's TAA at 1080p 76.8.
+"1440p" (with DLSS or FSR 3 only; `-Upscaler dlss -OutputHeight 1440` on a `run.cmd` line, contributed by Tutuzaooo)
+makes that output 2560x1440, for 1440p screens: the upscaler's own picture at the screen's size, neither the 4K one
+scaled down nor the 1080p one scaled up, the HUD and menus in the game's HD layout scaled to it. Its render heights:
+1440 = DLAA, 960 = Quality, 840 = Balanced, 720 = Performance, 480 = Ultra Performance. With the game's TAA the
+output stays 4K.
 "Frame generation" (DLSS, 2x to 6x; NVIDIA RTX 40 or newer, 3x and up RTX 50) uses NVIDIA's Streamline
 runtime, which this package does not include: download the Streamline SDK (a release zip from
 https://github.com/NVIDIA-RTX/Streamline/releases), unpack it and choose its folder with the launcher's
@@ -217,6 +222,7 @@ shortcut):
 | `-Set KYTY_ALL_LANGUAGES=0` | Demon's Souls' language settings offer every language the package has, in every region: the text of 23 (a US game Russian, Japanese or Korean too) and the voices of 9 (English, French, German, Italian, Spanish, Japanese, Brazilian Portuguese, Latin American Spanish; British English speaks English); this keeps only the console region's |
 | `-RenderHeight 1080` | The height the game renders its 3D at (360–2160; below 720 is meant for the 1080p output, `-HdOutput`, e.g. 540 = DLSS Performance there): lower is faster on a slow graphics card and less sharp. Without it the height follows the window, at most 1440 as on the PS5 (1080 on a 1080p screen) |
 | `-HdOutput` | The game's own 1080p output (the launcher's "Game output: 1080p"): post-processing and HUD at 1920×1080, the 3D at most 1080 high; with `-Upscaler dlss`, DLSS makes the 1080p picture from it. Without it (and without `-RenderHeight`, `-Upscaler` or `-Aspect`) the game takes it by itself for a window or screen at most 1080 lines high; `-Set KYTY_HD_OUTPUT=0` keeps the 4K output |
+| `-OutputHeight 1440` | With `-Upscaler dlss` or `-Upscaler fsr`: the PS5 Pro path's output at that height (1080–2159, 16:9; 2560×1440 for 1440, the launcher's "Game output: 1440p"), the HUD in the game's HD layout scaled to it; `-RenderHeight` picks the mode (1440 DLAA, 960 Quality, 840 Balanced, 720 Performance, 480 Ultra Performance) |
 | `-Aspect 21:9` | The 3D rendered wider (`21:9` or `32:9`) for ultrawide displays; the HUD keeps its shape at the sides; in-game menus, movies and loading screens are stretched to the width (with `-AspectFit` too: movies, the title and loading screens keep their 16:9, with black bars at the sides) |
 | `-Quality low` | How much the game draws: `low` or `lowest` (shorter shadows, simpler distant detail), faster where the processor limits the frame rate |
 | `-TextureReduce 2` | Large textures without their largest levels: `1` half the size per side (the default with less than 12 GB of video memory), `2` a quarter, `0` whole |

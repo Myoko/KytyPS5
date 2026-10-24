@@ -1017,6 +1017,20 @@ void Swapchain::Create() {
 	}
 	m_fifo.store(create_info.presentMode == vk::PresentModeKHR::eFifo, std::memory_order_relaxed);
 	create_info.clipped          = VK_TRUE;
+#if defined(_WIN32)
+	// KYTY_FULLSCREEN_EXCLUSIVE (GraphicContext::full_screen_exclusive, issue #166): exclusive fullscreen disallowed or
+	// allowed. (VkSurfaceFullScreenExclusiveInfoEXT is vulkan_win32.h's, not included here: its layout.)
+	struct {
+		VkStructureType sType                 = VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT;
+		const void*     pNext                 = nullptr;
+		int32_t         full_screen_exclusive = 0; // VkFullScreenExclusiveEXT: 1 allowed, 2 disallowed
+	} exclusive;
+	if (graphics.full_screen_exclusive >= 0) {
+		exclusive.pNext                 = create_info.pNext;
+		exclusive.full_screen_exclusive = graphics.full_screen_exclusive == 0 ? 2 : 1;
+		create_info.pNext               = &exclusive;
+	}
+#endif
 	// KYTY_FRAMEGEN_BACKEND=fsr: FSR's frame generation swapchain, made and used through its own functions.
 	if (FrameGen::OwnsSwapchain()) {
 		RequireVulkanSuccess(FrameGen::CreateSwapchain(graphics, create_info, &m_handle), "FSR frame generation swapchain");
@@ -1387,10 +1401,14 @@ Swapchain::Status Swapchain::Present() {
 	present.waitSemaphoreCount = 1;
 
 	vk::Result result;
-	if (auto& graphics = m_window.graphic_ctx; FrameGen::OwnsSwapchain()) {
+	if (auto& graphics = m_window.graphic_ctx; FrameGen::OwnsSwapchain() && graphics.present_queue != nullptr) {
 		// FSR's swapchain: its game queue is the present queue (FrameGen::CreateSwapchain).
 		Common::LockGuard lock(graphics.present_queue_mutex);
 		result = FrameGen::QueuePresent(graphics.present_queue, present);
+	} else if (FrameGen::OwnsSwapchain()) {
+		// ... or the graphics queue, without a present queue (issue #170: one graphics queue).
+		Common::LockGuard lock(graphics.queue_mutex);
+		result = FrameGen::QueuePresent(graphics.queue, present);
 	} else if (graphics.present_queue != nullptr) {
 		// Its own queue: a present blocked in the kernel does not hold up other submissions.
 		Common::LockGuard lock(graphics.present_queue_mutex);

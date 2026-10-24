@@ -87,10 +87,18 @@ extern "C" {
 // twice its size (issues #157, #158, #159; reproduced at the Tower of Latria with a 1080p render and DLSS: black and
 // dark frames from the second point of the tour, every frame right without guards), and putting the guard back without
 // waiting (f2ecf299) did not help. The blue screen needs the RAM to run full: the PCs with little of it keep the guards.
+// With guards, the pages the game reads back keep no access, their memory locked in RAM (kyty_local_hot_reads below):
+// the same tour with guards read a page before its guard was back ~0.9 times a frame, with them 0.001, every frame right.
 [[gnu::used]] volatile std::atomic_uint32_t kyty_local_read_guard {[] {
 	if (const char* value = std::getenv("KYTY_READ_GUARD"); value != nullptr && *value != '\0') return value[0] == '0' ? 0u : 1u;
 	const auto ram = LocalPlatform::PhysicalMemory();
 	return ram != 0 && ram <= (uint64_t {20} << 30u) ? 1u : 0u;
+}()};
+// KYTY_HOT_READS (live kyty_local_hot_reads, on by default): with guard pages, the pages the game read back lately keep
+// no access instead, their page of the backing view locked in RAM (GuestAddressSpace::NoteRead). 0: guards everywhere.
+[[gnu::used]] volatile std::atomic_uint32_t kyty_local_hot_reads {[] {
+	const char* value = std::getenv("KYTY_HOT_READS");
+	return value != nullptr && value[0] == '0' ? 0u : 1u;
 }()};
 }
 
@@ -1528,9 +1536,12 @@ void InstallGpuResources(Graphics::GpuResourceManager* resources) noexcept {
 	// (Installed whatever the switch: guards made while it was on are served after it changed.)
 	if (resources != nullptr) {
 		Common::HostException::SetReadGuardHandlers(ArmReadGuard, SettleReadGuard);
-		std::printf(kyty_local_read_guard.load(std::memory_order_relaxed) != 0
-		                ? "Memory: guest pages kept from reads by guard pages (KYTY_READ_GUARD=0: no access)\n"
-		                : "Memory: guest pages kept from reads by no access (KYTY_READ_GUARD=1: guard pages)\n");
+		std::printf(kyty_local_read_guard.load(std::memory_order_relaxed) == 0
+		                ? "Memory: guest pages kept from reads by no access (KYTY_READ_GUARD=1: guard pages)\n"
+		            : kyty_local_hot_reads.load(std::memory_order_relaxed) != 0
+		                ? "Memory: guest pages kept from reads by guard pages, those read back lately by no access, "
+		                  "locked in RAM (KYTY_READ_GUARD=0: no access everywhere, KYTY_HOT_READS=0: guards everywhere)\n"
+		                : "Memory: guest pages kept from reads by guard pages (KYTY_READ_GUARD=0: no access)\n");
 	}
 #endif
 }
@@ -1545,7 +1556,29 @@ bool InRemapWindow(uint64_t vaddr) noexcept {
 }
 
 bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr) noexcept {
-	return g_gpu_resources != nullptr && g_gpu_resources->HandleFault(access, fault_vaddr);
+	if (g_gpu_resources == nullptr || !g_gpu_resources->HandleFault(access, fault_vaddr)) return false;
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	// (A page read back: it keeps no access a while, GuestAddressSpace::NoteRead.)
+	if (access == Graphics::PageFaultAccess::Read && kyty_local_read_guard.load(std::memory_order_relaxed) != 0 &&
+	    kyty_local_hot_reads.load(std::memory_order_relaxed) != 0 && g_guest_address_space != nullptr &&
+	    IsGpuAddressRange(fault_vaddr, 1))
+		g_guest_address_space->NoteRead(fault_vaddr);
+#endif
+	return true;
+}
+
+void CoolHotReads() {
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	if (g_guest_address_space != nullptr) g_guest_address_space->CoolHotReads();
+#endif
+}
+
+void DropHotReadsBacking(uint64_t backing, uint64_t size) {
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	if (g_guest_address_space != nullptr) g_guest_address_space->DropHotBacking(backing, size);
+#else
+	(void)backing, (void)size;
+#endif
 }
 
 struct PrtAperture {
@@ -1700,12 +1733,24 @@ static void KeepResident() {
 	            static_cast<unsigned long long>(floor >> 20u), set ? "" : ": refused by Windows");
 	if (!set) std::printf("Memory: SetProcessWorkingSetSizeEx failed (error %lu)\n", GetLastError());
 }
+
+// The pages read back lately are locked in RAM (KYTY_HOT_READS, GuestAddressSpace::NoteRead): Windows locks no more than
+// the minimum working set holds, a few hundred KiB unless raised.
+static void AllowHotReadLocks() {
+	SIZE_T minimum = 0, maximum = 0;
+	DWORD  flags   = 0;
+	if (GetProcessWorkingSetSizeEx(GetCurrentProcess(), &minimum, &maximum, &flags) == 0) return;
+	constexpr SIZE_T Budget = SIZE_T {40} << 20u; // 8192 pages and room
+	if (SetProcessWorkingSetSizeEx(GetCurrentProcess(), minimum + Budget, std::max(maximum, minimum + Budget), flags) == 0)
+		std::printf("Memory: SetProcessWorkingSetSizeEx for the locked pages failed (error %lu)\n", GetLastError());
+}
 #endif
 
 void Initialize() {
 	g_flexible_memory_size_frozen = true;
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	KeepResident();
+	AllowHotReadLocks();
 #endif
 	VirtualMemory::Init();
 	g_guest_address_space = std::make_unique<GuestAddressSpace>(PhysicalMemory::TotalSize());
