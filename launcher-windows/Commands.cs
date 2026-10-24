@@ -126,7 +126,14 @@ sealed class Commands {
 		// Memory kept in RAM against the MEMORY_MANAGEMENT blue screen (issue #50): a 6 GB working-set floor, no trims of its own.
 		if (S.Bool("keep_resident")) sets.AddRange(new[] { "KYTY_RESIDENT_MB=6144", "KYTY_WORKING_SET_TRIM=0" });
 		// The DualSense's speaker silent, over USB or Bluetooth: the pad's own volume 0 (the haptics stay).
-		if (!S.Bool("pad_speaker")) sets.Add("KYTY_DUALSENSE_SPEAKER_VOLUME=0");
+		// The DualSense speaker's own volume (0 when the switch above is off; the haptics stay), then what a hit feels
+        // like: the motor drive as a percent of the mainline 2.0x, and the length of one drive report. The last two are
+        // sent only when moved off the emulator's own defaults, so an untouched launcher plays exactly as before.
+        sets.Add("KYTY_DUALSENSE_SPEAKER_VOLUME=" + Number(S.Bool("pad_speaker") ? Math.Max(0, Math.Min(S.Int("pad_speaker_volume"), 100)) : 0));
+        var padStrength = Math.Max(0, Math.Min(S.Int("pad_vibration"), 400));
+        if (padStrength != 200) sets.Add("KYTY_DUALSENSE_VIBRATION_MOTOR_GAIN=" + (padStrength / 100.0).ToString("0.##", CultureInfo.InvariantCulture));
+        var padLength = Math.Max(1, Math.Min(S.Int("pad_vibration_ms"), 500));
+        if (padLength != 60) sets.Add("KYTY_DUALSENSE_VIBRATION_MOTOR_MS=" + Number(padLength));
 		// The DLSS model chosen on the Graphics page (a preset letter; none: the DLSS version's own choice).
 		var preset = S.Str("dlss_preset");
 		if (dlss && preset.Length == 1 && preset[0] >= 'A' && preset[0] <= 'O') sets.Add("KYTY_DLSS_PRESET=" + preset);
