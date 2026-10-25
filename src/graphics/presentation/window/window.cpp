@@ -33,6 +33,7 @@
 #include "loader/demonsSoulsWarp.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/presentation/presenter.h"
 #include "graphics/presentation/renderDoc.h"
 #include "debug-snapshot.h"
 #include "perf-overlay.h"
@@ -234,6 +235,10 @@ static void ToggleDesktopFullscreen() {
 	    fullscreen ? 0u : static_cast<uint32_t>(SDL_WINDOW_FULLSCREEN_DESKTOP);
 	if (SDL_SetWindowFullscreen(g_window->window, mode) != 0) {
 		LOGF("Toggle fullscreen failed: %s\n", SDL_GetError());
+	} else if (g_window->presenter != nullptr) {
+		// (A full screen of the window's own size changes nothing a present reports; FSR's frame generation swapchain
+		// then kept presenting to the window it had: the picture froze, issue #174.)
+		g_window->presenter->RequestSwapchainRecreate();
 	}
 }
 

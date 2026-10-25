@@ -65,5 +65,10 @@ inline constexpr std::string_view ImageScale = "49 8b 45 10 c5 f8 29 65 c0 48 8b
 inline constexpr std::string_view BackdropScale =
     "80 b8 98 01 00 00 01 0f 85 ?? ?? ?? ?? 48 8d 7b 08 e8 ?? ?? ?? ?? 49 8b 86 10 01 00 00";
 inline constexpr uint32_t BackdropDivisor = 13; // the lea and the call, 9 bytes
+// And for the pieces of the health and stamina bars (0x155924a, in 0x1559140): each texture's width over the divisor.
+// add rbx, 8; mov rdi, rbx; mov [rbp + disp32], rbx; call 0xdda210; mov rbx, [r14 + 0x18]; vmovss [rbp + disp32], xmm0.
+inline constexpr std::string_view GaugeScale = "48 83 c3 08 48 89 df 48 89 9d ?? ?? ?? ?? e8 ?? ?? ?? ?? 49 8b 5e 18 c5 fa 11 85";
+inline constexpr uint32_t         GaugeDivisor = 4; // mov rdi, rbx; the store; the call: 15 bytes
+inline constexpr uint32_t         GaugeStore   = 7; // the store of rbx, 7 bytes (kept)
 } // namespace DemonsSoulsHdOutput
 } // namespace Loader

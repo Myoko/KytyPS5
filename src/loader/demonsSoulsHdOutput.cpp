@@ -150,6 +150,19 @@ void Install(Program* program) {
 	} else {
 		std::printf("Demon's Souls HD output: the souls counter's backdrop sizing not found; it comes as a small square\n");
 	}
+	// A third: the health and stamina bars' pieces, each its texture's width over the divisor. At 1080p their ends came
+	// twice as wide, a dark wedge over the bars' left ends where the 4K output fills them to the emblem (issue #187).
+	// The store of rbx kept, then 2.0 for the call: xor eax, eax; mov al, 2; vcvtsi2ss xmm0, xmm0, eax (15 bytes too).
+	if (const auto gauge = GuestCode::FindUnique(*program, GuestCode::Pattern(GaugeScale))) {
+		uint8_t           code[15] {};
+		constexpr uint8_t two[8] {0x31, 0xc0, 0xb0, 0x02, 0xc5, 0xfa, 0x2a, 0xc0};
+		std::memcpy(code, reinterpret_cast<const void*>(*gauge + GaugeStore), 7);
+		std::memcpy(code + 7, two, sizeof(two));
+		std::memcpy(reinterpret_cast<void*>(*gauge + GaugeDivisor), code, sizeof(code));
+		std::printf("Demon's Souls HD output: the health and stamina bars' pieces sized at the 4K scale\n");
+	} else {
+		std::printf("Demon's Souls HD output: the bars' piece sizing not found; their ends come twice as wide\n");
+	}
 	g_active   = true;
 	g_upscaled = upscaled;
 	SetMode(2);

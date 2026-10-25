@@ -674,12 +674,20 @@ inline bool OutputTarget(const HW::Context& ctx) {
 // The HD layout's other draws at 1920x1080 (01.007.000, KYTY_OUTPUT_TRACE): the movies (the intro, the title's backdrop)
 // and the loading screens.
 constexpr std::array<uint64_t, 2> HdLayoutShaders {0x05ca0d08ae41fd2eULL, 0xa64d43c72c1c5c87ULL};
+// Draws of the HD layout whose vertex shader also draws over the whole canvas (full-screen passes, not scaled): told by
+// the pixel shader too (01.007.000, KYTY_OUTPUT_TRACE, issue #187). The menus' glow behind the selected slot (it was
+// drawn at the slot's layout pixels: a green box above and left of it at 1440) and the glow of their title band (its
+// scissor in layout pixels).
+constexpr std::array<std::pair<uint64_t, uint64_t>, 2> HdLayoutPairs {
+    {{0x3ec043bd86013cafULL, 0x91cd581e82574995ULL}, {0x5d9a2e8e34030f35ULL, 0xae51f2cf2ca8c121ULL}}};
 
 inline bool Scaled(const HW::Context& ctx, const HW::VertexShaderInfo& vs, const HW::PixelShaderInfo& ps) {
 	if (OutputScale() <= 0.0f || !OutputTarget(ctx)) return false;
 	const uint64_t hash   = HashAt(vs.es_regs.data_addr);
 	const bool     scaled = hash == PixelShader || std::find(ClipShaders.begin(), ClipShaders.end(), hash) != ClipShaders.end() ||
-	                    std::find(HdLayoutShaders.begin(), HdLayoutShaders.end(), hash) != HdLayoutShaders.end();
+	                    std::find(HdLayoutShaders.begin(), HdLayoutShaders.end(), hash) != HdLayoutShaders.end() ||
+	                    std::find(HdLayoutPairs.begin(), HdLayoutPairs.end(), std::make_pair(hash, PixelShaderHash(ps))) !=
+	                        HdLayoutPairs.end();
 	static const bool trace = [] {
 		const char* value = std::getenv("KYTY_OUTPUT_TRACE");
 		return value != nullptr && *value != 0 && *value != '0';
