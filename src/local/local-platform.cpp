@@ -46,7 +46,9 @@
 #include <pthread.h>
 #include <sched.h>
 #include <string>
+#include <sys/file.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <thread>
 #include <unistd.h>
@@ -1149,6 +1151,49 @@ uint64_t OpenFileForReading(const char* path) {
 	return file == INVALID_HANDLE_VALUE ? 0 : reinterpret_cast<uint64_t>(file);
 }
 
+uint64_t OpenDataFile(const char* path) {
+	wchar_t wide[MAX_PATH * 2] {};
+	if (MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, MAX_PATH * 2) == 0) return 0;
+	// (Not shared: another process opening it fails.)
+	HANDLE file = CreateFileW(wide, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS, FILE_FLAG_RANDOM_ACCESS, nullptr);
+	return file == INVALID_HANDLE_VALUE ? 0 : reinterpret_cast<uint64_t>(file);
+}
+
+uint64_t ScratchFileSize(uint64_t file) {
+	LARGE_INTEGER size {};
+	return file != 0 && GetFileSizeEx(reinterpret_cast<HANDLE>(file), &size) != 0 ? static_cast<uint64_t>(size.QuadPart)
+	                                                                              : 0;
+}
+
+bool ResizeScratchFile(uint64_t file, uint64_t size) {
+	FILE_END_OF_FILE_INFO end {};
+	end.EndOfFile.QuadPart = static_cast<LONGLONG>(size);
+	return file != 0 &&
+	       SetFileInformationByHandle(reinterpret_cast<HANDLE>(file), FileEndOfFileInfo, &end, sizeof(end)) != 0;
+}
+
+bool FlushScratchFile(uint64_t file) {
+	return file != 0 && FlushFileBuffers(reinterpret_cast<HANDLE>(file)) != 0;
+}
+
+std::string ExecutablePath() {
+	std::vector<wchar_t> path(MAX_PATH);
+	for (;;) {
+		const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+		if (length == 0) return {};
+		if (length < path.size()) {
+			const int   bytes = WideCharToMultiByte(CP_UTF8, 0, path.data(), static_cast<int>(length), nullptr, 0, nullptr, nullptr);
+			std::string utf8(bytes > 0 ? static_cast<size_t>(bytes) : 0, '\0');
+			if (bytes <= 0 || WideCharToMultiByte(CP_UTF8, 0, path.data(), static_cast<int>(length), utf8.data(), bytes,
+			                                      nullptr, nullptr) != bytes)
+				return {};
+			return utf8;
+		}
+		if (path.size() >= 32768) return {};
+		path.resize(path.size() * 2);
+	}
+}
+
 bool WriteHeapHistogram(const char* path) {
 	std::vector<HANDLE> heaps(256);
 	const DWORD         count = GetProcessHeaps(static_cast<DWORD>(heaps.size()), heaps.data());
@@ -2048,6 +2093,36 @@ void CloseScratchFile(uint64_t file) {
 uint64_t OpenFileForReading(const char* path) {
 	const int fd = open(path, O_RDONLY | O_CLOEXEC);
 	return fd < 0 ? 0 : static_cast<uint64_t>(fd) + 1;
+}
+
+uint64_t OpenDataFile(const char* path) {
+	const int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+	if (fd < 0) return 0;
+	// (Locked: another process opening it fails.)
+	if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+		close(fd);
+		return 0;
+	}
+	return static_cast<uint64_t>(fd) + 1;
+}
+
+uint64_t ScratchFileSize(uint64_t file) {
+	struct stat status {};
+	return file != 0 && fstat(static_cast<int>(file - 1), &status) == 0 ? static_cast<uint64_t>(status.st_size) : 0;
+}
+
+bool ResizeScratchFile(uint64_t file, uint64_t size) {
+	return file != 0 && ftruncate(static_cast<int>(file - 1), static_cast<off_t>(size)) == 0;
+}
+
+bool FlushScratchFile(uint64_t file) {
+	return file != 0 && fsync(static_cast<int>(file - 1)) == 0;
+}
+
+std::string ExecutablePath() {
+	std::error_code error;
+	const auto      path = std::filesystem::read_symlink("/proc/self/exe", error);
+	return error ? std::string() : path.string();
 }
 
 bool WriteHeapHistogram(const char* path) {

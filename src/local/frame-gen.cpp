@@ -643,7 +643,7 @@ std::atomic<uint64_t> g_ui_canvas {0};
 
 vk::Extent2D UiCanvasExtent() {
 	namespace Hd = ::Loader::DemonsSoulsHdOutput;
-	if (Hd::InterfaceScaled()) return vk::Extent2D {Hd::UpscaledWidth(), Hd::UpscaledHeight()};
+	if (Hd::InterfaceScaled() || Hd::InterfaceAtOutput()) return vk::Extent2D {Hd::UpscaledWidth(), Hd::UpscaledHeight()};
 	return Hd::Active() ? vk::Extent2D {Hd::HdWidth, Hd::HdHeight} : vk::Extent2D {3840, 2160};
 }
 

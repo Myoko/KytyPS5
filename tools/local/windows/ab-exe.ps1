@@ -26,8 +26,8 @@ foreach ($side in $order) {
 	$exe = (Resolve-Path $(if ($side -eq 'A') { $A } else { $B })).Path
 	$launches[$side]++
 	$params = @{ Label = "$Label-$side$($launches[$side])"; Exe = $exe; KeepRunning = $true; NoWalk = $true; ShotOnly = $true; StartupSeconds = $StartupSeconds }
-	$switches = @($Set) + $(if ($side -eq 'A') { @($SetA) } else { @($SetB) })
-	if ($switches.Count) { $params['Set'] = $switches }
+	# (Without the shader prefetch's cache: two executables taking turns would each make it again, ~2 GB written a launch.)
+	$params['Set'] = @('KYTY_PREFETCH_CACHE=0') + @($Set) + $(if ($side -eq 'A') { @($SetA) } else { @($SetB) })
 	if ($Vblank -gt 0) { $params['Vblank'] = $Vblank }
 	& "$S\bench-run.ps1" @params | Select-Object -Last 1
 	if (!(Emulator)) { "$side`: emulator not running"; continue }

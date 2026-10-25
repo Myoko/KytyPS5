@@ -96,6 +96,16 @@ bool     ReadScratchFile(uint64_t file, uint64_t offset, void* data, size_t size
 void     CloseScratchFile(uint64_t file);
 // An existing file (a UTF-8 path) for ReadScratchFile and CloseScratchFile; 0 when it cannot be opened.
 uint64_t OpenFileForReading(const char* path);
+// A file kept between sessions (a UTF-8 path), opened or made for ReadScratchFile, WriteScratchFile and
+// CloseScratchFile by this process alone: 0 when it cannot be, or another process has it open (a second emulator).
+uint64_t OpenDataFile(const char* path);
+// A scratch or data file's size in bytes (0 when unknown), the file cut or extended to `size`, and its written bytes
+// sent to the disk (false when any of them fails).
+uint64_t ScratchFileSize(uint64_t file);
+bool     ResizeScratchFile(uint64_t file, uint64_t size);
+bool     FlushScratchFile(uint64_t file);
+// This executable's path, UTF-8 (empty when unknown).
+std::string ExecutablePath();
 
 // The process's committed private memory and resident working set, and the machine's physical memory, in
 // bytes (0 where the host cannot tell; KYTY_SIMULATE_RAM_MB=<n> reports n MiB of physical memory, for tests).

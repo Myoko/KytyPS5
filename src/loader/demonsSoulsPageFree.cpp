@@ -269,19 +269,32 @@ bool WalkFreeLocked(std::vector<FreeRun>& runs, WalkTotals& totals, bool checked
 }
 
 #if defined(_WIN32)
-// (The allocator's lock held, the block checked free) the bytes of [address, address + size) dropped: the backing
-// view's pages discarded (zeros in every view, out of the backing view's working set) and the guest view's too where it
-// is all writable. A page leaves RAM when no view keeps it: true when the guest view still holds some (the page manager
-// watches them, read-only or no access), for TrimGuest after the lock.
+// (The allocator's lock held, the block checked free) the bytes of [address, address + size) dropped: discarded through
+// the guest view where it is all writable, else through the backing view (zeros in every view either way). A page leaves
+// RAM when no view keeps it: true when the guest view still holds some (the page manager watches them, read-only or no
+// access), for TrimGuest after the lock.
 bool DiscardLocked(uint64_t address, uint64_t size, uint64_t* given) {
 	thread_local std::vector<std::pair<const uint8_t*, uint64_t>> pieces;
 	pieces.clear();
 	if (!Libs::LibKernel::Memory::TryGetBackingPieces(address, size, pieces) || pieces.empty()) return false;
-	for (const auto& [pointer, length]: pieces) {
+	for (const auto& [pointer, length]: pieces)
 		Libs::LibKernel::Memory::DropHotReadsBacking(reinterpret_cast<uint64_t>(pointer), length);
-		if (DiscardVirtualMemory(const_cast<uint8_t*>(pointer), length) == ERROR_SUCCESS) *given += length;
+	// The guest view's discard drops the pages the views share (zeros through both) in ~0.07 ms a 256 KiB chunk, and the
+	// backing view then only lets go of them (VirtualUnlock: out of its working set; a page no view holds is freed). The
+	// backing view's own discard took ~2.8 ms a chunk (up to 15) on a 3 GiB view alone, 4-9 ms in play on the 13.5 GiB
+	// one, all of it under the allocator's lock. (scratchpad discardbench: same zeros, both views agree after writes.)
+	if (DiscardVirtualMemory(reinterpret_cast<void*>(address), size) == ERROR_SUCCESS) {
+		for (const auto& [pointer, length]: pieces) {
+			(void)VirtualUnlock(const_cast<uint8_t*>(pointer), length);
+			*given += length;
+		}
+		return false;
 	}
-	return DiscardVirtualMemory(reinterpret_cast<void*>(address), size) != ERROR_SUCCESS;
+	// A guest view not all writable (the page manager watches it, read-only or no access) refuses the discard: the
+	// backing view's, and the guest view's pages trimmed after the lock (TrimGuest).
+	for (const auto& [pointer, length]: pieces)
+		if (DiscardVirtualMemory(const_cast<uint8_t*>(pointer), length) == ERROR_SUCCESS) *given += length;
+	return true;
 }
 
 // (The lock released) the guest view's pages of the range taken out of its working set: dropped already, they leave RAM;
@@ -308,11 +321,11 @@ void WalkerThread() {
 	LocalPlatform::SetThreadName("Kyty.EngineFree");
 	const bool give_back = GetMode() == Mode::GiveBack;
 	constexpr int64_t  PassNs = 2'000'000'000;
-	// 256 KiB under the lock at a time, 128 MiB a walk, and only blocks free on FreeWalks + 1 walks in a row (~30 s): the
-	// discards wait for the process's working set lock (~0.6 ms of the allocator's lock a MiB given back here, up to 8 ms
-	// at a time), and blocks free for less were often the engine's again soon after (issue #5: 13.5 GB given back in a
+	// 64 KiB under the lock at a time (a guest page the page manager watches still takes the backing view's slow discard:
+	// 4-23 ms a 256 KiB chunk while a world streams in), 128 MiB a walk, and only blocks free on FreeWalks + 1 walks in a
+	// row (~30 s): blocks free for less were often the engine's again soon after (issue #5: 13.5 GB given back in a
 	// session where at most 2-4 GB were free at once, each page given back and faulted in again several times).
-	constexpr uint64_t Chunk = uint64_t {256} << 10u, PassBudget = uint64_t {128} << 20u, FreeWalks = 14;
+	constexpr uint64_t Chunk = uint64_t {64} << 10u, PassBudget = uint64_t {128} << 20u, FreeWalks = 14;
 	// A pass's discards hold the allocator's lock LockBudgetNs at most in all (2.5% of the time), a chunk at a time. Before
 	// it, the working set lock is timed (ProbeWorkingSetNs); a chunk that held the lock SlowChunkNs or more ends it. A pass
 	// whose probe took SlowProbeNs or more or whose chunks held the lock SlowAverageNs or more on average is a slow one:

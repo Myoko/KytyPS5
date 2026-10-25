@@ -398,7 +398,13 @@ static void GameEventController([[maybe_unused]] const EventController& f) {
 	}
 
 	if (f.down || f.up) {
-		const auto button = ControllerButtonToPadButton(f.button);
+		auto button = ControllerButtonToPadButton(f.button);
+		// A pad without a touchpad (an Xbox pad's View, others' Back or Select) presses it with that button (issue #197:
+		// otherwise the game's touchpad menu was out of reach); a PlayStation pad's Create button stays the system's.
+		if (f.button == SDL_CONTROLLER_BUTTON_BACK) {
+			const auto type = SDL_GameControllerGetType(SDL_GameControllerFromInstanceID(f.id));
+			if (type != SDL_CONTROLLER_TYPE_PS4 && type != SDL_CONTROLLER_TYPE_PS5) button = Controller::PAD_BUTTON_TOUCH_PAD;
+		}
 		if (button != 0) {
 			Controller::SetButton(f.id, button, f.down);
 		}

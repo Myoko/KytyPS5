@@ -46,13 +46,16 @@ namespace Libs::Graphics::HudAnchor {
 // user data's first four words, or (PixelShader) as canvas pixels in the first V# of a table two pointers away.
 constexpr std::array<uint64_t, 2> ClipShaders {0x7e880a66bf1b69c6ULL, 0xb2f062027869d4eeULL};
 constexpr uint64_t                PixelShader = 0xbd39a2eba2d20d8bULL;
-// The interface canvas: 3840x2160, or the HD output's 1920x1080 (its own layout, the same areas in clip coordinates and
-// the same shaders; the pixel shader's scale constants then 1/1920, 1/1080).
+// The interface canvas: 3840x2160, the HD output's 1920x1080 (its own layout, the same areas in clip coordinates and
+// the same shaders; the pixel shader's scale constants then 1/1920, 1/1080), or KYTY_OUTPUT_HEIGHT's output where the
+// game lays its 4K layout out at that size (DemonsSoulsHdOutput::InterfaceAtOutput: 2560x1440 for 1440).
 inline uint32_t CanvasWidth() {
-	return ::Loader::DemonsSoulsHdOutput::Active() ? ::Loader::DemonsSoulsHdOutput::HdWidth : 3840u;
+	namespace Hd = ::Loader::DemonsSoulsHdOutput;
+	return Hd::InterfaceAtOutput() ? Hd::UpscaledWidth() : Hd::Active() ? Hd::HdWidth : 3840u;
 }
 inline uint32_t CanvasHeight() {
-	return ::Loader::DemonsSoulsHdOutput::Active() ? ::Loader::DemonsSoulsHdOutput::HdHeight : 2160u;
+	namespace Hd = ::Loader::DemonsSoulsHdOutput;
+	return Hd::InterfaceAtOutput() ? Hd::UpscaledHeight() : Hd::Active() ? Hd::HdHeight : 2160u;
 }
 constexpr uint32_t                MaxVertices = 8192;
 
@@ -652,7 +655,8 @@ private:
 	HW::ScreenViewport m_screen; // (as it was)
 };
 
-// KYTY_OUTPUT_HEIGHT above 1080 (DemonsSoulsHdOutput::InterfaceScaled): the game lays its interface out in the HD
+// KYTY_OUTPUT_HEIGHT above 1080 with KYTY_OUTPUT_LAYOUT=hd (DemonsSoulsHdOutput::InterfaceScaled; by default the game
+// lays out its 4K layout at the output's size, nothing scaled here): the game lays its interface out in the HD
 // layout's 1920x1080 and turns the layout's pixels into clip coordinates by the canvas's own size (2560x1440 for 1440),
 // the viewport the whole canvas: the HUD, the menus, the movies and the loading screens showed at their HD pixels, in
 // the canvas's top left corner. Their draws into a target of the output's size get the viewport scaled by output /

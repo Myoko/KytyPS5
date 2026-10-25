@@ -428,6 +428,7 @@ struct PipelineCache::ProgramCache {
 		size_t                                       spirv_words  = 0;
 		size_t                                       spirv_bytes  = 0;
 		uint64_t                                     spirv_hash   = 0; // XXH3 of the SPIR-V (NotePipelineKeyModule)
+		bool                                         cached       = false; // from the prefetch cache: checked before use
 	};
 
 	// A table mode permutation a compile worker translates (Get): the next Get of its specialization and push data
@@ -721,8 +722,13 @@ struct PipelineCache::ProgramCache {
 			// rebuilding it (its code generated) took up to ~1 ms of the render thread's per plan; the plan's values ~0.2.
 			uint64_t                                                          plan_offset = 0;
 			uint32_t                                                          plan_bytes = 0, plan_raw = 0;
+			uint64_t                                                          plan_hash = 0; // XXH3 of the bytes there
 			std::shared_ptr<const ShaderRecompiler::IR::LinearSrtPlan>       plan_linear;
 			bool plan_linear_dropped = false; // (not PrefetchBuildsLinear: LoadSpilledPlan makes it)
+			// The prefetch cache's: XXH3 of the group's records (its entries are for these inputs), and the translation
+			// came from it.
+			uint64_t inputs = 0;
+			bool     cached = false;
 		};
 		~Prefetch() {
 			{
@@ -810,6 +816,19 @@ struct PipelineCache::ProgramCache {
 		std::array<std::atomic<uint64_t>, PrefetchMemoryParts> memory {};
 		// Plans written to the scratch file (SpillPlan) and their bytes there.
 		std::atomic<uint64_t> spilled_plans {0}, spilled_plan_bytes {0}, dropped_linear {0};
+		// The prefetch cache (OpenPrefetchCache): its groups' entries translated since the last save and the end of the
+		// bytes they use in the file.
+		struct Cache {
+			std::atomic<bool>                     enabled {false}; // (entries noted and saved)
+			std::string                           key;
+			std::mutex                            mutex; // entries, data_end
+			std::vector<std::vector<uint8_t>>     entries;
+			uint64_t                              data_end = 0;
+			std::mutex                            save_mutex;
+			std::chrono::steady_clock::time_point saved;
+			size_t                                loaded = 0;
+			std::atomic<size_t>                   noted {0}, damaged {0};
+		} cache;
 	};
 	std::unique_ptr<Prefetch> prefetch;
 	// `prefetch` for threads without the pipeline cache's lock (GetPrefetchProgress, the live report): a warmup beside
@@ -863,6 +882,332 @@ struct PipelineCache::ProgramCache {
 
 	static uint64_t SourceDigest(std::span<const uint32_t> code, std::span<const uint32_t> back_code) {
 		return XXH3_64bits_withSeed(back_code.data(), back_code.size_bytes(), XXH3_64bits(code.data(), code.size_bytes()));
+	}
+
+	// The shader prefetch's translations kept between sessions (KYTY_PREFETCH_CACHE, default on; 0 off. Issue #200, after
+	// Psychowarden's patch): the prefetch's scratch file is then <game>.prefetch beside the static inputs, the SPIR-V and
+	// plans left where the translations wrote them, and <game>.prefetch.idx lists the groups translated (their keys and
+	// inputs, their plans' and modules' places in it, the modules' infos), appended as they are done. A later session of
+	// the same executable, GPU, driver and translation settings takes the groups listed for the same inputs as translated
+	// and translates the rest. A 6-core PC translated the game's ~20K programs on 2 threads for minutes after every start,
+	// beside the game (issue #157); and their SPIR-V (1.9 GB compressed on a desktop with every world's hints) no longer
+	// waits in a temporary file, which Windows keeps in memory while it can. What comes from the file is checked as the
+	// game first uses it: a module's SPIR-V against its hash, a plan's bytes against theirs.
+	static bool PrefetchCacheEnabled() {
+		static const bool enabled = [] {
+			const char* value = std::getenv("KYTY_PREFETCH_CACHE");
+			return value == nullptr || std::string_view(value) != "0";
+		}();
+		return enabled;
+	}
+	static constexpr uint32_t PrefetchCacheMagic   = 0x5346504bu; // "KPFS"
+	static constexpr uint32_t PrefetchCacheVersion = 1;
+	// The index gets the entries noted since it last did once a minute while the prefetch translates, and when it ends.
+	static constexpr auto PrefetchCacheSaveEvery = std::chrono::seconds(60);
+
+	static std::filesystem::path PrefetchCachePath(std::string_view suffix) {
+		return std::filesystem::path("_PipelineCache") / "static" / (PipelineCacheGameId() + std::string(suffix));
+	}
+
+	// What the translations are good for: the inputs' identity (the title, GPU and driver), this executable (its revision,
+	// size and time: another build may translate otherwise), the translation features, the compute subgroup size and the
+	// settings the translation reads. Empty when the executable's file cannot be told.
+	static std::string PrefetchCacheKey(const std::string& identity, uint32_t host_subgroup_size) {
+		const auto exe = LocalPlatform::ExecutablePath();
+		if (exe.empty()) return {};
+		std::error_code error;
+		const auto      path = Common::PathFromUtf8(exe);
+		const auto      size = std::filesystem::file_size(path, error);
+		if (error) return {};
+		const auto time = std::filesystem::last_write_time(path, error);
+		if (error) return {};
+		auto key = fmt::format("{}|{}|{}|{}|features {}|subgroup {}", identity, KYTY_GIT_REVISION, size,
+		                       static_cast<int64_t>(time.time_since_epoch().count()),
+		                       ShaderRecompiler::Frontend::TranslatorFeatureSet(), host_subgroup_size);
+		for (const char* name: {"KYTY_LANE_LOCAL", "KYTY_PS_WAVE_OR", "KYTY_PS_WAVE64", "KYTY_COMPUTE_WAVE64"}) {
+			const char* value = std::getenv(name);
+			key += fmt::format("|{}={}", name, value != nullptr ? value : "");
+		}
+		return key;
+	}
+
+	template <typename T>
+	static void CachePut(std::vector<uint8_t>& out, const T& value) {
+		static_assert(std::is_trivially_copyable_v<T>);
+		const auto* bytes = reinterpret_cast<const uint8_t*>(&value);
+		out.insert(out.end(), bytes, bytes + sizeof(T));
+	}
+	template <typename T>
+	static bool CacheGet(std::span<const uint8_t> in, size_t& at, T& value) {
+		static_assert(std::is_trivially_copyable_v<T>);
+		if (at > in.size() || in.size() - at < sizeof(T)) return false;
+		std::memcpy(&value, in.data() + at, sizeof(T));
+		at += sizeof(T);
+		return true;
+	}
+
+	// XXH3 of the group's records: an entry is for the inputs it was translated from.
+	static uint64_t GroupInputs(const Prefetch& p, const Prefetch::Group& group) {
+		uint64_t digest = group.records.size();
+		for (const auto index: group.records) {
+			const auto& record = p.inputs.records[index];
+			digest             = XXH3_64bits_withSeed(record.data(), record.size() * sizeof(uint32_t), digest);
+		}
+		return digest;
+	}
+
+	// A translated group's entry (RunGroup, before the group is done: the game takes its modules after that), unless
+	// its plan stays in memory (a write failed); the index gets it at the next save.
+	void NotePrefetchCache(Prefetch& p, const Prefetch::Group& group) {
+		auto& c = p.cache;
+		if (!c.enabled || (group.plan && group.plan_bytes == 0)) return;
+		std::vector<uint8_t> entry;
+		CachePut(entry, group.key.stage);
+		CachePut(entry, group.key.hash);
+		CachePut(entry, group.key.user_data_count);
+		CachePut(entry, group.key.code_size);
+		CachePut(entry, static_cast<uint32_t>(group.key.static_state.size()));
+		for (const auto word: group.key.static_state) CachePut(entry, word);
+		CachePut(entry, group.source);
+		CachePut(entry, static_cast<uint64_t>(group.code_words));
+		CachePut(entry, group.inputs);
+		CachePut(entry, group.plan_offset);
+		CachePut(entry, group.plan_bytes);
+		CachePut(entry, group.plan_raw);
+		CachePut(entry, group.plan_hash);
+		CachePut(entry, static_cast<uint32_t>(group.modules.size()));
+		uint64_t end = group.plan_bytes != 0 ? group.plan_offset + group.plan_bytes : 0;
+		for (const auto& module: group.modules) {
+			CachePut(entry, module.spirv_offset);
+			CachePut(entry, static_cast<uint64_t>(module.spirv_words));
+			CachePut(entry, static_cast<uint64_t>(module.spirv_bytes));
+			CachePut(entry, module.spirv_hash);
+			if (!ResourcePlanSerial::SaveModule(module.program, module.specialization, entry)) return; // (translated again)
+			end = std::max(end, module.spirv_offset + (module.spirv_bytes != 0 ? module.spirv_bytes
+			                                                                    : module.spirv_words * sizeof(uint32_t)));
+		}
+		bool save = false;
+		{
+			std::lock_guard lock(c.mutex);
+			c.entries.push_back(std::move(entry));
+			c.data_end = std::max(c.data_end, end);
+			save       = std::chrono::steady_clock::now() - c.saved >= PrefetchCacheSaveEvery;
+		}
+		c.noted.fetch_add(1, std::memory_order_relaxed);
+		if (save) SavePrefetchCache(p, false);
+	}
+
+	// The entries noted since the last save appended to the index, after the bytes they name are on the disk (an entry
+	// the index lost to a crash is translated again). `wait`: after a save under way (else none is made then).
+	void SavePrefetchCache(Prefetch& p, bool wait) {
+		auto&             c = p.cache;
+		std::unique_lock  save(c.save_mutex, std::defer_lock);
+		if (wait) {
+			save.lock();
+		} else if (!save.try_lock()) {
+			return;
+		}
+		std::vector<std::vector<uint8_t>> entries;
+		{
+			std::lock_guard lock(c.mutex);
+			entries.swap(c.entries);
+			c.saved = std::chrono::steady_clock::now();
+		}
+		if (entries.empty() || !c.enabled.load(std::memory_order_relaxed)) return;
+		const auto           begin = std::chrono::steady_clock::now();
+		std::vector<uint8_t> bytes;
+		for (const auto& entry: entries) {
+			CachePut(bytes, static_cast<uint32_t>(entry.size()));
+			bytes.insert(bytes.end(), entry.begin(), entry.end());
+		}
+		std::vector<std::vector<uint8_t>>().swap(entries);
+		// (An index without its header - removed since - gets none: the next session starts over.)
+		const auto path  = Common::PathToString(PrefetchCachePath(".prefetch.idx"));
+		const auto index = LocalPlatform::OpenDataFile(path.c_str());
+		const auto at    = LocalPlatform::ScratchFileSize(index);
+		const bool saved = index != 0 && at != 0 && LocalPlatform::FlushScratchFile(p.spill) &&
+		                   LocalPlatform::WriteScratchFile(index, at, bytes.data(), bytes.size()) &&
+		                   LocalPlatform::FlushScratchFile(index);
+		LocalPlatform::CloseScratchFile(index);
+		if (!saved) c.enabled.store(false, std::memory_order_relaxed); // (none noted after: the index may end torn)
+		static std::atomic<uint32_t> reports {0};
+		if (!saved || reports.fetch_add(1, std::memory_order_relaxed) < 4)
+			PipelineCacheLog("Shader prefetch cache: {} {} KiB of entries to {} in {} ms", saved ? "added" : "could not add",
+			                 bytes.size() >> 10u, path,
+			                 std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin).count());
+	}
+
+	// A listed group taken as translated where its inputs are this session's (the bytes it names below `data_end`);
+	// false for a malformed entry.
+	static bool ApplyPrefetchCacheEntry(Prefetch& p, std::span<const uint8_t> entry, uint64_t data_end) {
+		constexpr uint64_t MaxBytes = uint64_t {256} << 20u; // (a plan's or a module's: far above any)
+		size_t             at       = 0;
+		ProgramKey         key;
+		uint32_t           words = 0, plan_bytes = 0, plan_raw = 0, count = 0;
+		uint64_t           source = 0, code_words = 0, inputs = 0, plan_offset = 0, plan_hash = 0;
+		if (!CacheGet(entry, at, key.stage) || !CacheGet(entry, at, key.hash) || !CacheGet(entry, at, key.user_data_count) ||
+		    !CacheGet(entry, at, key.code_size) || !CacheGet(entry, at, words) || words > MaxStaticKeyWords)
+			return false;
+		key.static_state.resize(words);
+		for (auto& word: key.static_state)
+			if (!CacheGet(entry, at, word)) return false;
+		if (!CacheGet(entry, at, source) || !CacheGet(entry, at, code_words) || !CacheGet(entry, at, inputs) ||
+		    !CacheGet(entry, at, plan_offset) || !CacheGet(entry, at, plan_bytes) || !CacheGet(entry, at, plan_raw) ||
+		    !CacheGet(entry, at, plan_hash) || !CacheGet(entry, at, count) || plan_raw > MaxBytes ||
+		    plan_offset > data_end || data_end - plan_offset < plan_bytes || count > entry.size())
+			return false;
+		std::vector<PrefetchedModule> modules(count);
+		for (auto& module: modules) {
+			uint64_t spirv_words = 0, spirv_bytes = 0;
+			if (!CacheGet(entry, at, module.spirv_offset) || !CacheGet(entry, at, spirv_words) ||
+			    !CacheGet(entry, at, spirv_bytes) || !CacheGet(entry, at, module.spirv_hash) ||
+			    !ResourcePlanSerial::LoadModule(entry, at, module.program, module.specialization))
+				return false;
+			const uint64_t stored = spirv_bytes != 0 ? spirv_bytes : spirv_words * sizeof(uint32_t);
+			if (spirv_words == 0 || spirv_words * sizeof(uint32_t) > MaxBytes || stored > MaxBytes ||
+			    module.spirv_offset > data_end || data_end - module.spirv_offset < stored)
+				return false;
+			module.spirv_words = spirv_words;
+			module.spirv_bytes = spirv_bytes;
+			module.cached      = true;
+		}
+		if (at != entry.size()) return false;
+		const auto found = p.index.find(key);
+		if (found == p.index.end()) return true; // (a program this session's inputs lack)
+		auto& group = *found->second;
+		if (group.source != source || group.code_words != code_words || group.inputs != inputs ||
+		    group.state.load(std::memory_order_relaxed) != Prefetch::Pending)
+			return true;
+		group.plan_offset         = plan_offset;
+		group.plan_bytes          = plan_bytes;
+		group.plan_raw            = plan_raw;
+		group.plan_hash           = plan_hash;
+		group.plan_linear_dropped = plan_bytes != 0; // (made when the plan comes back: LoadSpilledPlan)
+		group.modules             = std::move(modules);
+		group.cached              = true;
+		group.state.store(Prefetch::Done, std::memory_order_relaxed);
+		p.cache.loaded++;
+		return true;
+	}
+
+	// The prefetch cache's data file as the prefetch's scratch file, the groups its index lists taken as translated (the
+	// loader thread: the groups made, no worker running yet). 0 when the cache is off or its file cannot be had (another
+	// emulator has it): a temporary file then.
+	uint64_t OpenPrefetchCache(Prefetch& p, const std::string& identity, uint32_t host_subgroup_size) {
+		if (!PrefetchCacheEnabled() || !PlanSpillEnabled()) return 0;
+		const auto begin = std::chrono::steady_clock::now();
+		auto&      c     = p.cache;
+		c.key            = PrefetchCacheKey(identity, host_subgroup_size);
+		if (c.key.empty()) {
+			PipelineCacheLog("Shader prefetch cache: off (this executable's file could not be found)");
+			return 0;
+		}
+		const auto      data_path  = PrefetchCachePath(".prefetch");
+		const auto      index_path = PrefetchCachePath(".prefetch.idx");
+		std::error_code error;
+		std::filesystem::create_directories(data_path.parent_path(), error);
+		const auto file = LocalPlatform::OpenDataFile(Common::PathToString(data_path).c_str());
+		if (file == 0) {
+			PipelineCacheLog("Shader prefetch cache: off ({} could not be opened: another emulator may have it)",
+			                 Common::PathToString(data_path));
+			return 0;
+		}
+		for (auto& group: p.groups) group->inputs = GroupInputs(p, *group);
+		std::vector<uint8_t> index;
+		if (std::ifstream in(index_path, std::ios::binary); in) index.assign(std::istreambuf_iterator<char>(in), {});
+		const uint64_t data_end = LocalPlatform::ScratchFileSize(file);
+		size_t         at       = 0;
+		uint32_t       magic = 0, version = 0, key_size = 0;
+		const char*    reason   = nullptr;
+		if (index.empty()) {
+			reason = "none yet";
+		} else if (!CacheGet(index, at, magic) || magic != PrefetchCacheMagic || !CacheGet(index, at, version) ||
+		           version != PrefetchCacheVersion || !CacheGet(index, at, key_size) || index.size() - at < key_size) {
+			reason = "unreadable";
+		} else if (std::string_view(reinterpret_cast<const char*>(index.data()) + at, key_size) != c.key) {
+			reason = "made by another build, GPU, driver or translation settings";
+		}
+		if (reason != nullptr) {
+			// Started over: the index first (it never names bytes written again).
+			std::vector<uint8_t> header;
+			CachePut(header, PrefetchCacheMagic);
+			CachePut(header, PrefetchCacheVersion);
+			CachePut(header, static_cast<uint32_t>(c.key.size()));
+			header.insert(header.end(), c.key.begin(), c.key.end());
+			std::filesystem::remove(index_path, error);
+			const auto out     = LocalPlatform::OpenDataFile(Common::PathToString(index_path).c_str());
+			const bool written = out != 0 && LocalPlatform::ResizeScratchFile(file, 0) &&
+			                     LocalPlatform::WriteScratchFile(out, 0, header.data(), header.size()) &&
+			                     LocalPlatform::FlushScratchFile(out);
+			LocalPlatform::CloseScratchFile(out);
+			if (!written) {
+				LocalPlatform::CloseScratchFile(file);
+				PipelineCacheLog("Shader prefetch cache: off ({} could not be written)", Common::PathToString(index_path));
+				return 0;
+			}
+			c.enabled = true;
+			c.saved   = std::chrono::steady_clock::now();
+			PipelineCacheLog("Shader prefetch cache: {} {}: every program translated and kept", Common::PathToString(index_path),
+			                 reason);
+			return file;
+		}
+		at += key_size;
+		// The entries, each after its size; one malformed is left out, and a torn end (a crash while one was added) cut
+		// off, so that the next entries are appended where they are read.
+		size_t   end = at;
+		uint32_t malformed = 0, entries = 0;
+		for (uint32_t size = 0; CacheGet(index, at, size) && index.size() - at >= size; at += size, end = at, entries++)
+			if (!ApplyPrefetchCacheEntry(p, std::span(index).subspan(at, size), data_end)) malformed++;
+		bool repaired = true;
+		if (end != index.size()) {
+			const auto out = LocalPlatform::OpenDataFile(Common::PathToString(index_path).c_str());
+			repaired       = out != 0 && LocalPlatform::ResizeScratchFile(out, end);
+			LocalPlatform::CloseScratchFile(out);
+		}
+		// (Not repaired: the file is read but gets no more entries, which the next session would not read past the end.)
+		c.enabled = repaired;
+		c.saved   = std::chrono::steady_clock::now();
+		// (Appended after every byte there: those no entry names are a crashed session's.)
+		p.spill_end.store(data_end, std::memory_order_relaxed);
+		PipelineCacheLog("Shader prefetch cache: {} of {} programs translated before ({} entries{}, {} MiB in {}), read in {} "
+		                 "ms{}",
+		                 c.loaded, p.groups.size(), entries,
+		                 malformed != 0 ? fmt::format(", {} unreadable", malformed) : std::string(), data_end >> 20u,
+		                 Common::PathToString(data_path),
+		                 std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin).count(),
+		                 repaired ? "" : "; its index's torn end could not be cut off: nothing added this session");
+		return file;
+	}
+
+	// Something from the prefetch cache read back damaged (translated again where it is used): the first time, its index
+	// is removed, so that the next session makes the cache again, and nothing is added to it.
+	void PrefetchCacheDamaged(const char* what, uint64_t hash) {
+		auto& c = prefetch->cache;
+		if (c.damaged.fetch_add(1, std::memory_order_relaxed) == 0) {
+			// (A save under way keeps the file: the next session finds the damage again.)
+			c.enabled.store(false, std::memory_order_relaxed);
+			std::error_code error;
+			std::filesystem::remove(PrefetchCachePath(".prefetch.idx"), error);
+		}
+		if (c.damaged.load(std::memory_order_relaxed) <= 8)
+			PipelineCacheLog("Shader prefetch cache: {} of 0x{:016x} reads back damaged: translated again (the cache is made "
+			                 "again next session)",
+			                 what, hash);
+	}
+
+	// A module from the prefetch cache whose SPIR-V reads back as it was translated (false: damaged on the disk).
+	bool CachedModuleIntact(const PrefetchedModule& module) {
+		std::vector<uint32_t> spirv(module.spirv_words);
+		const auto            bytes = spirv.size() * sizeof(uint32_t);
+		if (module.spirv_bytes != 0) {
+			std::vector<char> packed(module.spirv_bytes);
+			if (!LocalPlatform::ReadScratchFile(prefetch->spill, module.spirv_offset, packed.data(), packed.size()) ||
+			    !ZstdUnpack(packed, spirv.data(), bytes))
+				return false;
+		} else if (!LocalPlatform::ReadScratchFile(prefetch->spill, module.spirv_offset, spirv.data(), bytes)) {
+			return false;
+		}
+		return XXH3_64bits(spirv.data(), bytes) == module.spirv_hash;
 	}
 
 	// Loads the inputs on a thread of its own, leaves out the programs the warmup holds (`warm`), and
@@ -975,7 +1320,8 @@ struct PipelineCache::ProgramCache {
 			std::ranges::stable_sort(p.groups, {}, [](const auto& group) {
 				return std::pair {group->recorded, ~group->code_words};
 			});
-			p.spill = LocalPlatform::OpenScratchFile();
+			p.spill = OpenPrefetchCache(p, identity, host_subgroup_size);
+			if (p.spill == 0) p.spill = LocalPlatform::OpenScratchFile();
 			if (p.spill == 0) {
 				PipelineCacheLog("Shader prefetch: no temporary file for the SPIR-V");
 				return;
@@ -1038,11 +1384,18 @@ struct PipelineCache::ProgramCache {
 			if (WaitForMemory(p)) continue; // (a program play just met first)
 			const size_t n = p.next.fetch_add(1, std::memory_order_relaxed);
 			if (n >= p.groups.size()) break;
-			(void)RunGroup(p, *p.groups[n]);
+			auto& group = *p.groups[n];
+			(void)RunGroup(p, group);
+			// (One a helper translates now is counted once it is done: the inputs it reads are freed after the last.)
+			for (auto state = group.state.load(std::memory_order_acquire); state == Prefetch::Running;
+			     state      = group.state.load(std::memory_order_acquire))
+				group.state.wait(Prefetch::Running, std::memory_order_acquire);
 			if (p.finished.fetch_add(1, std::memory_order_relaxed) + 1 == p.groups.size()) {
-				PipelineCacheLog("Shader prefetch: all {} programs translated, {} MiB of SPIR-V ({} MiB compressed)",
-				                 p.groups.size(), p.spirv_bytes.load(std::memory_order_relaxed) >> 20u,
+				PipelineCacheLog("Shader prefetch: all {} programs translated ({} of them before: the prefetch cache), {} MiB "
+				                 "of SPIR-V made ({} MiB compressed in the file)",
+				                 p.groups.size(), p.cache.loaded, p.spirv_bytes.load(std::memory_order_relaxed) >> 20u,
 				                 p.spill_end.load(std::memory_order_relaxed) >> 20u);
+				if (p.cache.enabled) SavePrefetchCache(p, true);
 				std::vector<std::vector<uint32_t>>().swap(p.inputs.records); // no longer read
 				const auto mib = [&](PrefetchMemoryPart part) { return p.memory[part].load(std::memory_order_relaxed) >> 20u; };
 				PipelineCacheLog("Shader prefetch memory (MiB): plan values {} memory infos {} other {} info {}, modules info {} "
@@ -1090,6 +1443,7 @@ struct PipelineCache::ProgramCache {
 		PrefetchTranslate(group);
 		AddGroupMemory(p, group);
 		SpillPlan(p, group);
+		NotePrefetchCache(p, group);
 		group.state.store(Prefetch::Done, std::memory_order_release);
 		group.state.notify_all();
 		return true;
@@ -1155,6 +1509,7 @@ struct PipelineCache::ProgramCache {
 		group.plan_offset = offset;
 		group.plan_bytes  = static_cast<uint32_t>(packed_size);
 		group.plan_raw    = static_cast<uint32_t>(bytes.size());
+		group.plan_hash   = XXH3_64bits(packed.data(), packed_size);
 		group.plan_linear = std::move(group.plan->linear_srt); // (made from the plan alone: no reference into it)
 		if (!PrefetchBuildsLinear()) {
 			group.plan_linear_dropped = true; // (made when the plan comes back: LoadSpilledPlan)
@@ -1171,9 +1526,13 @@ struct PipelineCache::ProgramCache {
 		const auto begin = std::chrono::steady_clock::now();
 		std::vector<char>    packed(group.plan_bytes);
 		std::vector<uint8_t> bytes(group.plan_raw);
+		// (The hash: a plan from the prefetch cache that the disk damaged is translated again.)
 		if (!LocalPlatform::ReadScratchFile(prefetch->spill, group.plan_offset, packed.data(), packed.size()) ||
-		    !ZstdUnpack(packed, bytes.data(), bytes.size()))
+		    (group.plan_hash != 0 && XXH3_64bits(packed.data(), packed.size()) != group.plan_hash) ||
+		    !ZstdUnpack(packed, bytes.data(), bytes.size())) {
+			if (group.cached) PrefetchCacheDamaged("the plan", group.key.hash);
 			return false;
+		}
 		const auto read = std::chrono::steady_clock::now();
 		ShaderRecompiler::IR::ResourcePlan plan;
 		bool                               linear = false;
@@ -1305,6 +1664,11 @@ struct PipelineCache::ProgramCache {
 		auto module = with(specialization);
 		if (module == source.prefetched.end()) module = with(compiled);
 		if (module == source.prefetched.end()) return nullptr;
+		if (module->cached && !CachedModuleIntact(*module)) {
+			PrefetchCacheDamaged("a module", options.shader_hash);
+			source.prefetched.erase(module);
+			return nullptr;
+		}
 		if (const auto stored = CreateModuleInPlace(options, *module)) {
 			source.permutations.push_back(
 			    ModulePermutation(options, {}, std::move(module->program), std::move(specialization), stored));

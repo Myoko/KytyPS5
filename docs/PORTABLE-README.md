@@ -144,7 +144,8 @@ With an "Aspect ratio" wider than 16:9, DLSS makes the picture at its full width
 2560x1080 at render height 1080), and the game finishes it at that size, with the HUD at the screen's edges,
 instead of a 3840x2160 picture widened on the screen. On an RTX 5090 at Boletaria's start that ran at 64.5 fps,
 the game's TAA at 21:9 at 59.3. Screens without the 3D (movies, the title, loading) are stretched to the
-width, as without DLSS.
+width, as without DLSS. With "Game output: 1440p" that picture is made at 1440 lines instead (3416x1440 at 21:9, for
+a 3440x1440 screen): the game's post-processing at the screen's size rather than at 5120x2160 scaled down.
 "Game output" ("Automatic" by default: 1080p for a 16:9 game window, or screen in full screen, at most 1080 lines
 high, else 4K as on the PS5) with "1080p" runs the game's own HD mode, the one a PS5 takes on
 a 1080p TV: its post-processing and HUD at 1920x1080 instead of 3840x2160 scaled down to the window afterwards,
@@ -158,7 +159,8 @@ and effects at the render height, stretched at the end). On an RTX 5090 at Bolet
 limit there): DLSS from 720 to 1080p 75.2 fps, DLSS from 1080 to 4K 68.8, the game's TAA at 1080p 76.8.
 "1440p" (with DLSS or FSR 3 only; `-Upscaler dlss -OutputHeight 1440` on a `run.cmd` line, contributed by Tutuzaooo)
 makes that output 2560x1440, for 1440p screens: the upscaler's own picture at the screen's size, neither the 4K one
-scaled down nor the 1080p one scaled up, the HUD and menus in the game's HD layout scaled to it. Its render heights:
+scaled down nor the 1080p one scaled up, the HUD and menus in the game's 4K layout drawn at 1440 (as the 4K output's,
+scaled down; `-Set KYTY_OUTPUT_LAYOUT=hd`: the game's HD layout scaled up, as before). Its render heights:
 1440 = DLAA, 960 = Quality, 840 = Balanced, 720 = Performance, 480 = Ultra Performance. With the game's TAA the
 output stays 4K.
 "Frame generation" (DLSS, 2x to 6x; NVIDIA RTX 40 or newer, 3x and up RTX 50) uses NVIDIA's Streamline
@@ -222,7 +224,7 @@ shortcut):
 | `-Set KYTY_ALL_LANGUAGES=0` | Demon's Souls' language settings offer every language the package has, in every region: the text of 23 (a US game Russian, Japanese or Korean too) and the voices of 9 (English, French, German, Italian, Spanish, Japanese, Brazilian Portuguese, Latin American Spanish; British English speaks English); this keeps only the console region's |
 | `-RenderHeight 1080` | The height the game renders its 3D at (360–2160; below 720 is meant for the 1080p output, `-HdOutput`, e.g. 540 = DLSS Performance there): lower is faster on a slow graphics card and less sharp. Without it the height follows the window, at most 1440 as on the PS5 (1080 on a 1080p screen) |
 | `-HdOutput` | The game's own 1080p output (the launcher's "Game output: 1080p"): post-processing and HUD at 1920×1080, the 3D at most 1080 high; with `-Upscaler dlss`, DLSS makes the 1080p picture from it. Without it (and without `-RenderHeight`, `-Upscaler` or `-Aspect`) the game takes it by itself for a window or screen at most 1080 lines high; `-Set KYTY_HD_OUTPUT=0` keeps the 4K output |
-| `-OutputHeight 1440` | With `-Upscaler dlss` or `-Upscaler fsr`: the PS5 Pro path's output at that height (1080–2159, 16:9; 2560×1440 for 1440, the launcher's "Game output: 1440p"), the HUD in the game's HD layout scaled to it; `-RenderHeight` picks the mode (1440 DLAA, 960 Quality, 840 Balanced, 720 Performance, 480 Ultra Performance) |
+| `-OutputHeight 1440` | With `-Upscaler dlss` or `-Upscaler fsr`: the PS5 Pro path's output at that height (1080–2159, 16:9; 2560×1440 for 1440, the launcher's "Game output: 1440p"), the HUD in the game's 4K layout at that size; `-RenderHeight` picks the mode (1440 DLAA, 960 Quality, 840 Balanced, 720 Performance, 480 Ultra Performance) |
 | `-Aspect 21:9` | The 3D rendered wider (`21:9` or `32:9`) for ultrawide displays; the HUD keeps its shape at the sides; in-game menus, movies and loading screens are stretched to the width (with `-AspectFit` too: movies, the title and loading screens keep their 16:9, with black bars at the sides) |
 | `-Quality low` | How much the game draws: `low` or `lowest` (shorter shadows, simpler distant detail), faster where the processor limits the frame rate |
 | `-TextureReduce 2` | Large textures without their largest levels: `1` half the size per side (the default with less than 12 GB of video memory), `2` a quarter, `0` whole |
