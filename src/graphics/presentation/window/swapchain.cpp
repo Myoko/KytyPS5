@@ -1057,13 +1057,14 @@ void Swapchain::Create() {
 	create_info.clipped          = VK_TRUE;
 #if defined(_WIN32)
 	// KYTY_FULLSCREEN_EXCLUSIVE (GraphicContext::full_screen_exclusive, issue #166): exclusive fullscreen disallowed or
-	// allowed. (VkSurfaceFullScreenExclusiveInfoEXT is vulkan_win32.h's, not included here: its layout.)
+	// allowed. (VkSurfaceFullScreenExclusiveInfoEXT is vulkan_win32.h's, not included here: its layout.) The AMD default
+	// stays out of FSR's frame generation swapchain, which makes its own from this description.
 	struct {
 		VkStructureType sType                 = VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT;
 		const void*     pNext                 = nullptr;
 		int32_t         full_screen_exclusive = 0; // VkFullScreenExclusiveEXT: 1 allowed, 2 disallowed
 	} exclusive;
-	if (graphics.full_screen_exclusive >= 0) {
+	if (graphics.full_screen_exclusive >= 0 && !(graphics.full_screen_exclusive_default && FrameGen::OwnsSwapchain())) {
 		exclusive.pNext                 = create_info.pNext;
 		exclusive.full_screen_exclusive = graphics.full_screen_exclusive == 0 ? 2 : 1;
 		create_info.pNext               = &exclusive;

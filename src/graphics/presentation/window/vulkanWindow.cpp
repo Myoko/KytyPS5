@@ -1210,9 +1210,9 @@ static void VulkanGetExtensions(SDL_Window* window, VulkanExtensions& r) {
 	}
 
 #if defined(_WIN32)
-	// KYTY_FULLSCREEN_EXCLUSIVE (issue #166): VK_EXT_full_screen_exclusive needs this instance extension.
-	if (FullscreenExclusiveRequest() >= 0 &&
-	    HasExtension(r.available_extensions, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME) &&
+	// KYTY_FULLSCREEN_EXCLUSIVE (issue #166): VK_EXT_full_screen_exclusive needs this instance extension. (Unset too:
+	// an AMD GPU, known only after the instance, keeps out of exclusive fullscreen by default.)
+	if (HasExtension(r.available_extensions, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME) &&
 	    !HasExtension(r.required_extensions, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME)) {
 		r.required_extensions.push_back(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
 	}
@@ -1653,16 +1653,24 @@ void WindowContext::CreateVulkan() {
 		AntiLag::AddDeviceExtension(available_extensions, device_extensions); // (KYTY_LOW_LATENCY)
 #if defined(_WIN32)
 		// KYTY_FULLSCREEN_EXCLUSIVE (issue #166: on an RX 9060 XT fullscreen ran ~8% slower than a window until a Game Bar
-		// capture took it off the driver's own path): the swapchain then tells the driver whether exclusive fullscreen
-		// may be used (Swapchain::Create).
-		if (const int request = FullscreenExclusiveRequest();
+		// capture took it off the driver's own path; with exclusive fullscreen disallowed it ran at the window's fps): the
+		// swapchain then tells the driver whether exclusive fullscreen may be used (Swapchain::Create). Unset on an AMD
+		// GPU: disallowed; =1 allows it.
+		const int  asked      = FullscreenExclusiveRequest();
+		const bool by_default = asked < 0 && device_properties.vendorID == 0x1002u;
+		if (const int request = by_default ? 0 : asked;
 		    request >= 0 && HasExtension(available_extensions, "VK_EXT_full_screen_exclusive") &&
 		    HasExtension(r.required_extensions, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME)) {
 			device_extensions.push_back("VK_EXT_full_screen_exclusive");
-			graphic_ctx.full_screen_exclusive = request;
-			std::printf("Fullscreen: exclusive fullscreen %s (KYTY_FULLSCREEN_EXCLUSIVE=%d)\n",
-			            request == 0 ? "disallowed" : "allowed", request);
-		} else if (request >= 0) {
+			graphic_ctx.full_screen_exclusive         = request;
+			graphic_ctx.full_screen_exclusive_default = by_default;
+			if (by_default) {
+				std::printf("Fullscreen: exclusive fullscreen disallowed (AMD GPU; KYTY_FULLSCREEN_EXCLUSIVE=1 allows it)\n");
+			} else {
+				std::printf("Fullscreen: exclusive fullscreen %s (KYTY_FULLSCREEN_EXCLUSIVE=%d)\n",
+				            request == 0 ? "disallowed" : "allowed", request);
+			}
+		} else if (asked >= 0) {
 			std::printf("Fullscreen: KYTY_FULLSCREEN_EXCLUSIVE ignored: the driver lacks VK_EXT_full_screen_exclusive\n");
 		}
 #endif

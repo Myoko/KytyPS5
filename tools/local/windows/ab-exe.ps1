@@ -19,9 +19,13 @@ function Emulator { Get-Process kyty_emulator -ErrorAction SilentlyContinue | Wh
 $sums = @{}
 $order = @()
 for ($round = 1; $round -le $Rounds; $round++) { $order += if ($round % 2) { @('A', 'B') } else { @('B', 'A') } }
+# (A screenshot per launch, scene-<label>-A1.png ...: the default bench save starts in one of two places, tunnel or plain,
+# ~80 or ~87 fps at 120 Hz - compare launches at the same place.)
+$launches = @{ A = 0; B = 0 }
 foreach ($side in $order) {
 	$exe = (Resolve-Path $(if ($side -eq 'A') { $A } else { $B })).Path
-	$params = @{ Label = "$Label-$side"; Exe = $exe; KeepRunning = $true; NoWalk = $true; ShotOnly = $true; StartupSeconds = $StartupSeconds }
+	$launches[$side]++
+	$params = @{ Label = "$Label-$side$($launches[$side])"; Exe = $exe; KeepRunning = $true; NoWalk = $true; ShotOnly = $true; StartupSeconds = $StartupSeconds }
 	$switches = @($Set) + $(if ($side -eq 'A') { @($SetA) } else { @($SetB) })
 	if ($switches.Count) { $params['Set'] = $switches }
 	if ($Vblank -gt 0) { $params['Vblank'] = $Vblank }

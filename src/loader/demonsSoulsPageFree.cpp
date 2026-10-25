@@ -289,17 +289,43 @@ bool DiscardLocked(uint64_t address, uint64_t size, uint64_t* given) {
 void TrimGuest(uint64_t address, uint64_t size) {
 	(void)VirtualUnlock(reinterpret_cast<void*>(address), size);
 }
+
+// How long the process's working set lock takes now, timed outside the allocator's lock on a page of the walker's own
+// (written, so it faults back in when trimmed, and discarded). Every discard waits for that lock, which Windows holds
+// for long stretches while it trims the process on a PC short of memory: issue #5's 16 GB PC (~2 GB left all session)
+// had its 256 KiB discards hold the allocator's lock 17 ms on average, up to 131 ms, 20-37 s in every 30 s.
+uint64_t ProbeWorkingSetNs() {
+	static auto* const page = static_cast<volatile uint8_t*>(VirtualAlloc(nullptr, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+	if (page == nullptr) return 0;
+	const int64_t start = NowNs();
+	page[0]             = static_cast<uint8_t>(page[0] + 1u);
+	(void)DiscardVirtualMemory(const_cast<uint8_t*>(page), 4096);
+	return static_cast<uint64_t>(NowNs() - start);
+}
 #endif
 
 void WalkerThread() {
 	LocalPlatform::SetThreadName("Kyty.EngineFree");
 	const bool give_back = GetMode() == Mode::GiveBack;
 	constexpr int64_t  PassNs = 2'000'000'000;
-	// 256 KiB under the lock at a time, 128 MiB a walk, and only blocks free on FreeWalks + 1 walks in a row (8-10 s): the
-	// discards wait for the process's working set lock (~0.6 ms of the allocator's lock a MiB given back, up to 8 ms at a
-	// time), and free on two walks (2-4 s) let through blocks the engine soon took again: 9.7 GB given back on a tour
-	// where at most 2-4 GB were free at once, the lock held up to 1.4 s in 30 s.
-	constexpr uint64_t Chunk = uint64_t {256} << 10u, PassBudget = uint64_t {128} << 20u, FreeWalks = 4;
+	// 256 KiB under the lock at a time, 128 MiB a walk, and only blocks free on FreeWalks + 1 walks in a row (~30 s): the
+	// discards wait for the process's working set lock (~0.6 ms of the allocator's lock a MiB given back here, up to 8 ms
+	// at a time), and blocks free for less were often the engine's again soon after (issue #5: 13.5 GB given back in a
+	// session where at most 2-4 GB were free at once, each page given back and faulted in again several times).
+	constexpr uint64_t Chunk = uint64_t {256} << 10u, PassBudget = uint64_t {128} << 20u, FreeWalks = 14;
+	// A pass's discards hold the allocator's lock LockBudgetNs at most in all (2.5% of the time), a chunk at a time. Before
+	// it, the working set lock is timed (ProbeWorkingSetNs); a chunk that held the lock SlowChunkNs or more ends it. A pass
+	// whose probe took SlowProbeNs or more or whose chunks held the lock SlowAverageNs or more on average is a slow one:
+	// two in a row pause the giving back for PauseWalks walks (30 s), twice as long each time again up to MaxPauseWalks
+	// (2 min). The engine's threads wait for that lock whenever they allocate or free, and on a PC short of memory every
+	// discard waits for Windows: issue #5's chunks held it 17 ms on average, 20-37 s in every 30 s. (Here, with 100 GB
+	// free, a chunk takes ~0.15 ms, and 4-9 ms while a world streams in: the backing view's discards, of a section the
+	// game's mappings change all the time.)
+	constexpr uint64_t LockBudgetNs = 50'000'000, SlowChunkNs = 20'000'000, SlowAverageNs = 8'000'000;
+	constexpr uint64_t SlowProbeNs  = 2'000'000;
+	constexpr uint64_t PauseWalks = 15, MaxPauseWalks = 60;
+	[[maybe_unused]] uint64_t pause = PauseWalks, resume_walk = 0, slow_passes = 0;
+	uint64_t                  paused = 0, slowest_ns = 0; // (since the last report)
 	// (address, size) of a free block -> the walk that first found it free, and whether its pages were given back.
 	struct Seen {
 		uint64_t first = 0;
@@ -354,11 +380,20 @@ void WalkerThread() {
 		          [](const auto& a, const auto& b) { return a.first.size > b.first.size; });
 		uint64_t budget = PassBudget;
 #if defined(_WIN32)
+		uint64_t pass_hold_ns = 0, chunks = 0;
+		bool     slow = false, ended = false;
+		if (!candidates.empty() && walk >= resume_walk) {
+			const auto probe = ProbeWorkingSetNs();
+			slowest_ns       = std::max(slowest_ns, probe);
+			slow             = probe >= SlowProbeNs;
+		}
 		for (auto& [run, given_flag]: candidates) {
-			if (budget == 0 || g_stop.load(std::memory_order_relaxed)) break;
+			if (walk < resume_walk || slow || ended || budget == 0 || pass_hold_ns >= LockBudgetNs ||
+			    g_stop.load(std::memory_order_relaxed))
+				break;
 			bool whole = true;
 			for (uint64_t at = 0; at < run.size; at += Chunk) {
-				if (budget == 0 || !LockAllocator(20)) {
+				if (budget == 0 || pass_hold_ns >= LockBudgetNs || !LockAllocator(20)) {
 					whole = false;
 					break;
 				}
@@ -373,7 +408,10 @@ void WalkerThread() {
 				UnlockAllocator();
 				const auto took = static_cast<uint64_t>(NowNs() - held);
 				hold_ns += took;
+				pass_hold_ns += took;
+				chunks++;
 				hold_max_ns = std::max(hold_max_ns, took);
+				slowest_ns  = std::max(slowest_ns, took);
 				if (!free) {
 					whole = false;
 					break;
@@ -382,9 +420,24 @@ void WalkerThread() {
 				given_total += given;
 				given_report += given;
 				budget -= std::min(budget, bytes);
+				if (took >= SlowChunkNs) {
+					whole = at + bytes >= run.size;
+					ended = true;
+					break;
+				}
 				std::this_thread::yield();
 			}
 			if (whole) *given_flag = true;
+		}
+		slow = slow || (chunks != 0 && pass_hold_ns >= SlowAverageNs * chunks);
+		if (slow && ++slow_passes >= 2) {
+			resume_walk = walk + pause;
+			pause       = std::min(pause * 2, MaxPauseWalks);
+			slow_passes = 0;
+			paused++;
+		} else if (!slow && chunks != 0) {
+			slow_passes = 0;
+			pause       = PauseWalks;
 		}
 #endif
 		seen.swap(now_seen);
@@ -394,17 +447,18 @@ void WalkerThread() {
 				free_bytes += run.size;
 			std::printf("Engine frees: %llu free blocks, %.0f MiB, on the last walk (%llu+%llu pages, the allocator counts "
 			            "%llu+%llu: %s); %s %.0f MiB in 30 s (%.0f MiB since start), the allocator's lock held %.1f ms (at most "
-			            "%.2f ms)\n",
+			            "%.2f ms); paused %llu time(s) while Windows' memory manager was slow (the slowest step %.2f ms)\n",
 			            static_cast<unsigned long long>(runs.size()), static_cast<double>(free_bytes) / 1048576.0,
 			            static_cast<unsigned long long>(totals.pages[0]), static_cast<unsigned long long>(totals.pages[1]),
 			            static_cast<unsigned long long>(totals.counted_pages[0]),
 			            static_cast<unsigned long long>(totals.counted_pages[1]), counts_match ? "the same" : "DIFFERENT",
 			            give_back ? "given back" : "walked only, would give back", static_cast<double>(given_report) / 1048576.0,
 			            static_cast<double>(given_total) / 1048576.0, static_cast<double>(hold_ns) / 1e6,
-			            static_cast<double>(hold_max_ns) / 1e6);
+			            static_cast<double>(hold_max_ns) / 1e6, static_cast<unsigned long long>(paused),
+			            static_cast<double>(slowest_ns) / 1e6);
 			std::fflush(stdout);
-			given_report = hold_ns = hold_max_ns = 0;
-			report_at                            = now + 30'000'000'000;
+			given_report = hold_ns = hold_max_ns = paused = slowest_ns = 0;
+			report_at                                                  = now + 30'000'000'000;
 		}
 	}
 }
@@ -434,7 +488,7 @@ void Install(Program* program) {
 		std::printf("Engine frees: the page allocator (free at eboot+0x%llx, lock eboot+0x%llx): free blocks %s (KYTY_ENGINE_FREE)\n",
 		            static_cast<unsigned long long>(site - program->base_vaddr),
 		            static_cast<unsigned long long>(g_lock - program->base_vaddr),
-		            GetMode() == Mode::GiveBack ? "free for 8-10 s given back" : "walked");
+		            GetMode() == Mode::GiveBack ? "free for ~30 s given back" : "walked");
 		return;
 	}
 	const auto requested = program->base_vaddr + CaveOffset;

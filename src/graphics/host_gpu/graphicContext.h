@@ -35,9 +35,10 @@ struct GraphicContext {
 	// VK_EXT_memory_priority, enabled only for KYTY_SIMULATE_VRAM_MB (vma.cpp).
 	bool                               memory_priority_enabled               = false;
 	// KYTY_FULLSCREEN_EXCLUSIVE=0|1 (Windows, issue #166): the swapchain asks the driver to keep out of exclusive
-	// fullscreen (0) or allows it (1), through VK_EXT_full_screen_exclusive; -1 (unset, or the extension missing): the
-	// driver's own choice.
+	// fullscreen (0) or allows it (1), through VK_EXT_full_screen_exclusive; -1 (unset on a GPU other than AMD's, or
+	// the extension missing): the driver's own choice. Unset on an AMD GPU: 0, full_screen_exclusive_default.
 	int                                full_screen_exclusive                 = -1;
+	bool                               full_screen_exclusive_default         = false;
 	bool                               compute_subgroup_size_control_enabled = false;
 	// A pipeline may require 64-lane subgroups of its pixel shader (KYTY_PS_WAVE64).
 	bool                               fragment_wave64_requirable            = false;

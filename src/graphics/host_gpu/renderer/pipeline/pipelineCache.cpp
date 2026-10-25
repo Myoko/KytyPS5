@@ -717,11 +717,12 @@ struct PipelineCache::ProgramCache {
 			std::optional<ShaderRecompiler::IR::ResourcePlan> plan;
 			std::vector<PrefetchedModule>                     modules;
 			// The plan in the scratch file instead (zstd-compressed ResourcePlanSerial bytes): `plan` stays empty until
-			// the game takes the group over (LoadSpilledPlan). Its linear SRT plan stays here: rebuilding it (its code
-			// generated) took up to ~1 ms of the render thread's per plan; the plan's values ~0.2.
+			// the game takes the group over (LoadSpilledPlan). Its linear SRT plan stays here where PrefetchKeepsLinear:
+			// rebuilding it (its code generated) took up to ~1 ms of the render thread's per plan; the plan's values ~0.2.
 			uint64_t                                                          plan_offset = 0;
 			uint32_t                                                          plan_bytes = 0, plan_raw = 0;
 			std::shared_ptr<const ShaderRecompiler::IR::LinearSrtPlan>       plan_linear;
+			bool plan_linear_dropped = false; // (not PrefetchBuildsLinear: LoadSpilledPlan makes it)
 		};
 		~Prefetch() {
 			{
@@ -808,7 +809,7 @@ struct PipelineCache::ProgramCache {
 		// workers as they finish them.
 		std::array<std::atomic<uint64_t>, PrefetchMemoryParts> memory {};
 		// Plans written to the scratch file (SpillPlan) and their bytes there.
-		std::atomic<uint64_t> spilled_plans {0}, spilled_plan_bytes {0};
+		std::atomic<uint64_t> spilled_plans {0}, spilled_plan_bytes {0}, dropped_linear {0};
 	};
 	std::unique_ptr<Prefetch> prefetch;
 	// `prefetch` for threads without the pipeline cache's lock (GetPrefetchProgress, the live report): a warmup beside
@@ -1049,9 +1050,11 @@ struct PipelineCache::ProgramCache {
 				                 mib(MemPlanValues), mib(MemPlanMemoryInfo), mib(MemPlanOther), mib(MemPlanInfo), mib(MemModuleInfo),
 				                 mib(MemModuleTable), mib(MemModuleBda), mib(MemModuleBindings), mib(MemModuleSpecialization),
 				                 mib(MemGroup));
-				PipelineCacheLog("Shader prefetch: {} plans in the temporary file ({} MiB compressed)",
+				PipelineCacheLog("Shader prefetch: {} plans in the temporary file ({} MiB compressed); the linear SRT plans "
+				                 "of {} made at their programs' first use",
 				                 p.spilled_plans.load(std::memory_order_relaxed),
-				                 p.spilled_plan_bytes.load(std::memory_order_relaxed) >> 20u);
+				                 p.spilled_plan_bytes.load(std::memory_order_relaxed) >> 20u,
+				                 p.dropped_linear.load(std::memory_order_relaxed));
 			}
 		}
 	}
@@ -1118,22 +1121,49 @@ struct PipelineCache::ProgramCache {
 		}();
 		return enabled;
 	}
+	// Whether a spilled plan's linear SRT plan stays in memory (KYTY_PREFETCH_LINEAR=1|0; default: not with 20 GiB of
+	// RAM or less). Kept, it is ready the moment the game first uses the program; but the prefetch translates every
+	// program of the game and a session uses few of them: 16 GB simulated, 1-1 for 6 min, 21,785 prefetched, ~1,000
+	// taken, and the kept plans' nodes were the heap's largest part (~300 MB; their code stays in the JIT arena for the
+	// session too). Not kept, the prefetch does not make it: LoadSpilledPlan does when the plan comes back, ~0.4 ms of
+	// the render thread's each.
+	static bool PrefetchKeepsLinear() {
+		static const bool keeps = [] {
+			const char* value = std::getenv("KYTY_PREFETCH_LINEAR");
+			if (value != nullptr && *value != '\0') return *value != '0';
+			const auto ram = LocalPlatform::PhysicalMemory();
+			return ram == 0 || ram > (uint64_t {20} << 30u);
+		}();
+		return keeps;
+	}
+	// Whether PrefetchTranslate makes the plans' linear SRT plans: not where they would leave memory with the plans.
+	static bool PrefetchBuildsLinear() { return PrefetchKeepsLinear() || !PlanSpillEnabled(); }
 	void SpillPlan(Prefetch& p, Prefetch::Group& group) {
 		if (!group.plan || !PlanSpillEnabled()) return;
+		// (A plan that stays in memory after all gets the linear SRT plan PrefetchTranslate left out.)
+		if (!WritePlan(p, group) && !PrefetchBuildsLinear() && !group.plan->linear_srt)
+			ShaderRecompiler::IR::BuildLinearSrtPlan(*group.plan);
+	}
+	bool WritePlan(Prefetch& p, Prefetch::Group& group) {
 		std::vector<uint8_t> bytes;
-		if (!ResourcePlanSerial::Save(*group.plan, bytes) || bytes.size() > UINT32_MAX) return;
+		if (!ResourcePlanSerial::Save(*group.plan, bytes) || bytes.size() > UINT32_MAX) return false;
 		const auto packed = ZstdPack(bytes.data(), bytes.size());
-		if (packed.empty()) return;
+		if (packed.empty()) return false;
 		const auto packed_size = packed.size();
 		const auto offset      = p.spill_end.fetch_add(packed_size, std::memory_order_relaxed);
-		if (!LocalPlatform::WriteScratchFile(p.spill, offset, packed.data(), packed_size)) return;
+		if (!LocalPlatform::WriteScratchFile(p.spill, offset, packed.data(), packed_size)) return false;
 		group.plan_offset = offset;
 		group.plan_bytes  = static_cast<uint32_t>(packed_size);
 		group.plan_raw    = static_cast<uint32_t>(bytes.size());
 		group.plan_linear = std::move(group.plan->linear_srt); // (made from the plan alone: no reference into it)
+		if (!PrefetchBuildsLinear()) {
+			group.plan_linear_dropped = true; // (made when the plan comes back: LoadSpilledPlan)
+			p.dropped_linear.fetch_add(1, std::memory_order_relaxed);
+		}
 		group.plan.reset();
 		p.spilled_plans.fetch_add(1, std::memory_order_relaxed);
 		p.spilled_plan_bytes.fetch_add(packed_size, std::memory_order_relaxed);
+		return true;
 	}
 	// The plan SpillPlan wrote, back in the group (render thread, the group taken over); false when it cannot be read.
 	bool LoadSpilledPlan(Prefetch::Group& group) {
@@ -1149,8 +1179,14 @@ struct PipelineCache::ProgramCache {
 		bool                               linear = false;
 		if (!ResourcePlanSerial::Load(bytes, plan, &linear)) return false;
 		const auto values = std::chrono::steady_clock::now();
-		if (linear != (group.plan_linear != nullptr)) return false;
-		plan.linear_srt = std::move(group.plan_linear);
+		if (group.plan_linear_dropped) {
+			// (Left out by PrefetchTranslate: made now as ExtractResourcePlan ends, from the plan alone; a plan it fails
+			// for stays with the interpreter.)
+			ShaderRecompiler::IR::BuildLinearSrtPlan(plan);
+		} else {
+			if (linear != (group.plan_linear != nullptr)) return false;
+			plan.linear_srt = std::move(group.plan_linear);
+		}
 		group.plan.emplace(std::move(plan));
 		const auto end = std::chrono::steady_clock::now();
 		prefetch->plan_read_ms += std::chrono::duration<double, std::milli>(read - begin).count();
@@ -1181,7 +1217,8 @@ struct PipelineCache::ProgramCache {
 				// Inputs the recompiler rejects (code the game never runs) are left out, as the precompile did.
 				Common::RecoverableExitScope recoverable;
 				auto translated = ShaderRecompiler::TranslateProgram(record.code, options);
-				if (!group.plan) group.plan.emplace(ShaderRecompiler::IR::ExtractResourcePlan(translated.program));
+				if (!group.plan)
+					group.plan.emplace(ShaderRecompiler::IR::ExtractResourcePlan(translated.program, PrefetchBuildsLinear()));
 				ShaderRecompiler::IR::CanonicalizeSpecialization(translated.program.info, record.specialization);
 				auto result = ShaderRecompiler::CompileProgram(std::move(translated), options, record.specialization,
 				                                               record.push_cursor);
@@ -1685,7 +1722,10 @@ struct PipelineCache::ProgramCache {
 				entry = programs.try_emplace(lookup_key, std::move(*group->plan)).first;
 				entry->second.source_digest = group->source;
 				entry->second.prefetched = std::move(group->modules);
-				entry->second.plan_spilled = {prefetch->spill, group->plan_offset, group->plan_bytes, group->plan_raw};
+				// (Bytes written without the linear SRT plan LoadSpilledPlan made since are not the plan's now: a sweep
+				// writes its own, else a plan brought back would not match the linear SRT plan kept for it.)
+				if (!group->plan_linear_dropped)
+					entry->second.plan_spilled = {prefetch->spill, group->plan_offset, group->plan_bytes, group->plan_raw};
 				entry->second.plan_use     = plan_clock;
 				group->plan.reset();
 			}
