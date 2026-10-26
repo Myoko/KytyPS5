@@ -121,6 +121,9 @@ static class Strings {
 
 		{"game.title", "Game"}, {"game.console", "Console"}, {"game.controller", "Controller"}, {"game.cheats", "Cheats"},
 		{"language", "Console language"}, {"language.desc", "The language the game is told; it decides which text and voices it has."},
+		{"audiooutput", "Audio output"}, {"audiooutput.tv", "TV"}, {"audiooutput.headphones", "Headphones"},
+		{"audiooutput.amplifier", "AV amplifier"}, {"audiooutput.soundbar", "Soundbar"},
+		{"audiooutput.desc", "What the game is told its sound goes to, as on a PS5. The game mixes its sound for it and shows it in Settings > Sound."},
 		{"reopen", "Back to the launcher after the game"},
 		{"reopen.desc", "The launcher waits in the background while the game runs and comes back when it ends, for another start with other settings. Off: it closes when the game starts."},
 		{"padspeaker", "Controller speaker"},
@@ -275,6 +278,9 @@ static class Strings {
 
 		{"game.title", "游戏"}, {"game.console", "主机"}, {"game.controller", "手柄"}, {"game.cheats", "作弊"},
 		{"language", "主机语言"}, {"language.desc", "告诉游戏的系统语言；游戏支持哪些文字与语音由游戏决定。"},
+		{"audiooutput", "音频输出"}, {"audiooutput.tv", "电视"}, {"audiooutput.headphones", "耳机"},
+		{"audiooutput.amplifier", "AV 功放"}, {"audiooutput.soundbar", "条形音箱"},
+		{"audiooutput.desc", "告诉游戏声音输出到哪里（与 PS5 相同）。游戏会按此混音，并显示在“设置 > 声音”中。"},
 		{"reopen", "游戏结束后回到启动器"},
 		{"reopen.desc", "游戏运行时启动器在后台等待，游戏结束后重新出现，方便换一组设置再启动。关闭：游戏启动后启动器随即关闭。"},
 		{"padspeaker", "手柄扬声器"},

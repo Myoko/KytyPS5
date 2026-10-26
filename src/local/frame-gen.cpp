@@ -1670,7 +1670,7 @@ void BeforePresent(const FrameInputs* inputs, vk::Extent2D backbuffer, vk::Rect2
 	constants.motionVectors3D     = sl::Boolean::eFalse;
 	// (A frame left unshown before this one: its motion and matrices are to the game's previous frame, not to the one
 	// presented last.)
-	const bool discontinuity      = g_discontinuity.exchange(false, std::memory_order_relaxed);
+	const bool discontinuity      = g_discontinuity.exchange(false, std::memory_order_relaxed) || (usable && inputs->cut);
 	constants.reset               = usable && !discontinuity ? sl::Boolean::eFalse : sl::Boolean::eTrue;
 	constants.orthographicProjection = sl::Boolean::eFalse;
 	constants.motionVectorsDilated   = sl::Boolean::eFalse;
@@ -1886,6 +1886,12 @@ void NoteScene() {
 	g_scene.store(true, std::memory_order_relaxed);
 }
 
+static bool g_cut = false; // Kyty.Gpu: the current guest frame's upscale started a new history (NoteCut)
+
+void NoteCut() {
+	g_cut = true;
+}
+
 bool TakeScene() {
 	const bool scene = g_scene.exchange(false, std::memory_order_relaxed);
 	g_last_scene.store(scene, std::memory_order_relaxed);
@@ -1915,8 +1921,9 @@ void OnUpscale(ImageId depth, uint64_t depth_address, ImageId motion, uint64_t m
 
 void PrepareInputs(GraphicContext& graphics, TextureCache& cache, CommandBuffer& command,
                    FrameInputs& inputs) {
-	inputs.valid = false;
-	const bool ready = g_sources.valid && g_camera.valid;
+	inputs.valid       = false;
+	inputs.cut         = std::exchange(g_cut, false);
+	const bool ready   = g_sources.valid && g_camera.valid;
 	const auto sources = g_sources;
 	const auto camera  = g_camera;
 	g_sources.valid    = false;
@@ -2620,7 +2627,7 @@ void RecordPrepare(GraphicContext& graphics, vk::CommandBuffer command, const Fr
 		s.reset   = true;
 	}
 	// (A frame left unshown before this one: its motion is to the game's previous frame, not to the one shown last.)
-	if (g_fsr_discontinuity.exchange(false, std::memory_order_relaxed)) s.reset = true;
+	if (g_fsr_discontinuity.exchange(false, std::memory_order_relaxed) || (usable && inputs->cut)) s.reset = true;
 	const auto now   = std::chrono::steady_clock::now();
 	const float delta = s.last_frame.time_since_epoch().count() == 0
 	                        ? 16.7f
@@ -2711,7 +2718,8 @@ uint32_t Generate(GraphicContext& graphics, vk::CommandBuffer command, const Fra
                   vk::Rect2D region, std::span<const UpscaleImage> outputs, bool hdr) {
 #ifdef KYTY_FRAMEGEN_NGX
 	if (!PresenterGenerates()) return 0;
-	const bool discontinuity = g_fg_discontinuity.exchange(false, std::memory_order_relaxed);
+	const bool discontinuity =
+	    g_fg_discontinuity.exchange(false, std::memory_order_relaxed) || (inputs != nullptr && inputs->cut);
 	if (inputs == nullptr || !inputs->valid) {
 		// (Menus, movies, loading: the frame shown as it is; the next one with inputs starts DLSS-G again.)
 		g_fg_history = false;

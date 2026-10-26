@@ -467,8 +467,12 @@ void CommandProcessor::DumpConstRam(uint32_t* dst, uint32_t offset, uint32_t dw_
 	memcpy(dst, m_const_ram + offset / 4, static_cast<size_t>(dw_num) * 4);
 }
 
-// A guest memory write of the command processor.
+// A guest memory write of the command processor: a label, or data the game or later work reads. The buffer copies
+// recorded before it are made first (KYTY_ASYNC_UPLOAD): the game takes a label as the GPU being done and may rewrite
+// the buffers those copies read at once, and a copy made after that took the new bytes for the earlier draws (issue
+// #196: lit ground and water flickered white; the frame boundary's wait, 5c6f80fa, came after the labels).
 static void WriteGuestMemory(void* dst, const void* src, uint32_t size) {
+	AsyncUpload::Drain();
 	std::memcpy(dst, src, size);
 }
 

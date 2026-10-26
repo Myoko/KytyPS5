@@ -97,7 +97,8 @@ extern "C" {
 	return ram != 0 && ram <= (uint64_t {20} << 30u) ? 1u : 0u;
 }()};
 // KYTY_HOT_READS (live kyty_local_hot_reads, on by default): with guard pages, the pages the game read back lately keep
-// no access instead, their page of the backing view locked in RAM (GuestAddressSpace::NoteRead). 0: guards everywhere.
+// no access instead, their page of the backing view locked in RAM (GuestAddressSpace::NoteRead), while the PC has 2 GiB
+// of RAM left or more (KYTY_HOT_READS_MIN_AVAIL_MB, GuestAddressSpace::HotReadsPressure). 0: guards everywhere.
 [[gnu::used]] volatile std::atomic_uint32_t kyty_local_hot_reads {[] {
 	const char* value = std::getenv("KYTY_HOT_READS");
 	return value != nullptr && value[0] == '0' ? 0u : 1u;
@@ -1555,7 +1556,8 @@ void InstallGpuResources(Graphics::GpuResourceManager* resources) noexcept {
 		                ? "Memory: guest pages kept from reads by no access (KYTY_READ_GUARD=1: guard pages)\n"
 		            : kyty_local_hot_reads.load(std::memory_order_relaxed) != 0
 		                ? "Memory: guest pages kept from reads by guard pages, those read back lately by no access, "
-		                  "locked in RAM (KYTY_READ_GUARD=0: no access everywhere, KYTY_HOT_READS=0: guards everywhere)\n"
+		                  "locked in RAM, while 2 GiB of RAM or more is left (KYTY_READ_GUARD=0: no access everywhere, "
+		                  "KYTY_HOT_READS=0: guards everywhere, KYTY_HOT_READS_MIN_AVAIL_MB: another limit)\n"
 		                : "Memory: guest pages kept from reads by guard pages (KYTY_READ_GUARD=0: no access)\n");
 	}
 #endif

@@ -356,6 +356,17 @@ int main(int argc, char* argv[]) {
 	std::atexit(LocalPlatform::DrainStdout);
 	std::at_quick_exit(LocalPlatform::DrainStdout);
 #endif
+#if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
+	// AMD on Linux (RADV): the transfer-only queue family, which RADV shows only when asked to, carries the readbacks of
+	// GPU work already done (KYTY_READBACK_QUEUE); without it each waited behind the whole graphics queue. Walking at 1-1
+	// on an RX 9070 XT: 44.2 -> 56.3 fps and the 0.1% lows 20 -> 27-29 (dreamerk24m); an RX 9060 XT +19% at the lowest
+	// preset (the2ndday; issue #80). Asked for before the driver loads (Mesa 26 reads RADV_EXPERIMENTAL, older Mesa
+	// RADV_PERFTEST; other drivers neither), unless the variable is set already. KYTY_RADV_TRANSFER_QUEUE=0: not asked.
+	if (const char* ask = std::getenv("KYTY_RADV_TRANSFER_QUEUE"); ask == nullptr || ask[0] != '0') {
+		setenv("RADV_EXPERIMENTAL", "transfer_queue", 0);
+		setenv("RADV_PERFTEST", "transfer_queue", 0);
+	}
+#endif
 	VirtualMemory::Init();
 	InitializeThreads();
 	// KYTY_ALLOC_TRACE=<sizes> (diagnostics, e.g. "112,64,16-256" or "1048576-33554432;2888": ',' or ';' between, sizes

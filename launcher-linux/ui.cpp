@@ -1201,6 +1201,23 @@ void LauncherWindow::GamePage() {
 		    }
 	    },
 	    T("language.desc"));
+	// What the game is told its sound goes to (KYTY_AUDIO_OUTPUT, issue #207): it mixes for it.
+	const std::vector<std::string> audio_outputs {"", "headphones", "amplifier", "soundbar"};
+	Row(
+	    "audiooutput",
+	    [&] {
+		    int index = static_cast<int>(
+		        std::find(audio_outputs.begin(), audio_outputs.end(), S().Str("audio_output")) - audio_outputs.begin());
+		    if (index >= 4) index = 0;
+		    if (Combo("##audiooutput", &index,
+		              {T("audiooutput.tv"), T("audiooutput.headphones"), T("audiooutput.amplifier"),
+		               T("audiooutput.soundbar")},
+		              340)) {
+			    S().Set("audio_output", audio_outputs[static_cast<size_t>(index)]);
+			    Changed();
+		    }
+	    },
+	    T("audiooutput.desc"));
 	Section("game.cheats");
 	Row(
 	    "cheats",

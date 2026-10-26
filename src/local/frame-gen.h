@@ -65,6 +65,9 @@ struct FrameInputs {
 	bool          motion_attachment = false; // the motion copy is a color attachment too
 	HudlessImages hudless;                   // KYTY_FG_HUDLESS
 	bool          valid       = false;
+	// The game started its upscaler's history again in this frame (a camera cut: NoteCut): no frame is generated across
+	// it, which would blend the two views.
+	bool          cut         = false;
 	// KYTY_FRAMEGEN_BACKEND=fsr: a copy of the game's interface canvas (its alpha: where the HUD is), when known.
 	VulkanImage   ui;
 	vk::ImageView ui_view  = nullptr;
@@ -161,6 +164,9 @@ void RecordHudless(GraphicContext& graphics, vk::CommandBuffer command, const Fr
 // loading screen; with or without frame generation, by the normal or the table way. The guest flip takes it
 // (Presenter::PrepareFrame): above 60 Hz the other frames keep 60 (videoOut.cpp).
 void NoteScene();
+// The guest frame's upscale (the PS5 Pro path) starts a new history: the game's own reset flag, set at a camera cut (a
+// dialogue's end, a cutscene's shots). Its flip's inputs carry it (FrameInputs::cut).
+void NoteCut();
 [[nodiscard]] bool TakeScene();
 // The current guest frame ran the TAA pass so far, or the last one flipped did (HudAnchor: the game queues a frame's
 // interface before the flip of the one before).

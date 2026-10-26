@@ -64,7 +64,7 @@ partial class MainWindow : Window {
 	int pageIndex;
 
 	TextBox gamePath, extraArgs;
-	ComboBox resolution, ratio, render, upscaler, dlssModel, output, quality, frameGen, language, hud, uiLanguage, gpu;
+	ComboBox resolution, ratio, render, upscaler, dlssModel, output, quality, frameGen, language, audioOutput, hud, uiLanguage, gpu;
 	CheckBox fullscreen, aspect, hdr, fps120, vsync, lowLatency, fsr, cheats, redzone, safeGpu, ecores, presentDirect, antiLag,
 		keepResident, fps30, padSpeaker, reopenLauncher;
 	TextBlock renderNote, outputNote, upscalerNote, frameGenNote, streamlineText, cheatState, bannerTitle, bannerLine, storeLine;
@@ -746,6 +746,10 @@ partial class MainWindow : Window {
 	FrameworkElement BuildGamePage() {
 		var languages = Strings.ConsoleLanguages.Select((name, i) => new Choice(name, i));
 		language = Combo(languages, S.Int("language"), 340);
+		// What the game is told its sound goes to (KYTY_AUDIO_OUTPUT, issue #207): it mixes for it.
+		var audioOutputs = new[] { new Choice(T("audiooutput.tv"), ""), new Choice(T("audiooutput.headphones"), "headphones"),
+			new Choice(T("audiooutput.amplifier"), "amplifier"), new Choice(T("audiooutput.soundbar"), "soundbar") };
+		audioOutput = Combo(audioOutputs, Math.Max(0, Array.FindIndex(audioOutputs, c => (string)c.Value == S.Str("audio_output"))), 340);
 		cheats = Switch(S.Bool("cheats"));
 		var choose = FlatButton("button.cheats", (s, e) => ChooseCheats());
 		choose.Margin = new Thickness(16, 0, 0, 0);
@@ -754,6 +758,7 @@ partial class MainWindow : Window {
 		return Page("game.title",
 			Section("game.console"),
 			Row("language", language, Desc(T("language.desc"))),
+			Row("audiooutput", audioOutput, Desc(T("audiooutput.desc"))),
 			Section("game.controller"),
 			Row("padspeaker", padSpeaker, Desc(T("padspeaker.desc"))),
 			Row("padvolume", SliderRow(0, 100, 5, S.Int("pad_speaker_volume"),
@@ -935,6 +940,7 @@ partial class MainWindow : Window {
 		var chosenUpscaler = Value(upscaler) as string ?? "";
 		if (!(S.Str("upscaler") == "dlss" && !context.FrameGenAvailable && chosenUpscaler.Length == 0)) S.Set("upscaler", chosenUpscaler);
 		S.Set("dlss_preset", Value(dlssModel) as string ?? "");
+		S.Set("audio_output", Value(audioOutput) as string ?? "");
 		S.Set("gpu", Value(gpu) as string ?? "");
 		if (context.FsrAvailable) S.Set("fsr", fsr.IsChecked == true);
 		S.Set("ecores", ecores.IsChecked == true);
