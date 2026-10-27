@@ -1036,10 +1036,15 @@ void LauncherWindow::GraphicsPage() {
 	}
 	upscalers.emplace_back("fsr");
 	upscaler_labels.emplace_back(T("upscaler.fsr"));
+	// (No upscaler and no anti-aliasing: Commands' KYTY_GAME_CONVARS, issue #220.)
+	upscalers.emplace_back("off");
+	upscaler_labels.emplace_back(T("upscaler.off"));
 	const auto  chosen = S().Str("upscaler");
 	std::string note;
 	if (chosen == "fsr")
 		note = T("upscaler.fsrNote");
+	else if (chosen == "off")
+		note = T("upscaler.offNote");
 	else
 		note = T(dlss_available_ ? "upscaler.ok"
 		         : !context_.rtx ? "upscaler.noRtx"
@@ -1481,9 +1486,11 @@ void LauncherWindow::ExperimentalPage() {
 std::string LauncherWindow::Summary(std::vector<std::pair<std::string, std::string>>* lines) const {
 	const auto res         = Times(S().Str("resolution"));
 	const bool dlss        = commands_.Dlss();
-	const auto upscaled_by = std::string(T(dlss                      ? "summary.dlss"
-	                                       : commands_.FsrUpscaler() ? "summary.fsr3"
-	                                                                 : "summary.taa"));
+	const auto upscaled_by =
+	    std::string(T(dlss                         ? "summary.dlss"
+	                : commands_.FsrUpscaler()      ? "summary.fsr3"
+	                : S().Str("upscaler") == "off" ? "summary.noAa"
+	                                               : "summary.taa"));
 	const bool hd          = commands_.HdOutput();
 	const bool sr          = dlss || commands_.FsrUpscaler();
 	int        height      = sr ? S().Int("render_dlss") : S().Int("render");

@@ -240,16 +240,23 @@ Launch Commands::Play(const GameInfo& game, bool direct) const {
 	auto quality = S().Str("quality");
 	for (auto& c: quality)
 		c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	std::string convars;
 	if (quality == "low" || quality == "lowest") {
 		Put(set, "KYTY_TEXTURE_REDUCE", quality == "lowest" ? "2" : "1");
 		if (game.DemonsSouls()) {
-			Put(set, "KYTY_GAME_CONVARS",
-			    quality == "low"
-			        ? "r_forceViewportHeightForPixelSizeCalc=720;sunShadowMaxDistance=125"
-			        : "r_forceViewportHeightForPixelSizeCalc=480;sunShadowMaxDistance=60;"
-			          "r_enableAmbientShadowing=false;r_enableSpotShadows=false");
+			convars = quality == "low"
+			              ? "r_forceViewportHeightForPixelSizeCalc=720;sunShadowMaxDistance=125"
+			              : "r_forceViewportHeightForPixelSizeCalc=480;sunShadowMaxDistance=60;"
+			                "r_enableAmbientShadowing=false;r_enableSpotShadows=false";
 		}
 	}
+	// Upscaler "Off" (run-windows.ps1 -Antialiasing off, issue #220): Demon's Souls' TAA off and
+	// the camera jitter TAA needs with it; the game's own upscaling stays.
+	if (S().Str("upscaler") == "off" && game.DemonsSouls()) {
+		if (!convars.empty()) convars += ";";
+		convars += "r_aaMethod=0;r_aaEnableTemporalProjectMatrixJitter=false";
+	}
+	if (!convars.empty()) Put(set, "KYTY_GAME_CONVARS", convars);
 	// Frame generation: FSR 3's (built in, any graphics card), else DLSS's (KYTY_FRAMEGEN =
 	// generated frames per frame).
 	const bool fsr_frames = S().Bool("fsr");

@@ -24,7 +24,7 @@ $resolutionsByRatio = @{
 $renderHeights = '2160 (native 4K)', '1800', '1620', '1512 (PS5 Pro)', '1440 (PS5)', '1296', '1152', '1080', '900', '720'
 # What makes the 3840x2160 image of the 3D (run-windows.ps1 -Upscaler): the game's TAA and stretch (the PS5's), or DLSS in
 # place of Sony's PS5 Pro upscaler on the game's PS5 Pro path (NVIDIA's Streamline runtime, as frame generation).
-$upscalers = 'Game (PS5)', 'DLSS (PS5 Pro path)', 'FSR 3 (PS5 Pro path)'
+$upscalers = 'Game (PS5)', 'DLSS (PS5 Pro path)', 'FSR 3 (PS5 Pro path)', 'Off (no anti-aliasing)'
 # The aspect ratio of Demon's Souls' 3D (run-windows.ps1 -Aspect): wider sees more to the sides.
 $ratios = '16:9 (PS5)', '21:9', '32:9'
 # Demon's Souls' own settings for what a frame draws (run-windows.ps1 -Quality): shorter shadows, simpler distant detail;
@@ -384,6 +384,8 @@ function Get-PlayCommand {
 	if ($fsrOn) { $arguments += '-Fsr' }
 	if (!$fsrOn -and $frameGenAvailable -and [int]$settings.framegen -ge 2) { $arguments += @('-FrameGen', ([int]$settings.framegen - 1)) }
 	if ($dlss) { $arguments += @('-Upscaler', 'dlss') } elseif ($fsrUpscaler) { $arguments += @('-Upscaler', 'fsr') }
+	# (Off: Demon's Souls' TAA and its camera jitter off, the game's own upscaling kept; issue #220.)
+	elseif ($settings.upscaler -eq 'off') { $arguments += @('-Antialiasing', 'off') }
 	# (DLSS makes the 4K output: the 1080p output only with the game's own upscale.)
 	if (Test-HdOutput) { $arguments += '-HdOutput' }
 	# Game output 1440p, with DLSS or FSR 3 only: the PS5 Pro path's output at 2560x1440 (KytyLauncher.exe's Commands.Output1440).
@@ -610,7 +612,7 @@ function Update-RenderNote {
 	$capped = (Test-HdOutputShown) -and $h -gt 1080
 	if ($capped) { $h = 1080 }
 	# (DLSS's 4K output takes 1080 at least.)
-	$raised = $upscaler.SelectedIndex -ge 1 -and !(Test-HdOutputShown) -and $h -lt 1080 -and $h -ne 720
+	$raised = $upscaler.SelectedIndex -in 1, 2 -and !(Test-HdOutputShown) -and $h -lt 1080 -and $h -ne 720
 	if ($raised) { $h = 1080 }
 	$w = [Math]::Floor($h * (Get-RatioAspect) / 8.0 + 0.5) * 8
 	$renderNote.Text = if ($capped) { "Demon's Souls' 3D at ${w}x${h} (1080 at most with the 1080p output)" } elseif ($raised) { "Demon's Souls' 3D at ${w}x${h} (1080 at least with DLSS's 4K output)" } else { "Demon's Souls' 3D at ${w}x${h}; higher = sharper, needs more GPU" }
@@ -630,7 +632,7 @@ $ratio.Add_SelectedIndexChanged({
 })
 $upscaler = New-Object System.Windows.Forms.ComboBox -Property @{ DropDownStyle = 'DropDownList'; Width = 205 }
 $upscaler.Items.AddRange($upscalers)
-$upscaler.SelectedIndex = if ($frameGenAvailable -and $settings.upscaler -eq 'dlss') { 1 } elseif ($settings.upscaler -eq 'fsr') { 2 } else { 0 }
+$upscaler.SelectedIndex = if ($frameGenAvailable -and $settings.upscaler -eq 'dlss') { 1 } elseif ($settings.upscaler -eq 'fsr') { 2 } elseif ($settings.upscaler -eq 'off') { 3 } else { 0 }
 $upscalerNote = New-Object System.Windows.Forms.Label -Property @{ AutoSize = $true; ForeColor = 'Gray'; Margin = '6,6,0,0' }
 function Update-UpscalerNote {
 	$upscalerNote.Text = if ($frameGenAvailable) { 'DLSS: NVIDIA RTX; 1440 = Quality, 1080 = Performance, 2160 = DLAA' }
@@ -644,11 +646,12 @@ Update-UpscalerNote
 	"at 1512, the PS5 Pro's; 1080 at least) made a 3840x2160 image the game finishes at 4K (bloom, depth of field, the HUD).`n" +
 	"Sharper than the stretch, at some GPU cost. The in-game Cinematic mode stays native 4K without DLSS.`n" +
 	"Each upscaler keeps its own render height. DLSS starts at 1080: on an RTX 5090 about the frame rate of the game's TAA`n" +
-	"at 1440, with a sharper 4K image.")
+	"at 1440, with a sharper 4K image.`n" +
+	"Off: the game's TAA and its camera jitter off: sharper and steadier, with jagged edges and shimmer on fine detail.")
 $upscaler.Add_SelectedIndexChanged({
 	# The height chosen goes back to the upscaler it was for; the newly chosen one's is shown.
 	if ($script:renderForDlss) { $settings.render_dlss = $script:renderWanted } else { $settings.render = $script:renderWanted }
-	$script:renderForDlss = $upscaler.SelectedIndex -ge 1
+	$script:renderForDlss = $upscaler.SelectedIndex -in 1, 2
 	$script:renderWanted = [int]$(if ($script:renderForDlss) { $settings.render_dlss } else { $settings.render })
 	Select-RenderHeight
 	Update-RenderNote
@@ -804,7 +807,8 @@ function Read-Form {
 	# (Kept as it was where the DLLs are missing.)
 	if ($frameGenAvailable) { $settings.framegen = if ($frameGen.SelectedIndex -gt 0) { $frameGen.SelectedIndex + 1 } else { 0 } }
 	# (DLSS kept as it was where its DLLs are missing; FSR 3 and the game's own anywhere.)
-	if ($upscaler.SelectedIndex -eq 2) { $settings.upscaler = 'fsr' }
+	if ($upscaler.SelectedIndex -eq 3) { $settings.upscaler = 'off' }
+	elseif ($upscaler.SelectedIndex -eq 2) { $settings.upscaler = 'fsr' }
 	elseif ($upscaler.SelectedIndex -eq 1) { if ($frameGenAvailable) { $settings.upscaler = 'dlss' } }
 	elseif ($frameGenAvailable -or $settings.upscaler -ne 'dlss') { $settings.upscaler = '' }
 	if ($fsrAvailable) { $settings.fsr = $fsr.Checked }

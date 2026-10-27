@@ -27,6 +27,7 @@
 #include "loader/demonsSoulsSuperResolution.h"
 #include "loader/demonsSoulsLoaderGuard.h"
 #include "loader/demonsSoulsTextureMips.h"
+#include "loader/demonsSoulsEnginePools.h"
 #include "loader/demonsSoulsTouchGuard.h"
 #include "loader/elf.h"
 #include "loader/gamePatch.h"
@@ -1633,6 +1634,7 @@ void RuntimeLinker::Execute(const std::filesystem::path& game_patch) {
 	DemonsSoulsTouchGuard::Install(m_programs.empty() ? nullptr : m_programs.front());
 	DemonsSoulsLoaderGuard::Install(m_programs.empty() ? nullptr : m_programs.front());
 	DemonsSoulsTextureMips::Install(m_programs.empty() ? nullptr : m_programs.front());
+	DemonsSoulsEnginePools::Install(m_programs.empty() ? nullptr : m_programs.front());
 	DemonsSoulsLanguages::Install(m_programs.empty() ? nullptr : m_programs.front());
 	StartAllModules();
 

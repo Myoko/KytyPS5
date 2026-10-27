@@ -106,6 +106,8 @@ sealed class Commands {
 		if (!fsrOn && context.FrameGenAvailable && frameGen >= 2) arguments.AddRange(new[] { "-FrameGen", Number(frameGen - 1) });
 		if (dlss) arguments.AddRange(new[] { "-Upscaler", "dlss" });
 		else if (FsrUpscaler) arguments.AddRange(new[] { "-Upscaler", "fsr" });
+		// No anti-aliasing: Demon's Souls' TAA and its camera jitter off (the game's own upscaling stays).
+		else if (S.Str("upscaler") == "off") arguments.AddRange(new[] { "-Antialiasing", "off" });
 		// (With DLSS too: its PS5 Pro path then makes the 1080p output, the 3D at most 1080 high.)
 		if (HdOutput) arguments.Add("-HdOutput");
 		else if (Output1440) arguments.AddRange(new[] { "-OutputHeight", "1440" });

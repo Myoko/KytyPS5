@@ -517,6 +517,8 @@ partial class MainWindow : Window {
 		var upscalers = new List<Choice> { new Choice(T("upscaler.game"), "") };
 		if (context.FrameGenAvailable) upscalers.Add(new Choice(T("upscaler.dlss"), "dlss"));
 		upscalers.Add(new Choice(T("upscaler.fsr"), "fsr"));
+		// (No upscaler and no anti-aliasing: run-windows.ps1 -Antialiasing off, issue #220.)
+		upscalers.Add(new Choice(T("upscaler.off"), "off"));
 		upscaler = Combo(upscalers, Math.Max(0, upscalers.FindIndex(c => (string)c.Value == S.Str("upscaler"))));
 		upscalerNote = Desc("");
 		render = new ComboBox();
@@ -544,7 +546,7 @@ partial class MainWindow : Window {
 			if (building) return;
 			// The height chosen goes back to the upscaler it was for; the newly chosen one's is shown.
 			S.Set(renderForDlss ? "render_dlss" : "render", renderWanted);
-			renderForDlss = (Value(upscaler) as string ?? "").Length != 0;
+			renderForDlss = Value(upscaler) as string == "dlss" || Value(upscaler) as string == "fsr";
 			renderWanted = renderForDlss ? S.Int("render_dlss") : S.Int("render");
 			dlssModel.IsEnabled = Value(upscaler) as string == "dlss";
 			UpdateUpscalerNote();
@@ -721,6 +723,7 @@ partial class MainWindow : Window {
 		// (DLSS with FSR 3 frame generation: that runs without Streamline, so the emulator upscales with FSR 3 instead.)
 		var fsrFrameGen = fsr != null ? fsr.IsChecked == true : context.FsrAvailable && S.Bool("fsr");
 		upscalerNote.Text = chosen == "fsr" ? T("upscaler.fsrNote")
+		                    : chosen == "off" ? T("upscaler.offNote")
 		                    : chosen == "dlss" && fsrFrameGen ? T("upscaler.dlssFsrFg")
 		                    : T(context.FrameGenAvailable ? "upscaler.ok" : !context.RtxGpu ? "upscaler.noRtx" : "upscaler.noStreamline");
 	}
@@ -954,7 +957,8 @@ partial class MainWindow : Window {
 	void UpdateSummary() {
 		var res = S.Str("resolution").Replace("x", "×");
 		var dlss = commands.Dlss;
-		var upscaledBy = dlss ? T("summary.dlss") : commands.FsrUpscaler ? T("summary.fsr3") : T("summary.taa");
+		var upscaledBy = dlss ? T("summary.dlss") : commands.FsrUpscaler ? T("summary.fsr3")
+		                 : S.Str("upscaler") == "off" ? T("summary.noAa") : T("summary.taa");
 		var hdOutput = commands.HdOutput;
 		var output1440 = !hdOutput && commands.Output1440;
 		var superResolution = dlss || commands.FsrUpscaler;

@@ -67,7 +67,7 @@ static class Strings {
 		{"fsr.none", "AMD FSR 3: amd_fidelityfx_vk.dll is not next to the emulator (README)"},
 
 		{"summary.window", "{0} window"}, {"summary.fullscreen", "{0} fullscreen"}, {"summary.render", "3D {0}p"},
-		{"summary.taa", "game's TAA"}, {"summary.dlss", "DLSS"}, {"summary.fsr3", "FSR 3"}, {"summary.fg", "frame generation {0}"},
+		{"summary.taa", "game's TAA"}, {"summary.noAa", "no anti-aliasing"}, {"summary.dlss", "DLSS"}, {"summary.fsr3", "FSR 3"}, {"summary.fg", "frame generation {0}"},
 		{"summary.fsr", "FSR 3 frame generation"}, {"summary.hd", "1080p output"}, {"summary.1440", "1440p output"}, {"summary.hdr", "HDR"},
 		{"summary.vsync", "VSync"}, {"summary.fps120", "up to 120 fps"},
 
@@ -94,6 +94,7 @@ static class Strings {
 		{"render.native", "native 4K"}, {"render.pro", "PS5 Pro"}, {"render.ps5", "PS5"},
 		{"upscaler", "Upscaler"}, {"upscaler.game", "Game (PS5)"}, {"upscaler.dlss", "DLSS (PS5 Pro path)"}, {"upscaler.fsr", "FSR 3 (PS5 Pro path)"},
 		{"upscaler.fsrNote", "AMD FSR 3 in place of Sony's PS5 Pro upscaler, on any graphics card (built in, nothing to download): sharper than the game's stretch. Each render height shows the mode it runs in with the chosen game output."},
+		{"upscaler.off", "Off (no anti-aliasing)"}, {"upscaler.offNote", "Demon's Souls without its own anti-aliasing (TAA) and the camera jitter that comes with it: a sharper, steadier picture, with jagged edges and shimmer on fine detail. The 3D at the render height below, stretched to the output as the game does."},
 		{"fsr.native", "Native AA"},
 		{"upscaler.dlssFsrFg", "With FSR 3 frame generation on, DLSS cannot run (FSR's frame generation works without NVIDIA's Streamline, which DLSS needs): the game uses FSR 3 upscaling instead. Turn FSR frame generation off to use DLSS."},
 		{"upscaler.ok", "DLSS in place of Sony's PS5 Pro upscaler: sharper than the game's stretch. Each render height shows the DLSS mode it runs in with the chosen game output."},
@@ -224,7 +225,7 @@ static class Strings {
 		{"fsr.none", "AMD FSR 3：模拟器旁没有 amd_fidelityfx_vk.dll（见说明文档）"},
 
 		{"summary.window", "窗口 {0}"}, {"summary.fullscreen", "全屏 {0}"}, {"summary.render", "3D {0}p"},
-		{"summary.taa", "游戏 TAA"}, {"summary.dlss", "DLSS"}, {"summary.fsr3", "FSR 3"}, {"summary.fg", "帧生成 {0}"},
+		{"summary.taa", "游戏 TAA"}, {"summary.noAa", "无抗锯齿"}, {"summary.dlss", "DLSS"}, {"summary.fsr3", "FSR 3"}, {"summary.fg", "帧生成 {0}"},
 		{"summary.fsr", "FSR 3 帧生成"}, {"summary.hd", "1080p 输出"}, {"summary.1440", "1440p 输出"}, {"summary.hdr", "HDR"},
 		{"summary.vsync", "垂直同步"}, {"summary.fps120", "最高 120 帧"},
 
@@ -251,6 +252,7 @@ static class Strings {
 		{"render.native", "原生 4K"}, {"render.pro", "PS5 Pro"}, {"render.ps5", "PS5"},
 		{"upscaler", "超分辨率"}, {"upscaler.game", "游戏自带（PS5）"}, {"upscaler.dlss", "DLSS（PS5 Pro 路径）"}, {"upscaler.fsr", "FSR 3（PS5 Pro 路径）"},
 		{"upscaler.fsrNote", "用 AMD FSR 3 替代索尼的 PS5 Pro 超分，任何显卡都能用（已内置，无需下载）：比游戏自带的拉伸更清晰。渲染高度列表标出了每个高度在所选游戏输出下对应的模式。"},
+		{"upscaler.off", "关闭（无抗锯齿）"}, {"upscaler.offNote", "关闭《恶魔之魂》自带的抗锯齿（TAA）及随之而来的镜头抖动：画面更锐利、更稳定，但边缘有锯齿、细节会闪烁。3D 按下方的渲染高度渲染，再像游戏自带那样拉伸到输出分辨率。"},
 		{"fsr.native", "原生抗锯齿"},
 		{"upscaler.dlssFsrFg", "开启 FSR 3 帧生成时 DLSS 无法运行（FSR 的帧生成不加载 NVIDIA Streamline，而 DLSS 需要它）：游戏会改用 FSR 3 超分。想用 DLSS 请关闭 FSR 帧生成。"},
 		{"upscaler.ok", "用 DLSS 替代索尼的 PS5 Pro 超分：比游戏自带的拉伸更清晰。渲染高度列表标出了每个高度在所选游戏输出下对应的 DLSS 模式。"},

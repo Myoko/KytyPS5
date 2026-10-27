@@ -79,6 +79,7 @@ const Table& English() {
 	    {"summary.fullscreen", "{0} fullscreen"},
 	    {"summary.render", "3D {0}p"},
 	    {"summary.taa", "game's TAA"},
+	    {"summary.noAa", "no anti-aliasing"},
 	    {"summary.dlss", "DLSS"},
 	    {"summary.fsr3", "FSR 3"},
 	    {"summary.fsr", "FSR 3 frame generation"},
@@ -146,6 +147,11 @@ const Table& English() {
 	                         "the mode it runs in with "
 	                         "the chosen game output."},
 	    {"fsr.native", "Native AA"},
+	    {"upscaler.off", "Off (no anti-aliasing)"},
+	    {"upscaler.offNote", "Demon's Souls without its own anti-aliasing (TAA) and the camera "
+	                         "jitter that comes with it: a sharper, steadier picture, with jagged "
+	                         "edges and shimmer on fine detail. The 3D at the render height below, "
+	                         "stretched to the output as the game does."},
 	    {"upscaler.ok", "DLSS in place of Sony's PS5 Pro upscaler: sharper than the game's "
 	                    "stretch. Each render height "
 	                    "shows the DLSS mode it runs in with the chosen game output."},
@@ -418,6 +424,7 @@ const Table& Chinese() {
 	    {"summary.fullscreen", "全屏 {0}"},
 	    {"summary.render", "3D {0}p"},
 	    {"summary.taa", "游戏 TAA"},
+	    {"summary.noAa", "无抗锯齿"},
 	    {"summary.dlss", "DLSS"},
 	    {"summary.fsr3", "FSR 3"},
 	    {"summary.fsr", "FSR 3 帧生成"},
@@ -475,6 +482,9 @@ const Table& Chinese() {
 	                         "超分，任何显卡都能用（已内置，无需下载）：比游戏自带的拉伸更清晰。渲"
 	                         "染高度列表标出了每个高度在所选游戏输出下对应的模式。"},
 	    {"fsr.native", "原生抗锯齿"},
+	    {"upscaler.off", "关闭（无抗锯齿）"},
+	    {"upscaler.offNote", "关闭《恶魔之魂》自带的抗锯齿（TAA）及随之而来的镜头抖动：画面更锐利、更稳定，"
+	                         "但边缘有锯齿、细节会闪烁。3D 按下方的渲染高度渲染，再像游戏自带那样拉伸到输出分辨率。"},
 	    {"upscaler.ok", "用 DLSS 替代索尼的 PS5 Pro "
 	                    "超分：比游戏自带的拉伸更清晰。渲染高度列表标出了每个高度在所选游戏输出下对"
 	                    "应的 DLSS 模式。"},
@@ -715,6 +725,7 @@ const Table& Portuguese() {
 	    {"summary.fullscreen", "tela cheia {0}"},
 	    {"summary.render", "3D {0}p"},
 	    {"summary.taa", "TAA do jogo"},
+	    {"summary.noAa", "sem anti-aliasing"},
 	    {"summary.dlss", "DLSS"},
 	    {"summary.fsr3", "FSR 3"},
 	    {"summary.fsr", "geração de quadros FSR 3"},
@@ -783,6 +794,11 @@ const Table& Portuguese() {
 	                         "modo em que roda com a saída "
 	                         "escolhida."},
 	    {"fsr.native", "AA nativo"},
+	    {"upscaler.off", "Desligado (sem anti-aliasing)"},
+	    {"upscaler.offNote", "Demon's Souls sem o seu anti-aliasing (TAA) e sem o tremor de câmera "
+	                         "que vem com ele: imagem mais nítida e estável, com bordas serrilhadas e "
+	                         "cintilação em detalhes finos. O 3D na altura de renderização abaixo, "
+	                         "esticado até a saída como o jogo faz."},
 	    {"upscaler.ok", "DLSS no lugar do upscaler do PS5 Pro da Sony: mais nítido que o esticado "
 	                    "do jogo. Cada altura mostra o "
 	                    "modo do DLSS em que roda com a saída escolhida."},
