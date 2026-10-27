@@ -11,6 +11,7 @@
 #include "graphics/shader/recompiler/ir/passes/BindingLayout.h"
 #include "graphics/shader/recompiler/ir/passes/ConstantPropagation.h"
 #include "graphics/shader/recompiler/ir/passes/DeadCodeElimination.h"
+#include "graphics/shader/recompiler/ir/passes/ExecSelects.h"
 #include "graphics/shader/recompiler/ir/passes/ReadLaneElimination.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceTracking.h"
@@ -773,6 +774,14 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 	IR::ApplyResourceSpecialization(ir, specialization);
 	IR::RemoveIdentities(ir.blocks);
 	IR::EliminateDeadCode(ir.blocks);
+	if ((Frontend::TranslatorFeatureSet() & Frontend::TranslatorFeatureExecSelects) != 0) {
+		const auto selects = IR::EliminateExecSelects(ir.blocks);
+		if (selects.bypassed != 0 || selects.dropped != 0) {
+			LOGF("%s exec selects: bypassed=%" PRIu32 " dropped=%" PRIu32 "\n", GetDumpLabel(options), selects.bypassed,
+			     selects.dropped);
+			IR::EliminateDeadCode(ir.blocks);
+		}
+	}
 
 	const ShaderVertexInputInfo*  vertex  = nullptr;
 	const ShaderPixelInputInfo*   pixel   = nullptr;

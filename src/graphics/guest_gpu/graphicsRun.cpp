@@ -2180,8 +2180,14 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index,
 	switch (event_type) {
 		// CsPartialFlush, GsPartialFlush, PsPartialFlush.
 		case 0x00000007:
+			LiveCounters::Add(LiveCounters::GuestBarrierCs);
+			EmitGlobalBarrier();
+			break;
 		case 0x0000000f:
-		case 0x00000010: EmitGlobalBarrier(); break;
+		case 0x00000010:
+			LiveCounters::Add(LiveCounters::GuestBarrierGfx);
+			EmitGlobalBarrier();
+			break;
 		// CbDbDataWritebackInvalidate, CbDataWritebackInvalidate.
 		case 0x00000016:
 		case 0x00000031:
@@ -2189,6 +2195,7 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index,
 				EXIT("unknown event type: 0x%08" PRIx32 ", 0x%08" PRIx32 "\n", event_type,
 				     event_index);
 			}
+			LiveCounters::Add(LiveCounters::GuestBarrierCache);
 			EmitGlobalBarrier();
 			break;
 		// DbDataWritebackInvalidate, DbMetadataWritebackInvalidate, CbMetadataWritebackInvalidate.
@@ -2199,6 +2206,7 @@ void CommandProcessor::TriggerEvent(uint32_t event_type, uint32_t event_index,
 				EXIT("unknown event type: 0x%08" PRIx32 ", 0x%08" PRIx32 "\n", event_type,
 				     event_index);
 			}
+			LiveCounters::Add(LiveCounters::GuestBarrierCache);
 			EmitGlobalBarrier();
 			break;
 		case 0x0000000d:

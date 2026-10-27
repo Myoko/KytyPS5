@@ -520,13 +520,14 @@ bool TextureCache::SafeToDownload(const Image& image) {
 // Collector runs (flips) before memory an image could not be made for is asked for again.
 constexpr uint64_t FailedRetryTicks = 30;
 
-// The collectors count ages in flips, a 60 Hz vblank's: at -Fps120's 120 Hz they come twice as often, and the ~10 s
-// (StaleTicks) and ~20 s (RetireTicks) below were 5 and 10 s (issue #221: an RTX 4080 SUPER at its video memory budget
-// lost the textures a 5 s menu kept from being drawn and made ~1.3 GB of them again as it closed, frames of 1.2-4.8 s).
-static uint64_t FlipsPer60Hz() {
-	static const uint64_t factor = std::max<uint64_t>(1, Config::GetVblankFrequency() / 60);
-	return factor;
-}
+// The collectors count ages in time (m_tick_clock), not flips: at -Fps120 the 600 and 1200 flips they were came in 5
+// and 10 s (issue #221: an RTX 4080 SUPER at its video memory budget lost the textures a 5 s menu kept from being drawn
+// and made ~1.3 GB of them again as it closed, frames of 1.2-4.8 s), and flips scaled by the vblank rate were 4 times
+// as long with a 240 Hz vblank and the game at 45-60 fps (issue #215). Never an image used in the last MinIdleTicks
+// flips (a long frame is no idle time).
+constexpr auto     StaleTime    = std::chrono::seconds(10);
+constexpr auto     RetireTime   = std::chrono::seconds(20);
+constexpr uint64_t MinIdleTicks = 120;
 
 // KYTY_TEST_RECLAIM=<n>: the first n images that must exist, of 1 MiB and more, asked for from the 600th flip on, are
 // taken as not made once (ReclaimImageMemory, then made again).
@@ -4964,7 +4965,7 @@ void TextureCache::EraseSlot(ImageId id) {
 }
 
 // Per flip, whatever the memory use (the collector below runs only near the video memory budget, never on a 32 GB GPU):
-// images no draw or dispatch used for RetireTicks flips go, at most MaxRetirements a flip, as stale buffers do
+// images no draw or dispatch used for RetireTime go, at most MaxRetirements a flip, as stale buffers do
 // (BufferCache::RetireStaleBuffers). Kept, their page watchers took a fault at every write the game made when it gave
 // that memory to other data (the third loop of the user's 1-1 route: partial dirty faults 17 -> 164 a frame, write
 // faults 73 -> 232), and they held their video memory for good. One the game draws again is made again from its bytes.
@@ -4978,18 +4979,19 @@ void TextureCache::EraseSlot(ImageId id) {
 // pool's watchers take a fault per MiB the game writes at most (partial dirty state). One last used before the game
 // entered its world (SceneTags) goes as before: the memory of the worlds left comes back.
 void TextureCache::RetireStaleImages(uint64_t tick) {
-	const uint64_t   RetireTicks    = 1200 * FlipsPer60Hz();
 	constexpr size_t MaxRetirements = 16;
 	if (const auto generation = SceneTags::Generation(); generation != m_scene_generation) {
 		m_scene_generation = generation;
 		m_scene_tick       = tick;
 	}
-	if (tick <= RetireTicks) return;
+	if (tick <= MinIdleTicks) return;
+	const uint64_t below = std::min(m_tick_clock.Before(tick, RetireTime), tick - MinIdleTicks);
+	if (below == 0) return;
 	thread_local std::vector<ImageId> stale, kept;
 	stale.clear();
 	kept.clear();
 	const bool keep_pools = !m_graphics.small_video_memory;
-	m_lru_cache.ForEachItemBelow(tick - RetireTicks, [&](ImageId id) {
+	m_lru_cache.ForEachItemBelow(below, [&](ImageId id) {
 		const auto* owner = m_slot_images.try_get(id);
 		if (owner == nullptr || !owner->registered) return false;
 		// (Left at its age: the collector's.)
@@ -5041,6 +5043,7 @@ void TextureCache::RetireStaleImages(uint64_t tick) {
 void TextureCache::RunGarbageCollector() {
 	std::scoped_lock lock {m_lock};
 	const uint64_t   tick = m_gc_tick++;
+	m_tick_clock.Begin(tick);
 	// Parked images not taken back since the flip before: the game left that use of the memory.
 	std::erase_if(m_parked, [&](const auto& item) {
 		if (item.second.tick + 1 >= tick) return false;
@@ -5086,19 +5089,20 @@ void TextureCache::RunGarbageCollector() {
 	// system has left went under 2 GiB or back (checked every 60 flips; issue #47: "the emulator uses all 32 GB of my
 	// RAM", with spiky frame times, and nothing in its log said how much it held).
 	LogPcMemory(tick);
-	// Over the budget: the images no draw or dispatch used for StaleTicks flips (~10 s), least recently used first, at
-	// most MaxDeletions a flip. What the game stops drawing it stops binding: 1-1 standing, 3.2 GiB of images were used
-	// in the last 2 flips, 3.0 GiB not for 160 and more, 0.05 GiB in between; turning the camera, images behind it
-	// come back after a few seconds (160 flips: 5-7 MB of uploads a frame instead of 0.2-1.7, 1% low 47 -> 27 fps).
-	const uint64_t   StaleTicks   = 600 * FlipsPer60Hz();
+	// Over the budget: the images no draw or dispatch used for StaleTime, least recently used first, at most
+	// MaxDeletions a flip. What the game stops drawing it stops binding: 1-1 standing, 3.2 GiB of images were used in
+	// the last 2 flips, 3.0 GiB not for 160 and more, 0.05 GiB in between; turning the camera, images behind it come
+	// back after a few seconds (160 flips: 5-7 MB of uploads a frame instead of 0.2-1.7, 1% low 47 -> 27 fps).
 	constexpr size_t MaxDeletions = 40;
-	// For a while after the GPU could not make an image (InsertImage), images unused for FailedRetryTicks go too: the
-	// superseded ones whose memory it needs (issue #49: a 16 GB GPU full of texture-pool images).
-	const bool     failing     = m_failed_tick != 0 && tick < m_failed_tick + StaleTicks;
-	const uint64_t stale_ticks = failing ? FailedRetryTicks : StaleTicks;
+	const uint64_t   stale_tick   = m_tick_clock.Before(tick, StaleTime);
+	// For StaleTime after the GPU could not make an image (InsertImage), images unused for FailedRetryTicks go too:
+	// the superseded ones whose memory it needs (issue #49: a 16 GB GPU full of texture-pool images).
+	const bool     failing = m_failed_tick != 0 && m_failed_tick > stale_tick;
+	const uint64_t below   = failing ? tick - std::min(tick, FailedRetryTicks)
+	                                 : std::min(stale_tick, tick - std::min(tick, MinIdleTicks));
 	// Less the room game buffers in use that got system memory need back (BufferCache::MoveSpilledBufferBack).
 	const uint64_t collect_above = m_trigger_gc_memory - std::min(m_trigger_gc_memory, m_buffer_cache.SpilledRoom());
-	if (m_total_used_memory < collect_above || tick < stale_ticks) {
+	if (m_total_used_memory < collect_above || below == 0) {
 		return;
 	}
 	// An image the collector keeps (a depth image with its stencil association; one the GPU wrote, tiled: no download
@@ -5112,7 +5116,7 @@ void TextureCache::RunGarbageCollector() {
 	const uint64_t       download_max = m_buffer_cache.GetUtilityBuffer(MemoryUsage::Download).Size() / 2;
 	std::vector<ImageId> candidates;
 	candidates.reserve(MaxDeletions);
-	m_lru_cache.ForEachItemBelow(tick - stale_ticks, [&](ImageId id) {
+	m_lru_cache.ForEachItemBelow(below, [&](ImageId id) {
 		const auto* owner = m_slot_images.try_get(id);
 		if (owner == nullptr || !owner->registered || owner->depth_id ||
 		    (owner->IsGpuModified() && owner->info.IsTiled() && SafeToDownload(*owner) &&

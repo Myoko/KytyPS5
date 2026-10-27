@@ -624,6 +624,9 @@ private:
 				if (SaveExec(inst.opcode)) {
 					WriteScalar(inst.dst, 2, true, state); // (the old EXEC)
 					SetPair(state.lanes, ScalarIndex(inst.dst), NameHas64(inst.opcode));
+					// SCC: whether the new EXEC has a lane, the wave's answer (a half's lanes alone could tell the halves
+					// apart: MaskSccSaveexecBranchesTheWholeWave).
+					state.scc_mask = true;
 					break;
 				}
 				if (inst.family != Family::SOPC && inst.dst.kind != OperandKind::Unknown) {

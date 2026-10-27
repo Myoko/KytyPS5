@@ -45,6 +45,8 @@ struct GraphicContext {
 	// With subgroup size control: wave64 compute programs run on 64-lane subgroups (else emulated on 32-lane ones, two
 	// guest lanes an invocation). VulkanInitSubgroupSizeControl decides it (KYTY_COMPUTE_WAVE64).
 	bool                               compute_wave64_native                 = false;
+	// The Steam Deck's GPU (Van Gogh) with Linux' RADV (VulkanInitSubgroupSizeControl).
+	bool                               steam_deck_radv                       = false;
 	bool                               sample_rate_shading_enabled           = false;
 	bool                               attachment_feedback_loop_enabled      = false;
 	bool                               provoking_vertex_last_enabled         = false;
@@ -62,6 +64,8 @@ struct GraphicContext {
 	bool                               maintenance5_enabled                  = false;
 	// VK_NV_copy_memory_indirect: an upload prologue's copies are one command (BufferCache::UploadDirtyRanges).
 	bool                               copy_memory_indirect_enabled          = false;
+	// KYTY_PIPELINE_STATS (diagnostic): VK_KHR_pipeline_executable_properties, the driver's statistics of pipelines.
+	bool                               pipeline_statistics_enabled           = false;
 	// False (the emulator): the driver keeps no copy of its own of the pipelines it makes (the
 	// precompile's captures of static cache hits come from that copy).
 	bool                               pipeline_binary_internal_cache        = true;
@@ -186,6 +190,10 @@ struct GraphicContext {
 	// A budget under 12 GiB (CreateAllocator): less than the game's working set (Boletaria ~11 GB). Textures yield video
 	// memory to render targets and buffers (CreateImage); the pipeline warmup leaves its pipelines to first use.
 	bool                          small_video_memory = false;
+	// The default of the reduced texture levels (KYTY_TEXTURE_REDUCE, vma.cpp): a card of 12 GiB of video memory or
+	// less, by its size, not its budget, which other programs and frame generation move (issue #215: a 16 GB RTX 5080 at
+	// 12.06-12.21 GiB of budget, DLSS-G and DLSS on, ran with full textures at 11.7 GiB in use and no frame drops).
+	bool                          reduce_texture_levels = false;
 	// The game buffers' own VMA pool (BufferCache), whose blocks BufferCache::Defragment compacts. KYTY_BUFFER_DEFRAG:
 	// on with a small video memory, 0 off, 1 on any GPU. Null: off, game buffers in VMA's default pools.
 	VmaPool                       game_buffer_pool = nullptr;

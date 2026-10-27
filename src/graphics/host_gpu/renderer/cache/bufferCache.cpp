@@ -5,6 +5,7 @@
 #include "live-census.h"
 #include "live-counters.h"
 #include "live-trace.h"
+#include "live-trace-gpu.h"
 #include "native-resource-state.h"
 #include "async-upload.h"
 #include "parallel-pages.h"
@@ -33,9 +34,11 @@ volatile std::atomic<uint32_t> kyty_local_copy_feedback_mode {1};
 // copy on the transfer queue.
 [[gnu::used]] volatile std::atomic<uint32_t> kyty_local_readback_queue_mode {1};
 // KYTY_READBACK_SPAN: 1: a guest readback window also takes the host buffers next to the
-// request's. 2 (default): 1 while read guards are off (KYTY_READ_GUARD,
-// LibKernel::Memory::ReadGuardsOn), else 0. Not tested with read guards on.
-[[gnu::used]] volatile std::atomic<uint32_t> kyty_local_readback_span_mode {2};
+// request's. 2: 1 while read guards are off (KYTY_READ_GUARD, LibKernel::Memory::ReadGuardsOn),
+// else 0. 0 (default): off. Issue #222: on Linux (no read guards) the Nexus floor's runes turned
+// to grainy noise around the player in 2 runs of 3 with it on, clean with it off; why is not
+// known yet (not seen on Windows).
+[[gnu::used]] volatile std::atomic<uint32_t> kyty_local_readback_span_mode {0};
 // 1: pack the LOD report on the GPU instead of a CPU wait and copy.
 volatile std::atomic<uint32_t> kyty_local_async_lod_stats_mode {1};
 // 1: shader constants stream through a host-visible upload ring.
@@ -449,9 +452,9 @@ std::shared_ptr<BufferCache::GuestReadback> BufferCache::BeginGuestReadback(
 			regions.push_back(
 			    {envelope.buffer->Handle(), {envelope.source, envelope.cursor, envelope.size}});
 		request->parts = std::move(parts);
-		request->queue_value = m_readback_queue->Copy(regions, download->Handle(),
-		                                              m_scheduler.GetMasterSemaphore().Handle(),
-		                                              request->producer_tick);
+		request->queue_value = m_readback_queue->Copy(
+		    regions, download->Handle(), m_scheduler.GetMasterSemaphore().Handle(), request->producer_tick,
+		    m_scheduler.GetMasterSemaphore().KnownGpuTick() >= request->producer_tick);
 		LiveTrace::Event(LiveTrace::RbFast, begin, (end - begin) | request->producer_tick << 32u);
 		m_download_queue_values[slot] = request->queue_value;
 		request->tick                 = m_scheduler.CurrentTick();
@@ -1231,6 +1234,7 @@ void BufferCache::DownloadBufferMemory(std::span<const DownloadCopy> copies) {
 }
 
 bool BufferCache::TryReportLodStatsOnGpu(uint64_t address, bool reset) {
+    const LiveTrace::MarkSite site(LiveTrace::SiteLodStats);
     constexpr uint64_t ReportSize = 0x840;
     if (address % 4 || !m_resources || !m_resources->IsMapped(address, ReportSize) ||
         !LibKernel::Memory::IsUniqueGuestBackingRange(address, ReportSize) ||
@@ -1892,16 +1896,23 @@ BufferCache::OverlapResult BufferCache::ResolveOverlaps(uint64_t vaddr, uint64_t
 		for (auto it = runs.rbegin(); it != runs.rend() && it->second >= reach; ++it) reach = std::min(reach, std::max(it->first, from));
 		return (reach + CACHING_PAGESIZE - 1) & ~(CACHING_PAGESIZE - 1);
 	};
-	auto first           = find_first(begin);
-	auto last            = first;
-	int  stream_score    = 0;
-	bool has_stream_leap = false;
+	auto     first           = find_first(begin);
+	auto     last            = first;
+	int      stream_score    = 0;
+	bool     has_stream_leap = false;
+	uint64_t largest         = 0; // the biggest buffer joined, and which way the request goes past it
+	bool     grows_right = false, grows_left = false;
 	for (; last != m_buffers.end() && last->first < end; ++last) {
 		const auto& buffer        = m_slot_buffers[last->second];
 		const auto  buffer_begin  = buffer.CpuAddress();
 		const auto  buffer_end    = buffer_begin + buffer.Size();
 		const bool  expands_left  = buffer_begin < begin;
 		const bool  expands_right = buffer_end > end;
+		if (buffer.Size() > largest) {
+			largest     = buffer.Size();
+			grows_right = expands_left;
+			grows_left  = expands_right;
+		}
 		begin                     = std::min(begin, buffer_begin);
 		end                       = std::max(end, buffer_end);
 		if (!has_stream_leap && (stream_score += buffer.StreamScore()) > StreamLeapThreshold) {
@@ -1920,6 +1931,31 @@ BufferCache::OverlapResult BufferCache::ResolveOverlaps(uint64_t vaddr, uint64_t
 				begin = std::min(begin, first->first);
 			}
 		}
+	}
+	// A big buffer growing (a pool the game fills over minutes: one of 638 MB made whole again six times up to 910 MB, on
+	// a GPU near its budget each time in system memory first, then moved back: frames of 100-135 ms, issue #215): room
+	// for an eighth more where it grows, over mapped memory only, and the buffers there joined too. The 16 GB tour (1-1,
+	// worlds 2-1 to 5-1, Nexus, 1-1): 18 buffers of 64 MiB and up made again instead of 35, video memory the same.
+	static constexpr uint64_t BigBuffer = uint64_t {64} << 20u;
+	if (!has_stream_leap && largest >= BigBuffer && end - begin > largest) {
+		const auto room   = (end - begin) / 8;
+		const auto before = end - begin;
+		// (Never an empty range: MappedRanges refuses one.)
+		if (grows_right && room != 0 && end < PageTable::kAddressSpaceSize)
+			end = std::max(end, leap_right(end, end + std::min(room, PageTable::kAddressSpaceSize - end)));
+		if (grows_left && room != 0 && begin > room) {
+			begin = std::min(begin, leap_left(begin - room, begin));
+			first = find_first(begin);
+			begin = std::min(begin, first->first);
+		}
+		for (; last != m_buffers.end() && last->first < end; ++last) {
+			const auto& buffer = m_slot_buffers[last->second];
+			end                = std::max(end, buffer.CpuAddress() + buffer.Size());
+		}
+		if (end - begin >= uint64_t {256} << 20u)
+			std::printf("Buffers: a buffer of %llu MiB grows to %llu MiB, %llu MiB more as room\n",
+			            static_cast<unsigned long long>(largest >> 20u), static_cast<unsigned long long>(before >> 20u),
+			            static_cast<unsigned long long>((end - begin - before) >> 20u));
 	}
 	return {first, last, begin, end, has_stream_leap};
 }
@@ -2809,27 +2845,14 @@ void BufferCache::RetireStaleBuffers(uint64_t tick) {
 	constexpr size_t   PressureRetirements = 256;
 	constexpr uint64_t MinTicks            = 120;
 	constexpr uint64_t StaleTicks          = 1800;
-	const auto         now                 = std::chrono::steady_clock::now();
-	m_tick_times[tick % m_tick_times.size()] = now.time_since_epoch().count();
+	m_tick_clock.Begin(tick);
 	if (tick % 30 == 0) {
 		uint64_t video = 0, budget = 0;
 		m_retire_pressure = m_graphics.QueryLocalVideoMemory(&video, &budget) && video >= m_critical_gc_memory;
 	}
 	if (tick <= MinTicks) return;
-	const bool pressure = m_retire_pressure;
-	const auto horizon  = (now - (pressure ? PressureTime : StaleTime)).time_since_epoch().count();
-	// The newest tick that began by the horizon among the ticks the ring holds (their times only grow); when even the
-	// oldest held began after it, the ticks older than the ring.
-	uint64_t first = tick - std::min<uint64_t>(tick, m_tick_times.size() - 1), last = tick;
-	if (m_tick_times[first % m_tick_times.size()] > horizon) {
-		last = first;
-	} else {
-		while (first < last) {
-			const uint64_t middle = first + (last - first + 1) / 2;
-			if (m_tick_times[middle % m_tick_times.size()] <= horizon) first = middle;
-			else last = middle - 1;
-		}
-	}
+	const bool     pressure = m_retire_pressure;
+	const uint64_t last     = m_tick_clock.Before(tick, pressure ? PressureTime : StaleTime);
 	// (Never later than the StaleTicks rule it replaced: at 120 fps, 1800 flips are 15 s.)
 	const uint64_t below = std::min(std::max(last, tick > StaleTicks ? tick - StaleTicks : 0), tick - MinTicks);
 	const size_t   limit = pressure ? PressureRetirements : MaxRetirements;

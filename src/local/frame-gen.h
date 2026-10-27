@@ -126,9 +126,10 @@ void SetStaticRect(float x0, float y0, float x1, float y1);
 [[nodiscard]] bool UsesFsr();
 // FSR generates frames, by the Windows backend or built in (Linux): the interface canvas is looked for (NoteUiCanvas).
 [[nodiscard]] bool FsrMarksHud();
-// The video memory FSR takes beside the game's (FidelityFX's allocations, outside the emulator's allocator, and its
-// HUD images): what the emulator leaves it when it sizes its use of the budget (small_video_memory).
-[[nodiscard]] uint64_t FsrVideoMemoryReserve();
+// The video memory frame generation and super resolution take beside the game's (FSR's or NGX's allocations, outside
+// the emulator's allocator, and the HUD images): what the emulator leaves them when it sizes its use of the budget
+// (small_video_memory). After the device: frame generation the device cannot run is not counted.
+[[nodiscard]] uint64_t VideoMemoryReserve();
 // After the device's queues: FSR is ready when its queues were made.
 void OnFsrQueues(GraphicContext& graphics);
 // The swapchain is FSR's (Enabled() with the FSR backend).

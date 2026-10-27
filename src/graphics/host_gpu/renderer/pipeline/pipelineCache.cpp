@@ -904,18 +904,25 @@ struct PipelineCache::ProgramCache {
 
 	// What the translations are good for: the inputs' identity (the title, GPU and driver), this executable (its revision,
 	// size and time: another build may translate otherwise), the translation features, the compute subgroup size and the
-	// settings the translation reads. Empty when the executable's file cannot be told.
+	// settings the translation reads. Empty when the executable's file cannot be told. KYTY_PREFETCH_CACHE_BUILD=<id> (a
+	// development build's: tools/local/deck gives the translator sources' hash) stands for the executable: builds with
+	// the same translator keep the cache (a Steam Deck translates ~1,200 programs again otherwise, for minutes).
 	static std::string PrefetchCacheKey(const std::string& identity, uint32_t host_subgroup_size) {
-		const auto exe = LocalPlatform::ExecutablePath();
-		if (exe.empty()) return {};
-		std::error_code error;
-		const auto      path = Common::PathFromUtf8(exe);
-		const auto      size = std::filesystem::file_size(path, error);
-		if (error) return {};
-		const auto time = std::filesystem::last_write_time(path, error);
-		if (error) return {};
-		auto key = fmt::format("{}|{}|{}|{}|features {}|subgroup {}", identity, KYTY_GIT_REVISION, size,
-		                       static_cast<int64_t>(time.time_since_epoch().count()),
+		std::string build;
+		if (const char* id = std::getenv("KYTY_PREFETCH_CACHE_BUILD"); id != nullptr && *id != 0) {
+			build = fmt::format("build {}", id);
+		} else {
+			const auto exe = LocalPlatform::ExecutablePath();
+			if (exe.empty()) return {};
+			std::error_code error;
+			const auto      path = Common::PathFromUtf8(exe);
+			const auto      size = std::filesystem::file_size(path, error);
+			if (error) return {};
+			const auto time = std::filesystem::last_write_time(path, error);
+			if (error) return {};
+			build = fmt::format("{}|{}|{}", KYTY_GIT_REVISION, size, static_cast<int64_t>(time.time_since_epoch().count()));
+		}
+		auto key = fmt::format("{}|{}|features {}|subgroup {}", identity, build,
 		                       ShaderRecompiler::Frontend::TranslatorFeatureSet(), host_subgroup_size);
 		for (const char* name: {"KYTY_LANE_LOCAL", "KYTY_PS_WAVE_OR", "KYTY_PS_WAVE64", "KYTY_COMPUTE_WAVE64"}) {
 			const char* value = std::getenv(name);

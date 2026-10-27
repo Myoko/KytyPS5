@@ -8,6 +8,7 @@
 #include "graphics/host_gpu/pageManager.h"
 #include "graphics/host_gpu/regionManager.h"
 #include "graphics/host_gpu/renderer/cache/multiLevelPageTable.h"
+#include "graphics/host_gpu/renderer/cache/tickClock.h"
 #include "graphics/host_gpu/renderer/image/blitHelper.h"
 #include "graphics/host_gpu/renderer/image/image.h"
 #include "graphics/host_gpu/renderer/image/tiler.h"
@@ -425,6 +426,7 @@ private:
 	uint64_t                                          m_logged_private       = 0;
 	bool                                              m_logged_short_of_ram  = false;
 	uint64_t         m_gc_tick                = 0;
+	TickClock        m_tick_clock;                 // the collectors count ages in time
 	uint64_t         m_scene_generation       = 0; // RetireStaleImages: the world the game is in (SceneTags), entered
 	uint64_t         m_scene_tick             = 0; // at this tick
 	std::atomic<uint64_t> m_frame {0};

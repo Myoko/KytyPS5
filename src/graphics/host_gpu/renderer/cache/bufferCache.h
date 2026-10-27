@@ -10,6 +10,7 @@
 #include "graphics/host_gpu/renderer/cache/faultManager.h"
 #include "graphics/host_gpu/renderer/cache/multiLevelPageTable.h"
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
+#include "graphics/host_gpu/renderer/cache/tickClock.h"
 
 #include <vk_mem_alloc.h>
 
@@ -410,9 +411,8 @@ private:
 	uint64_t m_trigger_gc_memory  = 1ull * 1024 * 1024 * 1024;
 	uint64_t m_critical_gc_memory = 2ull * 1024 * 1024 * 1024;
 	uint64_t m_gc_tick            = 0;
-	// When each recent collector tick began (steady clock, by tick % size): RetireStaleBuffers counts idleness in time.
-	std::array<int64_t, 8192> m_tick_times {};
-	bool                      m_retire_pressure = false; // the video memory in use at the critical level
+	TickClock m_tick_clock;                // RetireStaleBuffers counts idleness in time
+	bool      m_retire_pressure = false; // the video memory in use at the critical level
 	// The registered game buffers in system memory and the room those in use need (MoveSpilledBufferBack).
 	std::vector<BufferId> m_spilled;
 	uint64_t              m_spilled_room = 0;

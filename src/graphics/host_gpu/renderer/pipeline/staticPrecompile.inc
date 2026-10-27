@@ -1244,9 +1244,9 @@ bool PipelineCache::StaticCacheCurrent(GraphicContext& graphics, const std::file
 			}
 		}
 		// Made without a translation feature of this emulator's for this GPU, and no precompile with it tried since: one
-		// makes the pipelines it changes.
+		// makes the pipelines it changes (those that wait for the next precompile aside).
 		namespace Translate = ShaderRecompiler::Frontend;
-		const auto wanted = Translate::TranslatorDeviceFeatures();
+		const auto wanted = Translate::TranslatorDeviceFeatures() & ~Translate::TranslatorFeaturesWithNextPrecompile;
 		if ((ReadStaticStamp().second & wanted) != wanted) return false;
 	}
 	if (graphics.pipeline_binaries_enabled) {

@@ -30,6 +30,9 @@ static std::string GetBuildString() {
 #else
 	std::string type = "????";
 #endif
+#if defined(KYTY_STEAM_DECK)
+	type += " (Steam Deck)";
+#endif
 
 	std::string compiler =
 	    Debug::GetCompiler() + "-" + Debug::GetLinker() + "-" + Debug::GetBitness();
