@@ -2,6 +2,21 @@
 
 Your precompiled shaders stay valid: the shaders are the same as in v20261027.
 
+- **Steam Deck** (built from source with `tools/local/deck/build-deck.sh`, the CMake option `KYTY_STEAM_DECK`; the
+  release's Linux build does not have these): on a Steam Deck LCD at 360p (`KYTY_RENDER_HEIGHT=360`), the Lowest
+  preset, projected decals off (`KYTY_GAME_CONVARS=r_projectedDecalEnable=false`), sun shadows to 20 m
+  (`sunShadowMaxDistance=20`) and the GPU clock at 1300 MHz (Steam's Manual GPU Clock), Boletaria 1-1 runs at about
+  35 fps and most worlds near 30 (Latria and Valley of Defilement at 26-29). Its build: the render thread keeps a core
+  of its own, the render thread makes upload copies the upload worker has not reached, the GPU's read protections of
+  short runs use userfaultfd minor mode and write watches userfaultfd write protection (mprotect calls cost the Deck's
+  4 cores most), a PGO profile trained on the Deck, shared page walks in translated shaders, the mouse cursor always
+  hidden (`KYTY_HIDE_CURSOR=0` shows it) and the keyboard's default controls off (`KYTY_DECK_KEYBOARD=1` keeps them:
+  started outside Steam, Steam's desktop layout turned the sticks into arrow keys, which changed equipment). Start it
+  from Steam (Game Mode or the Steam library), and once only: two copies at once share the Deck. Not every setting
+  helps: `r_forceShadowLOD=1` draws flat, smeared walls in the main view (the game's own debug setting).
+- **Less GPU time checking the GPU's reads** (every PC): after each submission the emulator read its whole record of
+  the guest memory the GPU touched outside its buffers (8 MB, 7 times a frame); it now reads only the part over
+  memory the game has committed. On a Steam Deck at Latria that is 0.98 -> 0.03 ms of GPU time a frame.
 - **Crash at a world load on PCs short of RAM** (#228): at a teleport, an RX 9070 with 5.4 GB of its video memory free
   could not get a new 108 MB GPU buffer while the PC's RAM was nearly full, and the emulator exited at once. It now
   tries again for up to 10 seconds, and the log says what refused it: the driver's answer in video and in system

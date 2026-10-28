@@ -26,7 +26,11 @@ sync() {
 	mkdir -p "$ROOT/_Build"
 	git -C "$ROOT" diff HEAD --binary > "$patch"
 	git -C "$ROOT" ls-files --others --exclude-standard -- src tools CMakeLists.txt cmake > "$list"
-	in_wsl "set -e; cd ~/kyty-deck; git fetch -q '$ROOT_WSL' HEAD; git checkout -q -f --detach FETCH_HEAD;
+	# HEAD's commit from the repository itself: a worktree's .git names it by a Windows path WSL's git cannot follow.
+	local common head
+	common="$(wsl.exe -e wslpath -a "$(cygpath -w "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)")" | tr -d '\r')"
+	head="$(git -C "$ROOT" rev-parse HEAD)"
+	in_wsl "set -e; cd ~/kyty-deck; git fetch -q '$common' $head; git checkout -q -f --detach $head;
 		git clean -fdq -e _Build; git submodule update -q --init --recursive;
 		[ ! -s '$ROOT_WSL/_Build/deck-sync.patch' ] || git apply --whitespace=nowarn '$ROOT_WSL/_Build/deck-sync.patch';
 		[ ! -s '$ROOT_WSL/_Build/deck-sync.untracked' ] || (cd '$ROOT_WSL' && tr -d '\r' < _Build/deck-sync.untracked | tar -cf - -T -) | tar -xf -;

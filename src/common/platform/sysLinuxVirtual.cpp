@@ -10,9 +10,11 @@
 #include "common/virtualMemory.h"
 
 #include <atomic>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
+#include <mutex>
 #include <pthread.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -53,24 +55,73 @@ static PageProtectionTable*         g_protects = nullptr;
 // or past the tracker's 1 << 40 window, keep mprotect.
 static int g_uffd = -1;
 // A byte per 4 KiB page of the low 1 TiB (reserved, committed as touched): the page's mprotect protection (PROT_*), as
-// last set, whether its view is registered, and whether it is write-protected.
+// last set, whether its view is registered, whether it is write-protected, and its minor mode (below).
 static uint8_t*         g_watch_pages     = nullptr;
 static constexpr uint64_t WATCH_PAGE_COUNT = (uint64_t {1} << 40u) >> 12u;
 static constexpr uint8_t  WATCH_PROT       = 0x07;
+static constexpr uint8_t  WATCH_MINOR      = 0x08;
+static constexpr uint8_t  WATCH_ZAPPED     = 0x10;
 static constexpr uint8_t  WATCH_REGISTERED = 0x40;
 static constexpr uint8_t  WATCH_WP         = 0x80;
+
+// KYTY_UFFD_MINOR=1 (with KYTY_UFFD_WP; on by default in the Steam Deck build): the GPU thread's deferred read
+// protections (no access: PageManager's flush, SysVirtualZapNoAccess) of runs of up to MINOR_RUN_PAGES pages of a
+// registered view drop the pages' PTEs (MADV_DONTNEED) under userfaultfd minor mode instead of an mprotect: the next
+// access faults (SIGBUS, as a write protection's), and lifting it maps the page cache page again (UFFDIO_CONTINUE, its
+// write protection with it). No VMA split or merge and no mmap write lock: at 1-1 those protections were ~95 single
+// pages a frame (GPU results the game reads back), each cycle two mprotects, ~6 ms a frame of the GPU thread walking; a
+// microbenchmark with 7 busy threads and 7,000 views: 35.7 us a cycle as mprotects, 10.6 us zapped. Minor mode is
+// registered by aligned blocks of MINOR_BLOCK_PAGES within a view (pages registered one by one split the views into
+// thousands of VMAs, and the remaining mprotects over them took ~120 us instead of ~25), up to MINOR_BLOCK_CAP of them
+// (~120 more a world load), for as long as their view lasts. Never left: a registration with fewer modes keeps the ones
+// a VMA has (userfaultfd_register skips it), and an unregistration (then a registration for write protection only)
+// fails other threads' write protections of the pages meanwhile, which then take them for pages of no registered view
+// while the kernel still write-protects them: a write faulted forever at a world load. A page of a block
+// whose PTE is missing otherwise (first touched there, reclaimed) faults too and is mapped at once
+// (SysVirtualResolveMinorFault); a kernel access to it fails (EFAULT), as to a protected page. Pages not in the page
+// cache (holes, swapped out: their access would not fault) and other protections keep mprotect. 1-1 at 360p, same
+// boot alternating: stand 34.0/34.1/34.2 -> 35.9/35.8/35.8 fps (render 23.1 -> 21.9 ms), walk legs 33.8 -> 35.4 fps
+// (p99 37.5 -> 35.8 ms).
+static bool              g_minor_on      = false;
+static thread_local bool g_zap_no_access = false;
+static std::mutex        g_minor_mutex;
+static std::map<uint64_t, uint64_t>* g_minor_blocks = nullptr; // (first page -> end page; under g_minor_mutex)
+static constexpr uint64_t           MINOR_RUN_PAGES   = 64;
+static constexpr uint64_t           MINOR_BLOCK_PAGES = 64;
+static constexpr uint64_t           MINOR_BLOCK_CAP   = 8192;
+
+static int OpenUffd(uint64_t features) {
+	const int fd = static_cast<int>(syscall(SYS_userfaultfd, O_CLOEXEC | O_NONBLOCK | UFFD_USER_MODE_ONLY));
+	uffdio_api api {};
+	api.api      = UFFD_API;
+	api.features = features;
+	if (fd >= 0 && ioctl(fd, UFFDIO_API, &api) != 0) {
+		close(fd);
+		return -1;
+	}
+	return fd;
+}
 
 static void WriteWatchInit() {
 	// VirtualMemory::Init() runs more than once (main and the kernel memory module).
 	if (g_uffd >= 0) return;
 	const char* value = std::getenv("KYTY_UFFD_WP");
+	const char* minor = std::getenv("KYTY_UFFD_MINOR");
+#if defined(KYTY_STEAM_DECK)
+	// On by default in the Steam Deck build (KYTY_UFFD_WP=0: mprotect): there the upload worker's re-arms took 4.4 ms a
+	// frame as mprotect calls, 2.3 ms as write protections; 1-1 at 360p, same boots alternating: stand 29.0/29.3 ->
+	// 29.8/30.2 fps, a camera spin 28.0/26.9 -> 29.4/29.0.
+	if (value == nullptr || value[0] == '\0') value = "1";
+	if (minor == nullptr || minor[0] == '\0') minor = "1";
+#endif
 	if (value == nullptr || value[0] != '1') return;
-	const int fd = static_cast<int>(syscall(SYS_userfaultfd, O_CLOEXEC | O_NONBLOCK | UFFD_USER_MODE_ONLY));
-	uffdio_api api {};
-	api.api      = UFFD_API;
-	api.features = UFFD_FEATURE_SIGBUS | UFFD_FEATURE_WP_HUGETLBFS_SHMEM | UFFD_FEATURE_WP_UNPOPULATED;
-	void* pages  = MAP_FAILED;
-	if (fd >= 0 && ioctl(fd, UFFDIO_API, &api) == 0) {
+	constexpr uint64_t features = UFFD_FEATURE_SIGBUS | UFFD_FEATURE_WP_HUGETLBFS_SHMEM | UFFD_FEATURE_WP_UNPOPULATED;
+	const bool         want_minor = minor != nullptr && minor[0] == '1';
+	int                fd         = want_minor ? OpenUffd(features | UFFD_FEATURE_MINOR_SHMEM) : -1;
+	const bool         has_minor  = fd >= 0;
+	if (fd < 0) fd = OpenUffd(features);
+	void* pages = MAP_FAILED;
+	if (fd >= 0) {
 		pages = mmap(nullptr, WATCH_PAGE_COUNT, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
 	}
 	if (pages == MAP_FAILED) {
@@ -81,6 +132,11 @@ static void WriteWatchInit() {
 	g_watch_pages = static_cast<uint8_t*>(pages);
 	g_uffd        = fd;
 	std::printf("KYTY_UFFD_WP: write watch by userfaultfd write protection\n");
+	if (!want_minor) return;
+	g_minor_on = has_minor;
+	if (g_minor_on) g_minor_blocks = new std::map<uint64_t, uint64_t>;
+	std::printf("KYTY_UFFD_MINOR: %s\n", g_minor_on ? "the GPU's read protections of short runs by userfaultfd minor mode"
+	                                                : "userfaultfd minor mode unavailable, mprotect kept");
 }
 
 static bool WatchRange(uint64_t address, uint64_t size) {
@@ -96,12 +152,27 @@ static void SetWatchPages(uint64_t first, uint64_t end, uint8_t value) {
 	for (auto page = first; page < end; page++) __atomic_store_n(&g_watch_pages[page], value, __ATOMIC_RELAXED);
 }
 
+// Bits of [first, end) set or cleared, each page's others as they are now: another thread's protection of the pages
+// (its PROT_* bits) is not undone by a byte read before it.
+static void SetWatchBits(uint64_t first, uint64_t end, uint8_t bits) {
+	for (auto page = first; page < end; page++) __atomic_fetch_or(&g_watch_pages[page], bits, __ATOMIC_RELAXED);
+}
+
+static void ClearWatchBits(uint64_t first, uint64_t end, uint8_t bits) {
+	for (auto page = first; page < end; page++)
+		__atomic_fetch_and(&g_watch_pages[page], static_cast<uint8_t>(~bits), __ATOMIC_RELAXED);
+}
+
 // After an mprotect of [address, address + size): its pages' protection, their other bits kept.
 static void RecordWatchProtection(uint64_t address, uint64_t size, int protect) {
 	if (!WatchRange(address, (size + 0xfffu) & ~uint64_t {0xfff})) return;
 	for (auto page = address >> 12u, end = (address + size + 0xfffu) >> 12u; page < end; page++) {
-		const auto old = WatchPage(page);
-		if ((old & WATCH_PROT) != protect) __atomic_store_n(&g_watch_pages[page], static_cast<uint8_t>((old & ~WATCH_PROT) | protect), __ATOMIC_RELAXED);
+		// (Its other bits as other threads set them meanwhile: a minor page's zap among them.)
+		auto old = WatchPage(page);
+		while ((old & WATCH_PROT) != protect &&
+		       !__atomic_compare_exchange_n(&g_watch_pages[page], &old, static_cast<uint8_t>((old & ~WATCH_PROT) | protect), true,
+		                                    __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+		}
 	}
 }
 
@@ -111,6 +182,78 @@ static bool WriteProtect(uint64_t address, uint64_t size, bool on) {
 	wp.range.len   = size;
 	wp.mode        = on ? UFFDIO_WRITEPROTECT_MODE_WP : 0;
 	return ioctl(g_uffd, UFFDIO_WRITEPROTECT, &wp) == 0;
+}
+
+static bool RegisterView(uint64_t address, uint64_t size, uint64_t mode) {
+	uffdio_register reg {};
+	reg.range.start = address;
+	reg.range.len   = size;
+	reg.mode        = mode;
+	return ioctl(g_uffd, UFFDIO_REGISTER, &reg) == 0;
+}
+
+// A zapped run mapped again, write-protected or writable; page by page where a fault mapped some of it first (their
+// write protection set as asked) or a page left the page cache (nothing to map: its next access gets zeros, as any
+// hole's).
+static void MapZapped(uint64_t address, uint64_t size, bool wp) {
+	uffdio_continue map {};
+	map.range.start = address;
+	map.range.len   = size;
+	map.mode        = wp ? UFFDIO_CONTINUE_MODE_WP : 0;
+	if (ioctl(g_uffd, UFFDIO_CONTINUE, &map) == 0) return;
+	for (auto page = address; page < address + size; page += 0x1000u) {
+		map.range.start = page;
+		map.range.len   = 0x1000u;
+		map.mapped      = 0;
+		if (ioctl(g_uffd, UFFDIO_CONTINUE, &map) != 0 && errno == EEXIST) WriteProtect(page, 0x1000u, wp);
+	}
+}
+
+// The no-access protection of a registered run of `state` (SysVirtualProtectWriteWatch) by zapping its PTEs, when
+// minor mode can hold it: false keeps mprotect. A run outside minor mode first registers its aligned block's pages of
+// the view (those registered next to it, not in minor mode yet). The run's bits say zapped before its PTEs go (a fault
+// in between is served as a protection's), its block's say minor before its registration.
+static bool ZapRun(uint64_t address, uint64_t size, uint8_t state) {
+	if (!g_minor_on || !g_zap_no_access) return false;
+	if ((state & WATCH_ZAPPED) != 0) return true;
+	const auto first = address >> 12u, end = (address + size) >> 12u;
+	if ((state & WATCH_PROT) != (PROT_READ | PROT_WRITE) || end - first > MINOR_RUN_PAGES) return false;
+	unsigned char resident[MINOR_RUN_PAGES] {};
+	if (mincore(reinterpret_cast<void*>(address), size, resident) != 0) return false;
+	for (uint64_t i = 0; i < end - first; i++)
+		if ((resident[i] & 1u) == 0) return false;
+	{
+		std::lock_guard lock(g_minor_mutex);
+		if ((state & WATCH_MINOR) == 0) {
+			const auto block_first = first & ~(MINOR_BLOCK_PAGES - 1);
+			const auto block_end   = (end + MINOR_BLOCK_PAGES - 1) & ~(MINOR_BLOCK_PAGES - 1);
+			auto       lo = first, hi = end;
+			while (lo > block_first && (WatchPage(lo - 1) & (WATCH_REGISTERED | WATCH_MINOR)) == WATCH_REGISTERED) lo--;
+			while (hi < block_end && (WatchPage(hi) & (WATCH_REGISTERED | WATCH_MINOR)) == WATCH_REGISTERED) hi++;
+			if (g_minor_blocks->size() >= MINOR_BLOCK_CAP) return false;
+			SetWatchBits(lo, hi, WATCH_MINOR);
+			if (!RegisterView(lo << 12u, (hi - lo) << 12u, UFFDIO_REGISTER_MODE_MINOR | UFFDIO_REGISTER_MODE_WP)) {
+				ClearWatchBits(lo, hi, WATCH_MINOR);
+				return false;
+			}
+			(*g_minor_blocks)[lo] = hi;
+		}
+	}
+	SetWatchBits(first, end, WATCH_ZAPPED);
+	if (madvise(reinterpret_cast<void*>(address), size, MADV_DONTNEED) != 0) {
+		ClearWatchBits(first, end, WATCH_ZAPPED);
+		return false;
+	}
+	return true;
+}
+
+// The minor blocks over [first, end) forgotten (their view unmapped or replaced: its registration went with it).
+static void ForgetMinor(uint64_t first, uint64_t end) {
+	if (!g_minor_on) return;
+	std::lock_guard lock(g_minor_mutex);
+	auto it = g_minor_blocks->upper_bound(first);
+	if (it != g_minor_blocks->begin() && std::prev(it)->second > first) --it;
+	while (it != g_minor_blocks->end() && it->first < end) it = g_minor_blocks->erase(it);
 }
 #else
 static void WriteWatchInit() {}
@@ -699,8 +842,8 @@ bool SysVirtualProtectWriteWatch(uint64_t address, uint64_t size, VirtualMemory:
 	const bool watch    = protect == PROT_READ;
 	const bool writable = (protect & PROT_WRITE) != 0;
 	for (auto first = begin >> 12u, last = end >> 12u; first < last;) {
-		const auto state = WatchPage(first);
-		auto       next  = first + 1;
+		auto state = WatchPage(first);
+		auto next  = first + 1;
 		while (next < last && WatchPage(next) == state) next++;
 		const auto run_address = first << 12u;
 		const auto run_size    = (next - first) << 12u;
@@ -708,6 +851,14 @@ bool SysVirtualProtectWriteWatch(uint64_t address, uint64_t size, VirtualMemory:
 		if ((state & WATCH_REGISTERED) == 0) {
 			if (!SysVirtualProtect(run_address, run_size, mode)) return false;
 			continue;
+		}
+		if (protect == PROT_NONE && ZapRun(run_address, run_size, state)) continue;
+		if ((state & WATCH_ZAPPED) != 0 && protect != PROT_NONE) {
+			// (Lifted: the page cache pages mapped again, write-protected for a watch.)
+			MapZapped(run_address, run_size, watch);
+			ClearWatchBits(run_address >> 12u, next, static_cast<uint8_t>(WATCH_ZAPPED | (watch ? 0 : WATCH_WP)));
+			if (watch) SetWatchBits(run_address >> 12u, next, WATCH_WP);
+			state = WatchPage(run_address >> 12u);
 		}
 		const bool wp = (state & WATCH_WP) != 0;
 		if ((watch && !wp) || (writable && wp)) {
@@ -717,7 +868,8 @@ bool SysVirtualProtectWriteWatch(uint64_t address, uint64_t size, VirtualMemory:
 				if (!SysVirtualProtect(run_address, run_size, mode)) return false;
 				continue;
 			}
-			SetWatchPages(run_address >> 12u, next, static_cast<uint8_t>((state & ~WATCH_WP) | (watch ? WATCH_WP : 0)));
+			if (watch) SetWatchBits(run_address >> 12u, next, WATCH_WP);
+			else ClearWatchBits(run_address >> 12u, next, WATCH_WP);
 		}
 		const int target = watch ? PROT_READ | PROT_WRITE : protect;
 		if ((state & WATCH_PROT) != target &&
@@ -734,13 +886,35 @@ void SysVirtualWriteWatchMapped(uint64_t address, uint64_t size, VirtualMemory::
 	reg.range.len   = size;
 	reg.mode        = UFFDIO_REGISTER_MODE_WP;
 	const bool registered = ioctl(g_uffd, UFFDIO_REGISTER, &reg) == 0;
+	ForgetMinor(address >> 12u, (address + size) >> 12u);
 	SetWatchPages(address >> 12u, (address + size) >> 12u,
 	              static_cast<uint8_t>(get_protection_flag(mode) | (registered ? WATCH_REGISTERED : 0)));
 }
 
 void SysVirtualWriteWatchUnmapped(uint64_t address, uint64_t size) {
 	if (!WatchRange(address, size)) return;
+	ForgetMinor(address >> 12u, (address + size) >> 12u);
 	SetWatchPages(address >> 12u, (address + size) >> 12u, 0);
+}
+
+void SysVirtualZapNoAccess(bool on) {
+	g_zap_no_access = on;
+}
+
+// SIGBUS (before the fault handlers): a page not zapped whose PTE is missing, in minor mode (first touched in the view,
+// reclaimed, a zap's lift that found it mapped by a fault) mapped again, whatever its bits say (a registration they do
+// not show would fault forever); false for any other fault (a write protection's: its PTE is present; a zapped page's:
+// the fault handlers serve it as a protection's; a page outside minor mode: UFFDIO_CONTINUE refuses it).
+bool SysVirtualResolveMinorFault(uint64_t address, bool present) {
+	if (!g_minor_on || present || address >> 12u >= WATCH_PAGE_COUNT) return false;
+	const auto page  = address >> 12u;
+	const auto state = WatchPage(page);
+	if ((state & WATCH_ZAPPED) != 0) return false;
+	uffdio_continue map {};
+	map.range.start = page << 12u;
+	map.range.len   = 0x1000u;
+	map.mode        = (state & WATCH_WP) != 0 ? UFFDIO_CONTINUE_MODE_WP : 0;
+	return ioctl(g_uffd, UFFDIO_CONTINUE, &map) == 0;
 }
 #else
 bool SysVirtualProtectWriteWatch(uint64_t address, uint64_t size, VirtualMemory::Mode mode) {
@@ -750,6 +924,12 @@ bool SysVirtualProtectWriteWatch(uint64_t address, uint64_t size, VirtualMemory:
 void SysVirtualWriteWatchMapped(uint64_t /*address*/, uint64_t /*size*/, VirtualMemory::Mode /*mode*/) {}
 
 void SysVirtualWriteWatchUnmapped(uint64_t /*address*/, uint64_t /*size*/) {}
+
+void SysVirtualZapNoAccess(bool /*on*/) {}
+
+bool SysVirtualResolveMinorFault(uint64_t /*address*/, bool /*present*/) {
+	return false;
+}
 #endif
 
 bool SysVirtualFlushInstructionCache(uint64_t /*address*/, uint64_t /*size*/) {

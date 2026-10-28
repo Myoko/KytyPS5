@@ -45,8 +45,8 @@ constexpr uint64_t PageSize = 0x4000, CaveOffset = 0x8000000 + 4 * PageSize;
 
 enum class Mode { Off, Count, Walk, GiveBack };
 
-// KYTY_ENGINE_FREE=giveback|walk|count|0 (default: giveback with 20 GiB of RAM or less on Windows, where the RAM the
-// engine's free blocks hold presses on the rest; off with more).
+// KYTY_ENGINE_FREE=giveback|walk|count|0 (default: giveback with 16 GiB or less for the emulator on Windows
+// (LocalPlatform::EmulatorMemory), where the RAM the engine's free blocks hold presses on the rest; off with more).
 Mode GetMode() {
 	static const Mode mode = [] {
 		if (const char* value = std::getenv("KYTY_ENGINE_FREE"); value != nullptr && *value != '\0') {
@@ -57,7 +57,7 @@ Mode GetMode() {
 			                                           : Mode::Off;
 		}
 #if defined(_WIN32)
-		if (const auto ram = LocalPlatform::PhysicalMemory(); ram != 0 && ram <= (uint64_t {20} << 30u)) return Mode::GiveBack;
+		if (const auto ram = LocalPlatform::EmulatorMemory(); ram != 0 && ram <= (uint64_t {16} << 30u)) return Mode::GiveBack;
 #endif
 		return Mode::Off;
 	}();

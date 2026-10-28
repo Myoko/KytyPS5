@@ -105,6 +105,20 @@ class Live:
         k = self.peek(c + 0x38) if plausible(c) else 0
         return plausible(self.peek(k + 0x20)) if plausible(k) else False
 
+    def position(self):
+        # The player's position (H+0x20, three floats), None outside the game.
+        p = self.peek(CHR_INS_MAN)
+        c = self.peek(p + 0x258) if plausible(p) else 0
+        k = self.peek(c + 0x38) if plausible(c) else 0
+        h = self.peek(k + 0x20) if plausible(k) else 0
+        if not plausible(h):
+            return None
+        for line in self.send([f'peek {h + 0x20:x} 12']):
+            if line.startswith('LIVE_PEEK') and 'bytes=' in line:
+                data = bytes.fromhex(line.split('bytes=')[1].strip())
+                return struct.unpack('<3f', data) if len(data) == 12 else None
+        return None
+
     def press(self, buttons, held=0.15, after=3.0):
         self.send([f'pad -1 -1 -1 -1 {buttons:x} {held}'])
         time.sleep(held + after)
@@ -257,6 +271,8 @@ def run(args):
         result['boot_s'] = round(time.monotonic() - started)
         print(f'in game after {result["boot_s"]} s', flush=True)
         time.sleep(args.settle)
+        if args.where:
+            print(json.dumps({'position': live.position()}), flush=True)
         result['stand'] = measure(live, args.measure, f'{args.label}-stand')
         print(json.dumps(result['stand']), flush=True)
         if args.spin > 0:
@@ -264,6 +280,23 @@ def run(args):
             time.sleep(1)
             result['spin'] = measure(live, args.spin, f'{args.label}-spin')
             print(json.dumps(result['spin']), flush=True)
+        if args.glide:
+            # The player walks to a fixed point (live `glide`, no input) at --glide-speed m/s, measured on the way: the
+            # same route every run, where a stick walk's path varies.
+            start = live.position()
+            target = [float(v) for v in args.glide.split(',')]
+            live.send([f'glide {target[0]} {target[1]} {target[2]} {args.glide_speed}'])
+            time.sleep(1)
+            result['glide'] = measure(live, args.glide_seconds, f'{args.label}-glide')
+            result['glide']['from'] = start
+            result['glide']['to'] = live.position()
+            print(json.dumps(result['glide']), flush=True)
+        if args.walk > 0:
+            # Forward from the bench save's spot (1-1: down the first street, the camera looking ahead).
+            live.send([f'pad 128 0 -1 -1 0 {args.walk + 2}'])
+            time.sleep(1)
+            result['walk'] = measure(live, args.walk, f'{args.label}-walk')
+            print(json.dumps(result['walk']), flush=True)
         if args.shot:
             shot = folder / 'shots' / f'{args.label}.ppm'
             shot.parent.mkdir(exist_ok=True)
@@ -339,6 +372,11 @@ def main():
     r.add_argument('--settle', type=float, default=20)
     r.add_argument('--measure', type=int, default=20)
     r.add_argument('--spin', type=int, default=0)
+    r.add_argument('--walk', type=int, default=0, help='seconds walking forward, measured (after --spin)')
+    r.add_argument('--glide', default='', help='x,y,z: the player walks there (live glide), measured (after --spin)')
+    r.add_argument('--glide-speed', type=float, default=4.0)
+    r.add_argument('--glide-seconds', type=int, default=10)
+    r.add_argument('--where', action='store_true', help='print the player position after settling')
     r.add_argument('--shot', action='store_true')
     r.add_argument('--prof', type=float, default=0, help='seconds of process CPU samples after measuring')
     r.add_argument('--tracem', type=float, default=0, help='seconds of GPU time per draw and dispatch after measuring')

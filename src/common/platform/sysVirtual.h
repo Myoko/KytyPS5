@@ -25,6 +25,9 @@ bool     SysVirtualFlushInstructionCache(uint64_t address, uint64_t size);
 bool     SysVirtualProtectWriteWatch(uint64_t address, uint64_t size, VirtualMemory::Mode mode);
 void     SysVirtualWriteWatchMapped(uint64_t address, uint64_t size, VirtualMemory::Mode mode);
 void     SysVirtualWriteWatchUnmapped(uint64_t address, uint64_t size);
+// (Linux) VirtualMemory::ZapNoAccess; a SIGBUS of a minor-mode page served (sysLinuxVirtual.cpp).
+void     SysVirtualZapNoAccess(bool on);
+bool     SysVirtualResolveMinorFault(uint64_t address, bool present);
 
 } // namespace Common
 

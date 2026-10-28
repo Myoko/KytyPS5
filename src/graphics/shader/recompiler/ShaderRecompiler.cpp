@@ -805,6 +805,7 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 	}
 	ir.native_float_min_max =
 	    (Frontend::TranslatorFeatureSet() & Frontend::TranslatorFeatureNativeFloatMinMax) != 0;
+	ir.bda_group_walks = (Frontend::TranslatorFeatureSet() & Frontend::TranslatorFeatureBdaGroupWalks) != 0;
 	IR::AllocateBindings(ir, push_data_start_dword, options.enable_lod_stats);
 	DumpShaderIr(options, ir);
 	Spirv::AnalyzeProgramRequirements(ir);

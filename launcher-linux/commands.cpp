@@ -42,6 +42,7 @@ const std::vector<std::string>& GameVariables() {
 	                                             "KYTY_FLIP_RATE",
 	                                             "KYTY_DLSS_PRESET",
 	                                             "KYTY_DLSS_SHARPNESS",
+	                                             "KYTY_FSR_SHARPNESS",
 	                                             "KYTY_AUDIO_OUTPUT",
 	                                             "KYTY_RUN_LOG"};
 	return names;
@@ -293,10 +294,14 @@ Launch Commands::Play(const GameInfo& game, bool direct) const {
 	if (const auto preset = S().Str("dlss_preset");
 	    dlss && preset.size() == 1 && preset[0] >= 'A' && preset[0] <= 'O')
 		Put(set, "KYTY_DLSS_PRESET", preset);
-	// DLSS's sharpening (KYTY_DLSS_SHARPNESS, 0-1; none: not sharpened).
+	// The sharpening chosen on the Graphics page: DLSS's (KYTY_DLSS_SHARPNESS, 0-1; none: not sharpened), FSR 3's
+	// (KYTY_FSR_SHARPNESS; none: its 0.6).
 	if (const auto sharpness = S().Str("dlss_sharpness");
 	    dlss && (sharpness == "0.3" || sharpness == "0.6" || sharpness == "0.9"))
 		Put(set, "KYTY_DLSS_SHARPNESS", sharpness);
+	if (const auto sharpness = S().Str("fsr_sharpness");
+	    FsrUpscaler() && (sharpness == "0" || sharpness == "0.3" || sharpness == "0.9"))
+		Put(set, "KYTY_FSR_SHARPNESS", sharpness);
 	// The audio output the game is told (it mixes for it; a TV when none is set, issue #207).
 	if (const auto output = S().Str("audio_output"); output == "headphones" || output == "amplifier" || output == "soundbar")
 		Put(set, "KYTY_AUDIO_OUTPUT", output);

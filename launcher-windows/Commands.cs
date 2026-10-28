@@ -156,9 +156,12 @@ sealed class Commands {
 		// The DLSS model chosen on the Graphics page (a preset letter; none: the DLSS version's own choice).
 		var preset = S.Str("dlss_preset");
 		if (dlss && preset.Length == 1 && preset[0] >= 'A' && preset[0] <= 'O') sets.Add("KYTY_DLSS_PRESET=" + preset);
-		// DLSS's sharpening chosen there (KYTY_DLSS_SHARPNESS, 0-1; none: not sharpened).
+		// The sharpening chosen there: DLSS's (KYTY_DLSS_SHARPNESS, 0-1; none: not sharpened), FSR 3's (KYTY_FSR_SHARPNESS;
+		// none: its 0.6).
 		var sharpness = S.Str("dlss_sharpness");
 		if (dlss && (sharpness == "0.3" || sharpness == "0.6" || sharpness == "0.9")) sets.Add("KYTY_DLSS_SHARPNESS=" + sharpness);
+		var fsrSharpness = S.Str("fsr_sharpness");
+		if (FsrUpscaler && (fsrSharpness == "0" || fsrSharpness == "0.3" || fsrSharpness == "0.9")) sets.Add("KYTY_FSR_SHARPNESS=" + fsrSharpness);
 		// The Advanced page's extra options: their -Set pairs join (or replace) the launcher's own.
 		var extra = ExtraOptions();
 		foreach (var option in extra) {

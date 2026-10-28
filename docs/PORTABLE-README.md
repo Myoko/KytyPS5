@@ -87,7 +87,7 @@ folder (usually named `PPSA01341-app0`).
 **Double-click `KytyLauncher.exe`** (or `launcher.cmd`) for the settings window, in English or Chinese. Its
 pages: **Play** (the game folder or `.zar`; checks of the game, graphics card, RAM, precompiled shaders and
 DLSS/FSR; the Play button), **Display** (resolution, aspect ratio, fullscreen, HDR, up to 120 fps, VSync, low
-latency), **Graphics** (upscaler, render height with each height's DLSS mode, game output, DLSS model and
+latency), **Graphics** (upscaler, render height with each height's DLSS mode, game output, DLSS model,
 sharpening, graphics preset, frame generation), **Game** (console
 language, cheats), **Shaders** (precompile, optionally on the efficiency cores only so the PC stays responsive;
 export shader hints), **Advanced** (performance overlay, red-zone protection, safe GPU mode, the graphics card on a
@@ -141,8 +141,9 @@ DLSS, on any graphics card, AMD and Intel included: it is built into the emulato
 The render heights show their mode as with DLSS (FSR's "Native AA" at the output's own size). The in-game
 "Cinematic" mode stays native 4K without DLSS or FSR.
 The game's own TAA sharpens its picture; DLSS in its place does not, so fine detail (armour, cloth) looks softer
-with it. "DLSS sharpening" (Off by default; Low, Medium, High) sharpens DLSS's picture with RCAS, the sharpening
-FSR 3 uses (`-Set KYTY_DLSS_SHARPNESS=0.6` on a `run.cmd` line, 0 to 1); the higher levels can show halos on edges.
+with it. "Sharpening" (Off, Low, Medium, High) sharpens the upscaler's picture with RCAS, the sharpening FSR 3 uses:
+Off by default with DLSS (`-Set KYTY_DLSS_SHARPNESS=0.6` on a `run.cmd` line, 0 to 1), Medium with FSR 3, its own
+(`-Set KYTY_FSR_SHARPNESS=0.3`; 0 none); each upscaler keeps its own. The higher levels can show halos on edges.
 With DLSS or FSR 3 below their output's size, the game's textures are read with the detail of the output's size
 rather than the render height's (a texture LOD bias of log2(render height / output height), as NVIDIA's DLSS guide
 recommends; `-Set KYTY_UPSCALE_LOD_BIAS=0` turns it off).
@@ -241,7 +242,8 @@ shortcut):
 | `-Hdr` | HDR10 output when Windows' "Use HDR" is on for the display |
 | `-Upscaler dlss` | DLSS super resolution through the game's PS5 Pro path (NVIDIA RTX, needs Streamline: see "Upscaler" above) |
 | `-Upscaler fsr` | The same with AMD FSR 3, built in: any graphics card |
-| `-Set KYTY_DLSS_SHARPNESS=0.6` | With `-Upscaler dlss`: DLSS's picture sharpened, 0 to 1 (the launcher's "DLSS sharpening": Low 0.3, Medium 0.6, High 0.9) |
+| `-Set KYTY_DLSS_SHARPNESS=0.6` | With `-Upscaler dlss`: DLSS's picture sharpened, 0 to 1 (the launcher's "Sharpening": Low 0.3, Medium 0.6, High 0.9; none by default) |
+| `-Set KYTY_FSR_SHARPNESS=0.3` | With `-Upscaler fsr`: FSR 3's own sharpening, 0 (none) to 1 (the launcher's "Sharpening"; 0.6, Medium, by default) |
 | `-FrameGen 1` | DLSS frame generation, the number of generated frames per rendered one (`1` = 2x, up to `5`; RTX 40 or newer, needs Streamline) |
 | `-Gpu 1` | The graphics card on a PC with more than one: its number in the log's `Vulkan GPU <n>:` lines, or a part of its name (`-Gpu 4090`); give `precompile.cmd` the same `-Gpu`, so the shaders are compiled for that card. Without it the first discrete GPU, in the order Windows' graphics settings give |
 | `-Set KEY=VALUE` | An emulator switch, e.g. `-Set KYTY_SHADER_PREFETCH=0` (several: `-Set A=1,B=2`); the issues name the ones worth trying |
