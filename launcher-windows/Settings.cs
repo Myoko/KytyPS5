@@ -25,7 +25,8 @@ sealed class Settings {
 		new object[] {"pad_vibration", 200}, new object[] {"pad_vibration_ms", 60},
 		new object[] {"pad_actuator", 400},
 		// (Experimental page.)
-		new object[] {"present_direct", false}, new object[] {"antilag", false}, new object[] {"keep_resident", false},
+		new object[] {"present_direct", false}, new object[] {"vrr_flips", false}, new object[] {"antilag", false},
+		new object[] {"keep_resident", false},
 		new object[] {"fps30", false},
 		// (Advanced page.)
 		new object[] {"extra_args", ""}, new object[] {"gpu", ""}, new object[] {"reopen_launcher", false},

@@ -3,7 +3,7 @@
 # no projected decals), the game's own world changes to WORLDS in turn ("3 1": Latria; "2 1,5 1": Stonefang then
 # Valley), each 60 s settled, 15 s measured; one line a variant and world (fps, render ms, render busy, table draws;
 # the driver's GPU busy % over 5 s at the last world). DECK_SET="NAME=VALUE ..." adds emulator variables to every
-# boot. Run on the Deck in ~/KytyPS5-dev.
+# boot. Run on the Deck in ~/KytyPS5.
 world=$1
 shift
 for variant in "$@"; do

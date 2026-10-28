@@ -16,7 +16,7 @@ def main():
     parser.add_argument('label')
     parser.add_argument('--seconds', type=float, default=3)
     parser.add_argument('--writes', action='store_true')
-    parser.add_argument('--dir', default='~/KytyPS5-dev')
+    parser.add_argument('--dir', default='~/KytyPS5')
     args = parser.parse_args()
     folder = Path(args.dir).expanduser()
     log = max((folder / 'logs').glob('*.log'), key=lambda p: p.stat().st_mtime)

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """deckbench.py: one measured run of Demon's Souls 01.007.000 on the Steam Deck, for tuning over SSH (deck.sh run).
 
-The dev folder (--dir, default ~/KytyPS5-dev) holds the emulator under test, bench-save/ (the PC's 1-1 bench save,
-copied into the folder's own _SaveData before each run: the player's saves in ~/KytyPS5 are never touched) and a link to
-~/KytyPS5/_PipelineCache (the pipelines compiled so far). The emulator starts in the desktop session (systemd-run --user:
+The folder (--dir, default ~/KytyPS5: the Deck's install, where builds go directly, USER 10-28) holds the emulator
+under test and bench-save/ (the PC's 1-1 bench save), copied into the folder's _SaveData before each run: the Deck's
+saves there are replaced (USER 10-28: they do not matter). The emulator starts in the desktop session (systemd-run --user:
 the session's DISPLAY and WAYLAND_DISPLAY), enters the game with the scripted pad (live `pad`, padboot.py's way),
 settles, measures with the Deck's telemetry (GPU busy/clock/power, CPU clocks, memory, swap) and stops.
 
@@ -125,7 +125,8 @@ class Live:
 
 
 class Telemetry(threading.Thread):
-    """GPU busy %, GPU clock, package power, CPU clocks, memory and swap every half second; with gpu_metrics
+    """GPU busy %, GPU clock, package power, CPU clocks, memory and swap, the GPU's memory (GTT: the RAM it took, VRAM: the
+    1 GiB carved out of it) every half second; with gpu_metrics
     (gpumetrics.py) the power by rail (cpu_w, gfx_w) and the share of samples each SMU limit held the clocks."""
 
     def __init__(self):
@@ -133,6 +134,7 @@ class Telemetry(threading.Thread):
         self.samples, self.stop = [], threading.Event()
         device = Path('/sys/class/drm/card0/device')
         self.busy = device / 'gpu_busy_percent'
+        self.gtt, self.vram = device / 'mem_info_gtt_used', device / 'mem_info_vram_used'
         self.hwmon = next(device.glob('hwmon/hwmon*'), None)
 
     @staticmethod
@@ -156,6 +158,8 @@ class Telemetry(threading.Thread):
                 'cpu_mhz': sum(cpu) / len(cpu) if cpu else None,
                 'mem_avail_mb': kb('MemAvailable'),
                 'swap_used_mb': kb('SwapTotal') - kb('SwapFree'),
+                'gtt_mb': self.read(self.gtt, 1 / 2**20),
+                'vram_mb': self.read(self.vram, 1 / 2**20),
                 **self.metrics(),
             })
 
@@ -177,7 +181,9 @@ class Telemetry(threading.Thread):
                 'limits': {name: round(count / len(self.samples), 2) for name, count in limits.most_common()},
                 'cpu_mhz': avg('cpu_mhz'),
                 'mem_avail_min_mb': round(min((s['mem_avail_mb'] for s in self.samples), default=0)),
-                'swap_used_max_mb': round(max((s['swap_used_mb'] for s in self.samples), default=0))}
+                'swap_used_max_mb': round(max((s['swap_used_mb'] for s in self.samples), default=0)),
+                'gtt_max_mb': round(max((s['gtt_mb'] or 0 for s in self.samples), default=0)),
+                'vram_max_mb': round(max((s['vram_mb'] or 0 for s in self.samples), default=0))}
 
 
 def emulator_running():
@@ -364,7 +370,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='action', required=True)
     r = sub.add_parser('run')
-    r.add_argument('--dir', default='~/KytyPS5-dev')
+    r.add_argument('--dir', default='~/KytyPS5')
     r.add_argument('--exe', default='')
     r.add_argument('--set', action='append', default=[], help='NAME=VALUE for the emulator (KYTY_GAME_CONVARS adds)')
     r.add_argument('--preset', choices=sorted(PRESETS), default='lowest')

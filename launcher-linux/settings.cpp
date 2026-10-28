@@ -36,6 +36,7 @@ const nlohmann::ordered_json& Defaults() {
 		d["lowlatency"]          = false;
 		d["ui_language"]         = "";
 		d["present_direct"]      = false;
+		d["vrr_flips"]           = false;
 		d["antilag"]             = false;
 		d["keep_resident"]       = false;
 		d["fps30"]               = false;

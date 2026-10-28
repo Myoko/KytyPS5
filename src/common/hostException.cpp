@@ -424,10 +424,12 @@ static void SignalHandler(int signal_number, siginfo_t* signal_info, void* nativ
 	if (signal_number == SIGSEGV || signal_number == SIGBUS) {
 		info.type             = ExceptionType::AccessViolation;
 		const auto error_code = static_cast<uint64_t>(gregs[REG_ERR]);
-		// A minor-mode page's missing PTE first (sysLinuxVirtual.cpp, KYTY_UFFD_MINOR): mapped again, the access runs again.
+		// A minor-mode page's missing PTE first (sysLinuxVirtual.cpp, KYTY_UFFD_MINOR): mapped again, the access runs again;
+		// so does a write whose page the kernel write-protects while its bits say none.
 		if (signal_number == SIGBUS &&
 		    SysVirtualResolveMinorFault(reinterpret_cast<uint64_t>(signal_info->si_addr),
-		                                (error_code & PAGE_FAULT_ERROR_PRESENT) != 0))
+		                                (error_code & PAGE_FAULT_ERROR_PRESENT) != 0,
+		                                (error_code & PAGE_FAULT_ERROR_WRITE) != 0))
 			return;
 		// The texture offload's pages next, as on Windows: true runs the access again.
 		if (const auto probe = g_probe_handler.load(std::memory_order_acquire);

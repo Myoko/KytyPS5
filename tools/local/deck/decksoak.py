@@ -20,7 +20,7 @@ def main():
     parser.add_argument('--worlds', default='2 1,3 1,4 1,5 1,0 1,1 1')
     parser.add_argument('--settle', type=int, default=12)
     parser.add_argument('--stay', type=int, default=25)
-    parser.add_argument('--dir', default='~/KytyPS5-dev')
+    parser.add_argument('--dir', default='~/KytyPS5')
     args = parser.parse_args()
     folder = Path(args.dir).expanduser()
     log = max((folder / 'logs').glob('*.log'), key=lambda p: p.stat().st_mtime)

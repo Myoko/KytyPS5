@@ -180,10 +180,9 @@ public:
 				}
 			}
 
-			// The emulator's own keys: F7 the mouse camera, F8 its overlay, F9 a debug snapshot, F11 full screen.
-			// (Space pauses unless a mapping takes it, the Pause key then; the system's dialogs see Esc first.)
-			const bool reserved = binding.key == SDLK_F7 || binding.key == SDLK_F8 || binding.key == SDLK_F9 ||
-			                      binding.key == SDLK_F11;
+			// The emulator's own keys: F7 the mouse camera, F8 its overlay, F11 full screen. (Space pauses unless a
+			// mapping takes it, the Pause key then; the system's dialogs see Esc first.)
+			const bool reserved = binding.key == SDLK_F7 || binding.key == SDLK_F8 || binding.key == SDLK_F11;
 			if (binding.control == INVALID_CONTROL || reserved ||
 			    (binding.key == SDLK_UNKNOWN && binding.mouse_button == 0)) {
 				// (Skipped, not the end of the start-up: the other mappings still work.)
@@ -429,6 +428,10 @@ void HostInputKey(int key_code, bool down) {
 bool HostInputMapsKey(int key_code) {
 	const auto& map = GetInputMap();
 	return map.Custom() && map.FindKey(key_code) != INVALID_CONTROL;
+}
+
+bool HostInputDefaultKeysUsed() {
+	return DefaultKeysUsed();
 }
 
 void HostInputMouseButton(uint8_t mouse_button, bool down) {

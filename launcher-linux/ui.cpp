@@ -1493,6 +1493,8 @@ void LauncherWindow::ExperimentalPage() {
 	    "presentdirect", [&] { SettingSwitch("##presentdirect", "present_direct"); },
 	    T("presentdirect.desc"));
 	Row(nullptr, [&] { Feedback(37); });
+	Row("vrrflips", [&] { SettingSwitch("##vrrflips", "vrr_flips"); }, T("vrrflips.desc"));
+	Row(nullptr, [&] { Feedback(221); });
 	Section("experimental.amd");
 	Row(
 	    "antilag",
@@ -1545,6 +1547,7 @@ std::string LauncherWindow::Summary(std::vector<std::pair<std::string, std::stri
 	if (hd) options.emplace_back(T("summary.hd"));
 	if (output1440) options.emplace_back(T("summary.1440"));
 	if (S().Bool("present_direct")) options.emplace_back(T("summary.presentDirect"));
+	if (S().Bool("vrr_flips")) options.emplace_back(T("summary.vrrFlips"));
 	if (S().Bool("antilag")) options.emplace_back(T("summary.antilag"));
 	if (S().Bool("mangohud") && context_.HasMangoHud()) options.emplace_back(T("summary.mangohud"));
 	if (!S().Str("extra_args").empty()) options.emplace_back(T("summary.extra"));

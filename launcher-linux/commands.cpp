@@ -38,13 +38,13 @@ const std::vector<std::string>& GameVariables() {
 	                                             "KYTY_FPS_HUD",
 	                                             "KYTY_COMPUTE_CHAIN",
 	                                             "KYTY_PRESENT_DIRECT",
+	                                             "KYTY_VRR",
 	                                             "KYTY_ANTI_LAG",
 	                                             "KYTY_FLIP_RATE",
 	                                             "KYTY_DLSS_PRESET",
 	                                             "KYTY_DLSS_SHARPNESS",
 	                                             "KYTY_FSR_SHARPNESS",
-	                                             "KYTY_AUDIO_OUTPUT",
-	                                             "KYTY_RUN_LOG"};
+	                                             "KYTY_AUDIO_OUTPUT"};
 	return names;
 }
 
@@ -249,7 +249,8 @@ Launch Commands::Play(const GameInfo& game, bool direct) const {
 			convars = quality == "low"
 			              ? "r_forceViewportHeightForPixelSizeCalc=720;sunShadowMaxDistance=125"
 			              : "r_forceViewportHeightForPixelSizeCalc=480;sunShadowMaxDistance=60;"
-			                "r_enableAmbientShadowing=false;r_enableSpotShadows=false";
+			                "r_enableAmbientShadowing=false;r_enableSpotShadows=false;"
+			                "r_projectedDecalEnable=false";
 		}
 	}
 	// Upscaler "Off" (run-windows.ps1 -Antialiasing off, issue #220): Demon's Souls' TAA off and
@@ -287,6 +288,8 @@ Launch Commands::Play(const GameInfo& game, bool direct) const {
 	// Safe GPU mode: Demon's Souls' compute work one dispatch after another.
 	if (S().Bool("safegpu")) Put(set, "KYTY_COMPUTE_CHAIN", "0");
 	if (S().Bool("present_direct")) Put(set, "KYTY_PRESENT_DIRECT", "1");
+	// Frames flip as soon as they are done, not on the 60 Hz vblanks (VRR displays, issue #221).
+	if (S().Bool("vrr_flips")) Put(set, "KYTY_VRR", "1");
 	if (S().Bool("antilag")) Put(set, "KYTY_ANTI_LAG", "1");
 	// The game's 3D view at most every 2nd vblank: a steady 30 fps at the same game speed.
 	if (S().Bool("fps30")) Put(set, "KYTY_FLIP_RATE", "1");
@@ -308,8 +311,6 @@ Launch Commands::Play(const GameInfo& game, bool direct) const {
 	Put(set, "MANGO", S().Bool("mangohud") && context_.HasMangoHud() ? "1" : "0");
 	Put(set, "KYTY_GAME", S().Str("game"));
 	if (!context_.emulator.empty()) Put(set, "KYTY_BIN", context_.emulator.string());
-	// (Named to the emulator too: F9's debug snapshot notes the run's log.)
-	Put(set, "KYTY_RUN_LOG", launch.log.string());
 
 	// The extra options: their pairs replace the launcher's (KEY= removes one the launcher set,
 	// else turns the emulator's own default off, 0), their --options the launcher's of the same

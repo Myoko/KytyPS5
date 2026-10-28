@@ -854,22 +854,29 @@ bool SysVirtualProtectWriteWatch(uint64_t address, uint64_t size, VirtualMemory:
 		}
 		if (protect == PROT_NONE && ZapRun(run_address, run_size, state)) continue;
 		if ((state & WATCH_ZAPPED) != 0 && protect != PROT_NONE) {
-			// (Lifted: the page cache pages mapped again, write-protected for a watch.)
+			// (Lifted: the page cache pages mapped again, write-protected for a watch; the bits say so before the run stops
+			// being zapped, which the fault paths below leave alone.)
 			MapZapped(run_address, run_size, watch);
-			ClearWatchBits(run_address >> 12u, next, static_cast<uint8_t>(WATCH_ZAPPED | (watch ? 0 : WATCH_WP)));
 			if (watch) SetWatchBits(run_address >> 12u, next, WATCH_WP);
+			ClearWatchBits(run_address >> 12u, next, static_cast<uint8_t>(WATCH_ZAPPED | (watch ? 0 : WATCH_WP)));
 			state = WatchPage(run_address >> 12u);
 		}
 		const bool wp = (state & WATCH_WP) != 0;
 		if ((watch && !wp) || (writable && wp)) {
+			// The bits first, then the kernel's write protection: a minor fault mapping a page meanwhile maps it as the bits
+			// say and then looks at them again (SysVirtualResolveMinorFault), and a write the kernel still protects while the
+			// bits say none only finds the lift early. The other way round, a minor fault between the two mapped a page
+			// write-protected from the bits read before a lift cleared them: the kernel kept a protection the bits no longer
+			// showed, and the page's writes faulted forever (Steam Deck 10-28: a job worker's 27,000 SIGBUS a second at a
+			// world load, the game stopped).
+			if (watch) SetWatchBits(run_address >> 12u, next, WATCH_WP);
+			else ClearWatchBits(run_address >> 12u, next, WATCH_WP);
 			if (!WriteProtect(run_address, run_size, watch)) {
 				// (No longer a registered view: something else was mapped there.)
 				SetWatchPages(run_address >> 12u, next, state & WATCH_PROT);
 				if (!SysVirtualProtect(run_address, run_size, mode)) return false;
 				continue;
 			}
-			if (watch) SetWatchBits(run_address >> 12u, next, WATCH_WP);
-			else ClearWatchBits(run_address >> 12u, next, WATCH_WP);
 		}
 		const int target = watch ? PROT_READ | PROT_WRITE : protect;
 		if ((state & WATCH_PROT) != target &&
@@ -903,18 +910,51 @@ void SysVirtualZapNoAccess(bool on) {
 
 // SIGBUS (before the fault handlers): a page not zapped whose PTE is missing, in minor mode (first touched in the view,
 // reclaimed, a zap's lift that found it mapped by a fault) mapped again, whatever its bits say (a registration they do
-// not show would fault forever); false for any other fault (a write protection's: its PTE is present; a zapped page's:
-// the fault handlers serve it as a protection's; a page outside minor mode: UFFDIO_CONTINUE refuses it).
-bool SysVirtualResolveMinorFault(uint64_t address, bool present) {
-	if (!g_minor_on || present || address >> 12u >= WATCH_PAGE_COUNT) return false;
+// not show would fault forever), write-protected as its bits say once mapped (a protection's change meanwhile went to a
+// page not mapped: its bits changed first, SysVirtualProtectWriteWatch). And a write the kernel write-protects on a page
+// of a registered view whose bits say no write protection, not zapped: the kernel's protection lifted (a lift under way,
+// its bits cleared already; or one the kernel kept that the bits lost, which faulted forever). False for any other fault
+// (a write protection the bits show, a zapped page's: the fault handlers serve them as protections'; a page outside
+// minor mode: UFFDIO_CONTINUE refuses it).
+static std::atomic<uint64_t> g_stale_write_protects {0};
+
+bool SysVirtualResolveMinorFault(uint64_t address, bool present, bool write) {
+	if (g_uffd < 0 || address >> 12u >= WATCH_PAGE_COUNT) return false;
 	const auto page  = address >> 12u;
-	const auto state = WatchPage(page);
-	if ((state & WATCH_ZAPPED) != 0) return false;
+	auto       state = WatchPage(page);
+	if (present) {
+		if (!write || (state & (WATCH_REGISTERED | WATCH_ZAPPED | WATCH_WP)) != WATCH_REGISTERED ||
+		    (state & WATCH_PROT) != (PROT_READ | PROT_WRITE) || !WriteProtect(page << 12u, 0x1000u, false))
+			return false;
+		// (A protection of the page meanwhile, its bit set before this lift reached the kernel: set again.)
+		for (int tries = 0; tries < 8; tries++) {
+			const auto now = WatchPage(page);
+			if ((now & WATCH_ZAPPED) != 0 || ((now ^ state) & WATCH_WP) == 0) break;
+			(void)WriteProtect(page << 12u, 0x1000u, (now & WATCH_WP) != 0);
+			state = now;
+		}
+		// (Mostly a lift under way: another thread's write between its bits and its ioctl.)
+		if (const auto count = g_stale_write_protects.fetch_add(1, std::memory_order_relaxed); (count & (count - 1)) == 0) {
+			std::printf("KYTY_UFFD_WP: %llu write(s) the kernel still write-protected on pages whose bits had none (a lift "
+			            "under way, or a protection the bits lost), the protection lifted (0x%llx)\n",
+			            static_cast<unsigned long long>(count + 1), static_cast<unsigned long long>(page << 12u));
+			std::fflush(stdout);
+		}
+		return true;
+	}
+	if (!g_minor_on || (state & WATCH_ZAPPED) != 0) return false;
 	uffdio_continue map {};
 	map.range.start = page << 12u;
 	map.range.len   = 0x1000u;
 	map.mode        = (state & WATCH_WP) != 0 ? UFFDIO_CONTINUE_MODE_WP : 0;
-	return ioctl(g_uffd, UFFDIO_CONTINUE, &map) == 0;
+	if (ioctl(g_uffd, UFFDIO_CONTINUE, &map) != 0) return false;
+	for (int tries = 0; tries < 8; tries++) {
+		const auto now = WatchPage(page);
+		if ((now & WATCH_ZAPPED) != 0 || ((now ^ state) & WATCH_WP) == 0) break;
+		(void)WriteProtect(page << 12u, 0x1000u, (now & WATCH_WP) != 0);
+		state = now;
+	}
+	return true;
 }
 #else
 bool SysVirtualProtectWriteWatch(uint64_t address, uint64_t size, VirtualMemory::Mode mode) {
@@ -927,7 +967,7 @@ void SysVirtualWriteWatchUnmapped(uint64_t /*address*/, uint64_t /*size*/) {}
 
 void SysVirtualZapNoAccess(bool /*on*/) {}
 
-bool SysVirtualResolveMinorFault(uint64_t /*address*/, bool /*present*/) {
+bool SysVirtualResolveMinorFault(uint64_t /*address*/, bool /*present*/, bool /*write*/) {
 	return false;
 }
 #endif

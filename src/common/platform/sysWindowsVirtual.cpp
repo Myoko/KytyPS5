@@ -352,7 +352,7 @@ void SysVirtualWriteWatchUnmapped(uint64_t /*address*/, uint64_t /*size*/) {}
 
 void SysVirtualZapNoAccess(bool /*on*/) {}
 
-bool SysVirtualResolveMinorFault(uint64_t /*address*/, bool /*present*/) {
+bool SysVirtualResolveMinorFault(uint64_t /*address*/, bool /*present*/, bool /*write*/) {
 	return false;
 }
 

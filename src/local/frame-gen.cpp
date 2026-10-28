@@ -2162,10 +2162,11 @@ bool Upscale(vk::CommandBuffer command, const UpscaleInputs& inputs, const vk::d
 		r.usage        = static_cast<uint32_t>(static_cast<VkImageUsageFlags>(image.usage));
 		return r;
 	};
-	auto             color  = resource(inputs.color);
-	auto             depth  = resource(inputs.depth);
-	auto             motion = resource(inputs.motion);
-	auto             output = resource(inputs.output);
+	auto             color    = resource(inputs.color);
+	auto             depth    = resource(inputs.depth);
+	auto             motion   = resource(inputs.motion);
+	auto             output   = resource(inputs.output);
+	auto             reactive = resource(inputs.reactive);
 	// (KYTY_SR_LOG: the first two evaluations' images and constants.)
 	static const bool describe = std::getenv("KYTY_SR_LOG") != nullptr;
 	if (static std::atomic<uint32_t> described {0}; describe && described.fetch_add(1, std::memory_order_relaxed) < 2) {
@@ -2185,11 +2186,14 @@ bool Upscale(vk::CommandBuffer command, const UpscaleInputs& inputs, const vk::d
 	}
 	const sl::Extent render {0, 0, inputs.color.extent.width, inputs.color.extent.height};
 	const sl::Extent full {0, 0, inputs.output.extent.width, inputs.output.extent.height};
+	// (The game's reactive mask as DLSS's bias towards the current color: 1 rejects the history; untagged, none.)
 	const sl::ResourceTag tags[] {
 	    sl::ResourceTag(&color, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eValidUntilEvaluate, &render),
 	    sl::ResourceTag(&output, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eValidUntilEvaluate, &full),
 	    sl::ResourceTag(&depth, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilEvaluate, &render),
 	    sl::ResourceTag(&motion, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilEvaluate, &render),
+	    sl::ResourceTag(inputs.reactive.image ? &reactive : nullptr, sl::kBufferTypeBiasCurrentColorHint,
+	                    sl::ResourceLifecycle::eValidUntilEvaluate, &render),
 	};
 	auto* command_buffer = reinterpret_cast<sl::CommandBuffer*>(static_cast<VkCommandBuffer>(command));
 	if (const auto result = g_api.set_tag_for_frame(*token, viewport, tags, static_cast<uint32_t>(std::size(tags)), command_buffer);

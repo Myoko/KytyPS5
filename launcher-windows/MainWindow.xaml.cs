@@ -67,7 +67,7 @@ partial class MainWindow : Window {
 	ComboBox resolution, ratio, render, upscaler, dlssModel, sharpness, output, quality, frameGen, language, audioOutput, hud, uiLanguage, gpu;
 	// The Sharpening row's value for each upscaler ("0" to "0.9"), and the upscaler whose value it shows.
 	string dlssSharpness = "0", fsrSharpness = "0.6", sharpnessShown = "";
-	CheckBox fullscreen, aspect, hdr, fps120, vsync, lowLatency, fsr, cheats, redzone, safeGpu, ecores, presentDirect, antiLag,
+	CheckBox fullscreen, aspect, hdr, fps120, vsync, lowLatency, fsr, cheats, redzone, safeGpu, ecores, presentDirect, vrrFlips, antiLag,
 		keepResident, fps30, padSpeaker, reopenLauncher;
 	TextBlock renderNote, outputNote, upscalerNote, frameGenNote, streamlineText, cheatState, bannerTitle, bannerLine, storeLine;
 	Image banner;
@@ -894,6 +894,7 @@ partial class MainWindow : Window {
 	// Options still being tried out (not defaults yet): a player turns one on, and its issue collects how it went.
 	FrameworkElement BuildExperimentalPage() {
 		presentDirect = Switch(S.Bool("present_direct"));
+		vrrFlips = Switch(S.Bool("vrr_flips"));
 		antiLag = Switch(S.Bool("antilag") && context.AmdGpu, context.AmdGpu);
 		keepResident = Switch(S.Bool("keep_resident"));
 		fps30 = Switch(S.Bool("fps30"));
@@ -905,6 +906,8 @@ partial class MainWindow : Window {
 			Section("experimental.display"),
 			Row("presentdirect", presentDirect, Desc(T("presentdirect.desc"))),
 			Row(null, Feedback(37)),
+			Row("vrrflips", vrrFlips, Desc(T("vrrflips.desc"))),
+			Row(null, Feedback(221)),
 			Section("experimental.memory"),
 			Row("keepresident", keepResident, Desc(T("keepresident.desc"))),
 			Row(null, Feedback(50)),
@@ -980,6 +983,7 @@ partial class MainWindow : Window {
 		if (context.FsrAvailable) S.Set("fsr", fsr.IsChecked == true);
 		S.Set("ecores", ecores.IsChecked == true);
 		S.Set("present_direct", presentDirect.IsChecked == true);
+		S.Set("vrr_flips", vrrFlips.IsChecked == true);
 		S.Set("antilag", antiLag.IsChecked == true && context.AmdGpu);
 		S.Set("keep_resident", keepResident.IsChecked == true);
 		S.Set("fps30", fps30.IsChecked == true);
@@ -1014,6 +1018,7 @@ partial class MainWindow : Window {
 		if (hdOutput) options.Add(T("summary.hd"));
 		if (output1440) options.Add(T("summary.1440"));
 		if (S.Bool("present_direct")) options.Add(T("summary.presentDirect"));
+		if (S.Bool("vrr_flips")) options.Add(T("summary.vrrFlips"));
 		if (S.Bool("antilag")) options.Add(T("summary.antilag"));
 		if (S.Bool("keep_resident")) options.Add(T("summary.keepResident"));
 		if (!S.Bool("pad_speaker")) options.Add(T("summary.padSpeakerOff"));

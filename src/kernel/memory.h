@@ -204,6 +204,8 @@ bool TryPrepareHostOverwrite(uint64_t vaddr, uint64_t size);
 // The images over the range only (a GPU-written image's bytes here are stale: they are rewritten as InvalidateMemory
 // would make them).
 bool TryPrepareHostImageWrite(uint64_t vaddr, uint64_t size);
+// Whether a page of the range is one the GPU caches' trackers protect (PageManager::WatchedSpan: no system call).
+[[nodiscard]] bool GuestRangeWatched(uint64_t vaddr, uint64_t size);
 void                   InstallGpuResources(Graphics::GpuResourceManager* resources) noexcept;
 // Whether a guest mapping holds vaddr once a mapping change under way is done (it waits for one).
 [[nodiscard]] bool     IsGuestMappedAfterChanges(uint64_t vaddr);

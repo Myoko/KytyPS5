@@ -1575,6 +1575,12 @@ bool TryPrepareHostImageWrite(uint64_t vaddr, uint64_t size) {
 	return g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, size) && g_gpu_resources->InvalidateImages(vaddr, size);
 }
 
+bool GuestRangeWatched(uint64_t vaddr, uint64_t size) {
+	uint64_t first = 0, end = 0;
+	return g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, size) &&
+	       g_gpu_resources->WatchedSpan(vaddr, size, &first, &end);
+}
+
 bool TryPrepareHostOverwrite(uint64_t vaddr, uint64_t size) {
 	return g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, size) &&
 	       g_gpu_resources->InvalidateMemoryForWrite(vaddr, size);

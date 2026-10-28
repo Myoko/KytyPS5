@@ -19,6 +19,7 @@
 #include "common/assert.h"
 #include "frame-gen.h"
 #include "fsr-native.h"
+#include "live-switch.h"
 #include "gpu_tiler_shaders/sr_exposure_spv.h"
 #include "gpu_tiler_shaders/sr_sharpen_spv.h"
 #ifdef KYTY_LOCAL_VULKAN_RECORDING
@@ -44,7 +45,7 @@ namespace {
 
 // The parameter block's texture slots (01.007.000 SuperResolution::Apply; slot 3 is never set, 5 is a 1x1 exposure
 // over the TAA's constants, 6 the game's reactive mask).
-constexpr uint32_t SlotOutput = 0, SlotColor = 1, SlotMotion = 2, SlotDepth = 4, SlotExposure = 5;
+constexpr uint32_t SlotOutput = 0, SlotColor = 1, SlotMotion = 2, SlotDepth = 4, SlotExposure = 5, SlotReactive = 6;
 // Its words: the projection (view to clip, row vectors) at +0x6c, the near and far planes at +0xe8, the jitter in
 // render pixels at +0x100, the motion vectors' scale to render pixels towards the previous frame at +0x108 (the
 // render size, negated), the reset flag at byte +0x11c (no history: the first frame, a cut).
@@ -470,6 +471,36 @@ void RenderExecutor::RunSuperResolution(CommandBuffer& buffer, const SuperResolu
 		}
 		BindImage(bindings[i].image_id, storage);
 	}
+	// The game's reactive mask (slot 6), where given: the pixels Sony's upscaler is told to take from this frame rather
+	// than from its history, the effects drawn with a pattern that changes every frame (fire, smoke, the soul form's
+	// glow). DLSS and FSR 3 take it too: without it they averaged those pixels with their history, which flickered
+	// (issue #232: the PS5 Pro path with either, not the game's own TAA). Live switch sr_reactive 0 (KYTY_SR_REACTIVE its
+	// start value; a comparison): not given.
+	static auto& reactive_switch = LiveSwitch::Find("sr_reactive", 1);
+	const bool   reactive_wanted = reactive_switch.load(std::memory_order_relaxed) != 0;
+	TextureBinding reactive_binding;
+	bool           has_reactive = false;
+	if (ShaderTextureResource descriptor {}; reactive_wanted && (packet.textures_given & (1u << SlotReactive)) != 0) {
+		std::memcpy(descriptor.fields, packet.textures[SlotReactive], sizeof(descriptor.fields));
+		if (!descriptor.IsNull()) {
+			ShaderRecompiler::IR::ImageResource resource {};
+			resource.source         = 0x5352u + SlotReactive;
+			resource.resource_class = ShaderRecompiler::IR::ImageResourceClass::Sampled;
+			resource.numeric_class  = Prospero::SampledTextureNumericClass(descriptor.Format());
+			resource.dimension      = ShaderRecompiler::Decoder::ImageDimension::Dim2D;
+			resource.read           = true;
+			ShaderRecompiler::IR::DescriptorValue value {};
+			std::copy(std::begin(descriptor.fields), std::end(descriptor.fields), value.dwords.begin());
+			value.dword_count = 8;
+			reactive_binding  = ResolveTexture(resource, value);
+			has_reactive      = !reactive_binding.desc.info.data.Empty();
+			if (has_reactive) BindImage(reactive_binding.image_id, false);
+		}
+	}
+	if (has_reactive) {
+		reactive_binding.image_view = cache.FindTexture(reactive_binding.image_id, reactive_binding.desc);
+		cache.GetImage(reactive_binding.image_id).usage.texture = true;
+	}
 	// (As AcquireImages: the images' contents current, the output's write noted.)
 	for (auto& binding: bindings) {
 		auto       desc    = binding.desc;
@@ -541,6 +572,9 @@ void RenderExecutor::RunSuperResolution(CommandBuffer& buffer, const SuperResolu
 	inputs.motion         = upscale_image(bindings[1], motion, vk::ImageLayout::eShaderReadOnlyOptimal);
 	inputs.depth          = upscale_image(bindings[2], depth, depth_layout);
 	inputs.output         = upscale_image(bindings[3], output, vk::ImageLayout::eGeneral);
+	if (has_reactive && upscaler)
+		inputs.reactive = upscale_image(reactive_binding, cache.GetImage(reactive_binding.image_id),
+		                                vk::ImageLayout::eShaderReadOnlyOptimal);
 	inputs.jitter_x       = Word(packet, JitterWord);
 	inputs.jitter_y       = Word(packet, JitterWord + 1);
 	inputs.motion_scale_x = Word(packet, MotionScaleWord);
@@ -611,6 +645,8 @@ void RenderExecutor::RunSuperResolution(CommandBuffer& buffer, const SuperResolu
 		describe("motion", motion, bindings[1]);
 		describe("depth", depth, bindings[2]);
 		describe("output", output, bindings[3]);
+		if (has_reactive) describe("reactive mask", cache.GetImage(reactive_binding.image_id), reactive_binding);
+		else std::printf("Super resolution: no reactive mask (%s)\n", reactive_wanted ? "the game gave none" : "KYTY_SR_REACTIVE=0");
 	}
 	if (static std::atomic<uint32_t> reports {0}; reports.fetch_add(1, std::memory_order_relaxed) < 2) {
 		std::printf("Super resolution: %s, the game's exposure %s\n", dlss ? "DLSS" : fsr ? "FSR 3" : "stretch",
@@ -628,6 +664,10 @@ void RenderExecutor::RunSuperResolution(CommandBuffer& buffer, const SuperResolu
 		depth.Transit(depth_layout, vk::AccessFlagBits2::eShaderRead, range(bindings[2]), vk_buffer);
 		output.Transit(vk::ImageLayout::eGeneral, vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite,
 		               range(bindings[3]), vk_buffer);
+		if (inputs.reactive.image)
+			cache.GetImage(reactive_binding.image_id)
+			    .Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderRead, range(reactive_binding),
+			             vk_buffer);
 #ifdef KYTY_LOCAL_VULKAN_RECORDING
 		const LocalVulkanRecording::Segment segment {&record, sizeof(record)};
 		if (!LocalVulkanRecording::EnqueuePacket(ReplayUpscale, {&segment, 1}))

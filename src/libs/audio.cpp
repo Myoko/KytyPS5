@@ -420,6 +420,13 @@ static void LogAudioDevicesOnce() {
 bool Audio::OpenSdlDevice(PortOut* port) {
 	EXIT_IF(port == nullptr);
 
+#if defined(KYTY_STEAM_DECK)
+	// The Steam Deck build: SDL's ALSA backend (PipeWire's ALSA plugin plays it), PulseAudio's if ALSA fails, unless
+	// SDL_AUDIODRIVER names others. Each of the game's 8 ports is a device of its own, waking every 5.3 ms grain: through
+	// PulseAudio that took ~0.47 of a CPU (its main loop 0.37, nearly all in the kernel), through ALSA ~0.11; standing at
+	// 1-1, 36.6-36.85 fps (three boots) -> 37.8-37.9 (two), the same queue dropouts.
+	if (std::getenv("SDL_AUDIODRIVER") == nullptr) setenv("SDL_AUDIODRIVER", "alsa,pulseaudio", 0);
+#endif
 	if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
 		LOGF("AudioOut: SDL audio init failed: %s\n", SDL_GetError());
 		return false;

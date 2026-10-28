@@ -122,6 +122,8 @@ sealed class Commands {
 		if (S.Bool("safegpu")) sets.Add("KYTY_COMPUTE_CHAIN=0");
 		// Experiments: each frame presented as it is handed over (variable refresh rate displays, issue #37), and AMD Anti-Lag.
 		if (S.Bool("present_direct")) sets.Add("KYTY_PRESENT_DIRECT=1");
+		// Frames flip as soon as they are done, not on the 60 Hz vblanks (VRR displays, issue #221).
+		if (S.Bool("vrr_flips")) sets.Add("KYTY_VRR=1");
 		if (S.Bool("antilag")) sets.Add("KYTY_ANTI_LAG=1");
 		// The game's 3D view at most every 2nd vblank: a steady 30 fps at the same game speed (movies and menus keep 60).
 		if (S.Bool("fps30")) sets.Add("KYTY_FLIP_RATE=1");

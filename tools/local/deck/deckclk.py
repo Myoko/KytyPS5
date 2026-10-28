@@ -19,7 +19,7 @@ def main():
     parser.add_argument('--spin', type=int, default=8)
     parser.add_argument('--settle', type=float, default=4)
     parser.add_argument('--tdp', type=int, default=0, help='also the TDP limit (W) for every step')
-    parser.add_argument('--dir', default='~/KytyPS5-dev')
+    parser.add_argument('--dir', default='~/KytyPS5')
     args = parser.parse_args()
     folder = Path(args.dir).expanduser()
     perf = folder / 'deck-perf.sh'

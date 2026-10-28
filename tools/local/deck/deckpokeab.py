@@ -23,7 +23,7 @@ def main():
     parser.add_argument('--measure', type=int, default=8)
     parser.add_argument('--settle', type=float, default=3)
     parser.add_argument('--exe', default='/src/kyty/_Build/deck/kyty_emulator')
-    parser.add_argument('--dir', default='~/KytyPS5-dev')
+    parser.add_argument('--dir', default='~/KytyPS5')
     args = parser.parse_args()
     folder = Path(args.dir).expanduser()
     nm = subprocess.run(['podman', 'exec', 'kytybuild', 'nm', args.exe], capture_output=True, text=True).stdout
