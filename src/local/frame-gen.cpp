@@ -2027,6 +2027,16 @@ bool UpscalerReady() {
 	return g_upscale_ready;
 }
 
+bool PresentEveryFrame() {
+	static const char* forced = std::getenv("KYTY_PRESENT_EVERY_FRAME");
+	if (forced != nullptr && *forced != '\0') return std::strcmp(forced, "0") != 0;
+#ifdef KYTY_FRAMEGEN_STREAMLINE
+	return g_upscale_ready && !g_ready;
+#else
+	return false;
+#endif
+}
+
 bool Upscale(vk::CommandBuffer command, const UpscaleInputs& inputs, const vk::detail::DispatchLoaderDynamic& dispatch) {
 	(void)dispatch;
 #ifdef KYTY_FRAMEGEN_STREAMLINE

@@ -42,6 +42,7 @@ const nlohmann::ordered_json& Defaults() {
 		d["extra_args"]          = "";
 		d["gpu"]                 = "";
 		d["dlss_preset"]         = "";
+		d["dlss_sharpness"]      = ""; // (Graphics page: KYTY_DLSS_SHARPNESS's value, "" none)
 		d["audio_output"]        = ""; // (Game page: "" a TV)
 		d["output_auto"]         = true;
 		// (Linux.)

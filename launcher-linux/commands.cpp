@@ -41,6 +41,7 @@ const std::vector<std::string>& GameVariables() {
 	                                             "KYTY_ANTI_LAG",
 	                                             "KYTY_FLIP_RATE",
 	                                             "KYTY_DLSS_PRESET",
+	                                             "KYTY_DLSS_SHARPNESS",
 	                                             "KYTY_AUDIO_OUTPUT",
 	                                             "KYTY_RUN_LOG"};
 	return names;
@@ -292,6 +293,10 @@ Launch Commands::Play(const GameInfo& game, bool direct) const {
 	if (const auto preset = S().Str("dlss_preset");
 	    dlss && preset.size() == 1 && preset[0] >= 'A' && preset[0] <= 'O')
 		Put(set, "KYTY_DLSS_PRESET", preset);
+	// DLSS's sharpening (KYTY_DLSS_SHARPNESS, 0-1; none: not sharpened).
+	if (const auto sharpness = S().Str("dlss_sharpness");
+	    dlss && (sharpness == "0.3" || sharpness == "0.6" || sharpness == "0.9"))
+		Put(set, "KYTY_DLSS_SHARPNESS", sharpness);
 	// The audio output the game is told (it mixes for it; a TV when none is set, issue #207).
 	if (const auto output = S().Str("audio_output"); output == "headphones" || output == "amplifier" || output == "soundbar")
 		Put(set, "KYTY_AUDIO_OUTPUT", output);
@@ -311,12 +316,12 @@ Launch Commands::Play(const GameInfo& game, bool direct) const {
 		else if (!Remove(set, key))
 			Put(set, key, "0");
 	}
-	for (const auto& option: extra.options) {
+	// (Each of them stays: a repeated one, --keymap, is one more, not in place of the one before.)
+	for (const auto& option: extra.options)
 		options.erase(std::remove_if(options.begin(), options.end(),
 		                             [&](const auto& o) { return o[0] == option[0]; }),
 		              options.end());
-		options.push_back(option);
-	}
+	options.insert(options.end(), extra.options.begin(), extra.options.end());
 
 	launch.argv = {context_.run_script.string()};
 	for (const auto& option: options)

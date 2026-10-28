@@ -20,6 +20,7 @@
 #include "frame-gen.h"
 #include "fsr-native.h"
 #include "gpu_tiler_shaders/sr_exposure_spv.h"
+#include "gpu_tiler_shaders/sr_sharpen_spv.h"
 #ifdef KYTY_LOCAL_VULKAN_RECORDING
 #include "vulkan-recording.h"
 #endif
@@ -28,10 +29,14 @@
 #include <array>
 #include <atomic>
 #include <cinttypes>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <span>
+#include <vector>
 
 namespace Libs::Graphics {
 
@@ -69,56 +74,115 @@ struct ExposurePass {
 	vk::Sampler             sampler    = nullptr;
 };
 
+// A pass reading the upscaled image (sampled) into the output (storage) with the game's exposure (a buffer): `code` with
+// `push_size` bytes of constants. (Made once each, kept for the process.)
+ExposurePass MakePass(GraphicContext& graphics, const uint32_t* code, size_t code_size, uint32_t push_size) {
+	ExposurePass made;
+	std::array<vk::DescriptorSetLayoutBinding, 3> bindings {};
+	bindings[0] = {0, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eCompute, nullptr};
+	bindings[1] = {1, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eCompute, nullptr};
+	bindings[2] = {2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute, nullptr};
+	vk::DescriptorSetLayoutCreateInfo descriptors {};
+	descriptors.flags        = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR;
+	descriptors.bindingCount = static_cast<uint32_t>(bindings.size());
+	descriptors.pBindings    = bindings.data();
+	RequireVulkanSuccess(graphics.device.createDescriptorSetLayout(&descriptors, nullptr, &made.set_layout),
+	                     "create super resolution exposure descriptors");
+	const vk::PushConstantRange push {vk::ShaderStageFlagBits::eCompute, 0, push_size};
+	vk::PipelineLayoutCreateInfo layout {};
+	layout.setLayoutCount         = 1;
+	layout.pSetLayouts            = &made.set_layout;
+	layout.pushConstantRangeCount = 1;
+	layout.pPushConstantRanges    = &push;
+	RequireVulkanSuccess(graphics.device.createPipelineLayout(&layout, nullptr, &made.layout),
+	                     "create super resolution exposure layout");
+	vk::ShaderModuleCreateInfo shader {};
+	shader.codeSize = code_size;
+	shader.pCode    = code;
+	vk::ShaderModule module;
+	RequireVulkanSuccess(graphics.device.createShaderModule(&shader, nullptr, &module), "create super resolution exposure shader");
+	vk::ComputePipelineCreateInfo pipeline {};
+	pipeline.stage.stage  = vk::ShaderStageFlagBits::eCompute;
+	pipeline.stage.module = module;
+	pipeline.stage.pName  = "main";
+	// (The subgroup size the game's compute pipelines require here: GraphicContext::InternalComputeSubgroupSize.)
+	vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo subgroup {};
+	subgroup.requiredSubgroupSize = graphics.InternalComputeSubgroupSize();
+	if (subgroup.requiredSubgroupSize != 0) pipeline.stage.pNext = &subgroup;
+	pipeline.layout = made.layout;
+	RequireVulkanSuccess(graphics.device.createComputePipelines(nullptr, 1, &pipeline, nullptr, &made.pipeline),
+	                     "create super resolution exposure pipeline");
+	graphics.device.destroyShaderModule(module, nullptr);
+	vk::SamplerCreateInfo sampler {};
+	sampler.magFilter    = vk::Filter::eNearest;
+	sampler.minFilter    = vk::Filter::eNearest;
+	sampler.addressModeU = vk::SamplerAddressMode::eClampToEdge;
+	sampler.addressModeV = vk::SamplerAddressMode::eClampToEdge;
+	sampler.addressModeW = vk::SamplerAddressMode::eClampToEdge;
+	RequireVulkanSuccess(graphics.device.createSampler(&sampler, nullptr, &made.sampler),
+	                     "create super resolution exposure sampler");
+	return made;
+}
+
 const ExposurePass& Exposure(GraphicContext& graphics) {
-	// (Made once, kept for the process.)
-	static const ExposurePass pass = [&] {
-		ExposurePass made;
-		std::array<vk::DescriptorSetLayoutBinding, 3> bindings {};
-		bindings[0] = {0, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eCompute, nullptr};
-		bindings[1] = {1, vk::DescriptorType::eStorageImage, 1, vk::ShaderStageFlagBits::eCompute, nullptr};
-		bindings[2] = {2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute, nullptr};
-		vk::DescriptorSetLayoutCreateInfo descriptors {};
-		descriptors.flags        = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR;
-		descriptors.bindingCount = static_cast<uint32_t>(bindings.size());
-		descriptors.pBindings    = bindings.data();
-		RequireVulkanSuccess(graphics.device.createDescriptorSetLayout(&descriptors, nullptr, &made.set_layout),
-		                     "create super resolution exposure descriptors");
-		const vk::PushConstantRange push {vk::ShaderStageFlagBits::eCompute, 0, 12};
-		vk::PipelineLayoutCreateInfo layout {};
-		layout.setLayoutCount         = 1;
-		layout.pSetLayouts            = &made.set_layout;
-		layout.pushConstantRangeCount = 1;
-		layout.pPushConstantRanges    = &push;
-		RequireVulkanSuccess(graphics.device.createPipelineLayout(&layout, nullptr, &made.layout),
-		                     "create super resolution exposure layout");
-		vk::ShaderModuleCreateInfo shader {};
-		shader.codeSize = sizeof(SR_EXPOSURE_SPV);
-		shader.pCode    = SR_EXPOSURE_SPV;
-		vk::ShaderModule module;
-		RequireVulkanSuccess(graphics.device.createShaderModule(&shader, nullptr, &module), "create super resolution exposure shader");
-		vk::ComputePipelineCreateInfo pipeline {};
-		pipeline.stage.stage  = vk::ShaderStageFlagBits::eCompute;
-		pipeline.stage.module = module;
-		pipeline.stage.pName  = "main";
-		// (The subgroup size the game's compute pipelines require here: GraphicContext::InternalComputeSubgroupSize.)
-		vk::PipelineShaderStageRequiredSubgroupSizeCreateInfo subgroup {};
-		subgroup.requiredSubgroupSize = graphics.InternalComputeSubgroupSize();
-		if (subgroup.requiredSubgroupSize != 0) pipeline.stage.pNext = &subgroup;
-		pipeline.layout = made.layout;
-		RequireVulkanSuccess(graphics.device.createComputePipelines(nullptr, 1, &pipeline, nullptr, &made.pipeline),
-		                     "create super resolution exposure pipeline");
-		graphics.device.destroyShaderModule(module, nullptr);
-		vk::SamplerCreateInfo sampler {};
-		sampler.magFilter    = vk::Filter::eNearest;
-		sampler.minFilter    = vk::Filter::eNearest;
-		sampler.addressModeU = vk::SamplerAddressMode::eClampToEdge;
-		sampler.addressModeV = vk::SamplerAddressMode::eClampToEdge;
-		sampler.addressModeW = vk::SamplerAddressMode::eClampToEdge;
-		RequireVulkanSuccess(graphics.device.createSampler(&sampler, nullptr, &made.sampler),
-		                     "create super resolution exposure sampler");
-		return made;
-	}();
+	static const ExposurePass pass = MakePass(graphics, SR_EXPOSURE_SPV, sizeof(SR_EXPOSURE_SPV), 12);
 	return pass;
+}
+
+// KYTY_DLSS_SHARPNESS=<0-1> (the launcher's "DLSS sharpening"; 0, the default: none): DLSS's image sharpened by RCAS
+// (sr-sharpen.comp) on FSR 3's scale (KYTY_FSR_SHARPNESS, fsr-native.cpp, whose upscaler sharpens itself): 1 the most.
+// The game's own TAA sharpens its image; DLSS in its place does not, and its pictures looked softer (issue #224).
+float DlssSharpness() {
+	static const float value = [] {
+		const char* text = std::getenv("KYTY_DLSS_SHARPNESS");
+		return text != nullptr && *text != '\0' ? std::clamp(std::strtof(text, nullptr), 0.0f, 1.0f) : 0.0f;
+	}();
+	return value;
+}
+
+const ExposurePass& Sharpen(GraphicContext& graphics) {
+	static const ExposurePass pass = MakePass(graphics, SR_SHARPEN_SPV, sizeof(SR_SHARPEN_SPV), 16);
+	return pass;
+}
+
+// DLSS's own output with sharpening, which the sharpening pass reads into the game's: one of the output's size and
+// format, made where first needed. One made for an earlier size is kept (the GPU may still read it; sizes change rarely).
+struct SharpenTarget {
+	VulkanImage   image;
+	vk::ImageView storage = nullptr, sampled = nullptr;
+};
+const SharpenTarget* SharpenImage(GraphicContext& graphics, vk::Format format, vk::Extent2D extent) {
+	static std::mutex                                  mutex;
+	static std::vector<std::unique_ptr<SharpenTarget>> made; // (the last one current)
+	std::lock_guard                                    lock(mutex);
+	if (!made.empty()) {
+		const auto& last = made.back()->image;
+		if (last.format == format && last.extent.width == extent.width && last.extent.height == extent.height)
+			return made.back().get();
+	}
+	auto                target = std::make_unique<SharpenTarget>();
+	vk::ImageCreateInfo create {};
+	create.imageType     = vk::ImageType::e2D;
+	create.extent        = vk::Extent3D {extent.width, extent.height, 1};
+	create.mipLevels     = 1;
+	create.arrayLayers   = 1;
+	create.format        = format;
+	create.tiling        = vk::ImageTiling::eOptimal;
+	create.initialLayout = vk::ImageLayout::eUndefined;
+	create.usage         = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst;
+	create.sharingMode   = vk::SharingMode::eExclusive;
+	create.samples       = vk::SampleCountFlagBits::e1;
+	if (!graphics.CreateImage(create, target->image)) return nullptr;
+	vk::ImageViewCreateInfo view {};
+	view.image            = target->image.image;
+	view.viewType         = vk::ImageViewType::e2D;
+	view.format           = format;
+	view.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+	if (graphics.device.createImageView(&view, nullptr, &target->storage) != vk::Result::eSuccess ||
+	    graphics.device.createImageView(&view, nullptr, &target->sampled) != vk::Result::eSuccess)
+		return nullptr;
+	made.push_back(std::move(target));
+	return made.back().get();
 }
 
 // DLSS records into the command buffer itself (Streamline, NGX), so it runs where the renderer's own commands are
@@ -136,6 +200,11 @@ struct UpscaleRecord {
 	uint32_t                timing_entry   = 0;
 	GraphicContext*         graphics       = nullptr;     // FSR 3 (fsr-native.h) in place of DLSS
 	bool                    fsr            = false;
+	// DLSS's sharpening (DlssSharpness): DLSS wrote inputs.output, the sharpening target's; the pass reads it (through
+	// output_sampled) into the game's output, game_output.
+	ExposurePass            sharpen_pass;                 // (no pipeline: none)
+	FrameGen::UpscaleImage  game_output;
+	float                   sharpness = 0.0f;             // the lobe's scale
 };
 
 // The output (general) multiplied by the exposure in place, after the upscale's writes (compute or transfer); left
@@ -171,6 +240,44 @@ void ApplyExposure(const UpscaleRecord& record, const vk::detail::DispatchLoader
 	writes[2].descriptorType  = vk::DescriptorType::eStorageBuffer;
 	writes[2].pBufferInfo     = &values;
 	const uint32_t constants[] {output.extent.width, output.extent.height, record.exposure_index};
+	record.command.bindPipeline(vk::PipelineBindPoint::eCompute, pass.pipeline, dispatch);
+	record.command.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, pass.layout, 0, writes, dispatch);
+	record.command.pushConstants(pass.layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(constants), constants, dispatch);
+	record.command.dispatch((output.extent.width + 7u) / 8u, (output.extent.height + 7u) / 8u, 1, dispatch);
+}
+
+// DLSS's image (the sharpening target, general) sharpened into the game's output (general) with the exposure, after the
+// upscale's writes; the output left general and shader-written, as the renderer believes it.
+void ApplySharpen(const UpscaleRecord& record, const vk::detail::DispatchLoaderDynamic& dispatch) {
+	const auto& pass   = record.sharpen_pass;
+	const auto& output = record.game_output;
+	vk::MemoryBarrier2 barrier {};
+	barrier.srcStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
+	barrier.srcAccessMask = vk::AccessFlagBits2::eMemoryWrite;
+	barrier.dstStageMask  = vk::PipelineStageFlagBits2::eComputeShader;
+	barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite;
+	vk::DependencyInfo dependency {};
+	dependency.memoryBarrierCount = 1;
+	dependency.pMemoryBarriers    = &barrier;
+	record.command.pipelineBarrier2(dependency, dispatch);
+	const vk::DescriptorImageInfo  source {pass.sampler, record.output_sampled, vk::ImageLayout::eGeneral};
+	const vk::DescriptorImageInfo  target {nullptr, output.view, vk::ImageLayout::eGeneral};
+	const vk::DescriptorBufferInfo values {record.exposure_buffer, record.exposure_base, record.exposure_range};
+	std::array<vk::WriteDescriptorSet, 3> writes {};
+	writes[0].dstBinding      = 0;
+	writes[0].descriptorCount = 1;
+	writes[0].descriptorType  = vk::DescriptorType::eCombinedImageSampler;
+	writes[0].pImageInfo      = &source;
+	writes[1].dstBinding      = 1;
+	writes[1].descriptorCount = 1;
+	writes[1].descriptorType  = vk::DescriptorType::eStorageImage;
+	writes[1].pImageInfo      = &target;
+	writes[2].dstBinding      = 2;
+	writes[2].descriptorCount = 1;
+	writes[2].descriptorType  = vk::DescriptorType::eStorageBuffer;
+	writes[2].pBufferInfo     = &values;
+	uint32_t constants[4] {output.extent.width, output.extent.height, record.exposure_index, 0};
+	std::memcpy(&constants[3], &record.sharpness, sizeof(float));
 	record.command.bindPipeline(vk::PipelineBindPoint::eCompute, pass.pipeline, dispatch);
 	record.command.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, pass.layout, 0, writes, dispatch);
 	record.command.pushConstants(pass.layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(constants), constants, dispatch);
@@ -282,6 +389,24 @@ void RunUpscale(const UpscaleRecord& record, const vk::detail::DispatchLoaderDyn
 		record.command.writeTimestamp2(vk::PipelineStageFlagBits2::eAllCommands, record.timing->pool, first + index, dispatch);
 	};
 	stamp(0);
+	if (record.sharpen_pass.pipeline != nullptr) {
+		// (Its last frame's contents discarded, after the sharpening pass that read them.)
+		vk::ImageMemoryBarrier2 b {};
+		b.srcStageMask        = vk::PipelineStageFlagBits2::eComputeShader;
+		b.srcAccessMask       = vk::AccessFlagBits2::eNone;
+		b.dstStageMask        = vk::PipelineStageFlagBits2::eAllCommands;
+		b.dstAccessMask       = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite | vk::AccessFlagBits2::eTransferWrite;
+		b.oldLayout           = vk::ImageLayout::eUndefined;
+		b.newLayout           = vk::ImageLayout::eGeneral;
+		b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		b.image               = record.inputs.output.image;
+		b.subresourceRange    = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+		vk::DependencyInfo dependency {};
+		dependency.imageMemoryBarrierCount = 1;
+		dependency.pImageMemoryBarriers    = &b;
+		record.command.pipelineBarrier2(dependency, dispatch);
+	}
 	const bool upscaled = record.fsr ? FsrNative::Upscale(*record.graphics, record.command, record.inputs)
 	                                 : FrameGen::Upscale(record.command, record.inputs, dispatch);
 #ifdef KYTY_LOCAL_VULKAN_RECORDING
@@ -289,7 +414,11 @@ void RunUpscale(const UpscaleRecord& record, const vk::detail::DispatchLoaderDyn
 #endif
 	if (!upscaled) Stretch(record, dispatch);
 	stamp(1);
-	ApplyExposure(record, dispatch);
+	if (record.sharpen_pass.pipeline != nullptr) {
+		ApplySharpen(record, dispatch);
+	} else {
+		ApplyExposure(record, dispatch);
+	}
 	stamp(2);
 #ifdef KYTY_LOCAL_VULKAN_RECORDING
 	LocalVulkanRecording::InvalidateReplayState(); // (the pass's pipeline)
@@ -441,6 +570,32 @@ void RenderExecutor::RunSuperResolution(CommandBuffer& buffer, const SuperResolu
 			view_info.mapping = {};
 			std::scoped_lock view_lock {cache.m_lock};
 			record.output_sampled = output.FindView(view_info);
+		}
+	}
+	// DLSS's sharpening: DLSS writes an image of its own, which the pass sharpens into the game's output.
+	if (dlss && DlssSharpness() > 0.0f && record.exposure_pass.pipeline != nullptr) {
+		static std::atomic<bool> reported {false};
+		if (const auto* target = SharpenImage(m_context.GetGraphics(), inputs.output.format, inputs.output.extent)) {
+			record.sharpen_pass   = Sharpen(m_context.GetGraphics());
+			record.game_output    = inputs.output;
+			record.sharpness      = std::exp2(2.0f * DlssSharpness() - 2.0f);
+			record.output_sampled = target->sampled;
+			record.output_level   = 0;
+			record.output_layer   = 0;
+			inputs.output.image        = target->image.image;
+			inputs.output.view         = target->storage;
+			inputs.output.usage        = target->image.usage;
+			inputs.output.base_level   = 0;
+			inputs.output.base_layer   = 0;
+			inputs.output.image_format = inputs.output.format;
+			if (!reported.exchange(true, std::memory_order_relaxed)) {
+				std::printf("Super resolution: DLSS's image sharpened (KYTY_DLSS_SHARPNESS=%.2f, RCAS)\n", DlssSharpness());
+				std::fflush(stdout);
+			}
+		} else if (!reported.exchange(true, std::memory_order_relaxed)) {
+			std::printf("Super resolution: no image for DLSS's sharpening (%s %ux%u): not sharpened\n",
+			            vk::to_string(inputs.output.format).c_str(), inputs.output.extent.width, inputs.output.extent.height);
+			std::fflush(stdout);
 		}
 	}
 	if (static std::atomic<uint32_t> images {0}; images.fetch_add(1, std::memory_order_relaxed) < 1) {

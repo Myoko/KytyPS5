@@ -3,6 +3,7 @@
 #include "loader/demonsSoulsSuperResolution.h"
 
 #include "graphics/host_gpu/hostMemory.h"
+#include "graphics/host_gpu/renderer/cache/samplerCache.h"
 #include "graphics/presentation/window.h"
 #include "graphics/host_gpu/renderer/demonsSouls.h"
 #include "loader/elf.h"
@@ -10,6 +11,7 @@
 #include "loader/runtimeLinker.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -92,27 +94,35 @@ uint64_t RipTarget(uint64_t site, uint32_t at, uint32_t length) {
 // (`height`: 2160, or the HD output's 1080 with the same places: DemonsSoulsSuperResolution::HdOutput.)
 bool InstallWideOutput(const Program& program, int mode, uint32_t width, uint32_t height = OutputHeight) {
 	std::vector<uint64_t> outputs; // (the setter's and the constructor's mode 5 cases load the same pair)
-	for (const auto site: GuestCode::Find(program, GuestCode::Pattern(TrinityCase), 8)) {
-		const uint64_t output = RipTarget(site, 4, 8);
-		if (HoldsPair(output, OutputWidth, OutputHeight) && std::find(outputs.begin(), outputs.end(), output) == outputs.end())
-			outputs.push_back(output);
+	for (const auto pattern: {TrinityCase, TrinityCaseDuplicated}) {
+		for (const auto site: GuestCode::Find(program, GuestCode::Pattern(pattern), 8)) {
+			const uint64_t output = RipTarget(site, 4, 8);
+			if (HoldsPair(output, OutputWidth, OutputHeight) && std::find(outputs.begin(), outputs.end(), output) == outputs.end())
+				outputs.push_back(output);
+		}
 	}
 	if (outputs.size() != 1) return false;
-	std::vector<uint64_t> cinematic;
-	for (const auto site: GuestCode::Find(program, GuestCode::Pattern(CinematicCase), 8))
-		if (RipTarget(site, 4, 8) == outputs[0]) cinematic.push_back(site);
+	// The other modes' loads of that pair kept at 3840x2160: Cinematic's, and 01.005.000's mode 3 output loads.
+	std::vector<uint64_t> cinematic, performance;
+	for (const auto pattern: {CinematicCase, CinematicCaseDuplicated})
+		for (const auto site: GuestCode::Find(program, GuestCode::Pattern(pattern), 8))
+			if (RipTarget(site, 4, 8) == outputs[0]) cinematic.push_back(site);
+	for (const auto site: GuestCode::Find(program, GuestCode::Pattern(ModeCaseDuplicated), 8))
+		if (RipTarget(site, 4, 8) == outputs[0]) performance.push_back(site);
 	const auto preset   = FindUniqueData(program, std::span(reinterpret_cast<const uint8_t*>(CinematicSource), sizeof(CinematicSource)));
 	const auto contexts = GuestCode::Find(program, GuestCode::Pattern(UpscalerContext), 2);
-	const auto setter   = GuestCode::Find(program, GuestCode::Pattern(SetterFixedPair), 2);
+	auto       setter   = GuestCode::Find(program, GuestCode::Pattern(SetterFixedPair), 2);
+	if (setter.empty()) setter = GuestCode::Find(program, GuestCode::Pattern(SetterFixedPairAfterFlag), 2);
 	const auto builder  = GuestCode::Find(program, GuestCode::Pattern(ConstructorFixedPair), 2);
 	const auto query    = GuestCode::Find(program, GuestCode::Pattern(QueryFixedPair), 2);
 	const auto widths   = FindUniqueData(program, std::span(reinterpret_cast<const uint8_t*>(OutputWidths), sizeof(OutputWidths)));
 	const auto heights  = FindUniqueData(program, std::span(reinterpret_cast<const uint8_t*>(OutputHeights), sizeof(OutputHeights)));
-	if (cinematic.size() != 2 || !preset || contexts.size() != 1 || setter.size() != 1 || builder.size() != 1 ||
-	    query.size() != 1 || !widths || !heights)
+	if (cinematic.size() != 2 || (performance.size() != 0 && performance.size() != 2) || !preset || contexts.size() != 1 ||
+	    setter.size() != 1 || builder.size() != 1 || query.size() != 1 || !widths || !heights)
 		return false;
 	// (The 3840x2160 after the preset's 0x80ffffff and 2560x1440; nothing writes the preset.)
 	const uint64_t source = *preset + 12;
+	cinematic.insert(cinematic.end(), performance.begin(), performance.end());
 	for (const auto site: cinematic) {
 		const auto displacement = static_cast<int32_t>(static_cast<int64_t>(source) - static_cast<int64_t>(site + 8));
 		std::memcpy(reinterpret_cast<void*>(site + 4), &displacement, sizeof(displacement));
@@ -143,6 +153,15 @@ uint32_t WideOutputWidth() {
 	return g_wide_output;
 }
 
+// The upscaler's texture LOD bias for its 3D at `render` lines of an `output`-line image (issue #224): log2(render /
+// output), as DLSS's guide gives it; KYTY_UPSCALE_LOD_BIAS=0 none, a number that bias instead (with an upscaler only).
+static void SetLodBias(uint32_t render, uint32_t output) {
+	const char* value = std::getenv("KYTY_UPSCALE_LOD_BIAS");
+	float       bias  = render != 0 && render < output ? static_cast<float>(std::log2(static_cast<double>(render) / output)) : 0.0f;
+	if (value != nullptr && *value != 0 && std::strcmp(value, "auto") != 0) bias = std::clamp(std::strtof(value, nullptr), -4.0f, 4.0f);
+	Libs::Graphics::SetUpscaleLodBias(bias);
+}
+
 uint32_t AutoHeight(bool upscaler) {
 	const char* setting = std::getenv("KYTY_RENDER_HEIGHT");
 	if (setting != nullptr && *setting != 0 && std::strcmp(setting, "auto") != 0) return 0;
@@ -156,6 +175,10 @@ uint32_t AutoHeight(bool upscaler) {
 }
 
 void Install(Program* program) {
+	// (Until a render height is made below: the PS5 Pro path's own 1512 lines of its 4K output; none for the HD output's.)
+	if (DemonsSoulsSuperResolution::Active() && Libs::Graphics::DemonsSouls::IsSupportedGame())
+		SetLodBias(DemonsSoulsSuperResolution::HdOutput() ? DemonsSoulsHdOutput::UpscaledHeight() : TrinityHeight,
+		           DemonsSoulsSuperResolution::HdOutput() ? DemonsSoulsHdOutput::UpscaledHeight() : OutputHeight);
 	const char* setting = std::getenv("KYTY_RENDER_HEIGHT");
 	const char* wide    = std::getenv("KYTY_RENDER_ASPECT");
 	const bool  numeric   = setting != nullptr && *setting != 0 && std::strcmp(setting, "auto") != 0;
@@ -265,7 +288,11 @@ void Install(Program* program) {
 	}
 	auto constant = hd ? FindRenderConstant(*program, ModeCase, ModeWidths[mode], ModeHeights[mode], out_width, out_height)
 	                   : FindRenderConstant(*program, trinity ? TrinityCase : ModeCase, game_width, game_height);
-	if (!constant && !trinity && !hd) constant = FindRenderConstant(*program, ModeCaseDuplicated, game_width, game_height);
+	// (01.005.000: its cases load the pairs with vmovddup.)
+	if (!constant && hd)
+		constant = FindRenderConstant(*program, ModeCaseDuplicated, ModeWidths[mode], ModeHeights[mode], out_width, out_height);
+	else if (!constant)
+		constant = FindRenderConstant(*program, trinity ? TrinityCaseDuplicated : ModeCaseDuplicated, game_width, game_height);
 	const auto widths   = FindUniqueData(*program, std::span(reinterpret_cast<const uint8_t*>(ModeWidths), sizeof(ModeWidths)));
 	const auto heights  = FindUniqueData(*program, std::span(reinterpret_cast<const uint8_t*>(ModeHeights), sizeof(ModeHeights)));
 	// (The render setup's 16:9: the one such store in the code.)
@@ -335,6 +362,7 @@ void Install(Program* program) {
 	    !DemonsSoulsSuperResolution::SetLeastHeight(program, size.height))
 		std::printf("Demon's Souls render size: the super resolution's least height of a known build not found; it "
 		            "runs from 1080 only\n");
+	if (trinity) SetLodBias(size.height, out_height);
 	// (The HD output: display mode 1's own 1600x900.)
 	std::printf("Demon's Souls render size: %s mode renders %ux%u instead of %ux%u (output %ux%u)%s\n",
 	            hd ? "HD" : "performance", size.width, size.height, hd ? ModeWidths[mode] : game_width,

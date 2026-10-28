@@ -1,5 +1,53 @@
 ## New in this build
 
+Your precompiled shaders stay valid: the shaders are the same as in v20261027.
+
+- **Crash at a world load on PCs short of RAM** (#228): at a teleport, an RX 9070 with 5.4 GB of its video memory free
+  could not get a new 108 MB GPU buffer while the PC's RAM was nearly full, and the emulator exited at once. It now
+  tries again for up to 10 seconds, and the log says what refused it: the driver's answer in video and in system
+  memory, and the RAM and commit left.
+- **DLSS sharpening** (#224): the game's own TAA sharpens its picture; DLSS in its place does not, so fine detail such
+  as the engravings on armour looked softer with it. The launcher's Graphics page has "DLSS sharpening": Off by
+  default, then Low, Medium and High. It runs RCAS, the sharpening FSR 3 uses, on DLSS's picture
+  (`run.cmd -Set KYTY_DLSS_SHARPNESS=0.6`, 0 to 1). At DLAA, Medium brought the fine detail on the armour from about
+  78% of the TAA's to about 91%.
+- **Sharper textures below the output's size** (#224): when DLSS or FSR 3 renders below the output's height, textures
+  are now read with the detail of the output's size (a texture LOD bias of log2(render height / output height), as
+  NVIDIA's DLSS guide recommends): about 13% more fine detail from 1080 to 4K. `-Set KYTY_UPSCALE_LOD_BIAS=0` turns
+  it off.
+- **Full textures on 16 GB cards** (#215, #224): v20261027 chose Texture reduce from the budget left after the frame
+  generation and upscaler reserve, so a 16 GB card close to its budget could get half-resolution textures as soon as
+  DLSS or frame generation was on. It now goes by the card's own video memory: 12 GB or less reduces, more keeps full
+  textures.
+- **Version 1.005: 1080p output and DLSS** (#226): with Demon's Souls 1.005 (European and US editions), "Game output:
+  1080p", DLSS's 1080p output and DLSS's render heights now work as with 1.07.
+- **DLSS slowing down over time** (#129): with DLSS (without DLSS frame generation) every rendered frame now reaches
+  the present of NVIDIA's Streamline, as it requires. Frames replaced by newer ones before they were shown made its
+  present calls grow on an RTX 2080 Ti until only 4-10 frames a second were shown. `-Set KYTY_PRESENT_EVERY_FRAME=0`
+  goes back to the old way.
+- **Grainy Nexus runes on Linux** (#222): v20261027's readbacks of neighbouring buffers (PR #219) are off by default
+  again: on Linux they made the floor runes around the player in the Nexus grainy. `-Set KYTY_READBACK_SPAN=1` turns
+  them back on.
+- **Fewer slow frames near the video memory budget** (#215): a game buffer of 64 MB or more that keeps growing is now
+  made with an eighth more room, so it is made again whole about half as often (one went from 638 to 910 MB in five
+  steps in a session, each a frame of 100-135 ms). The texture collector also counts its ages in seconds at any vblank
+  rate (at 240 Hz they were four times as long).
+- **DLSS frame generation on Linux** (#215): when NGX could not make DLSS frame generation (video memory full), it is
+  tried again later instead of staying off for the session, and short drops of the render size (menus) no longer
+  make it again. Not tested on our side (no Linux PC with an NVIDIA card).
+- **Mouse wheel** (#91): `Mouse:WheelUp` and `Mouse:WheelDown` can be mapped to controls
+  (`"--keymap", "Up=Mouse:WheelUp"`), each notch a short press; a control takes one key and one mouse input.
+- **Back to Big Picture** (#217): when the window that had the focus at the start is gone (Big Picture makes its window
+  again), the focus goes to Steam's largest window instead.
+- **Precompile** (#225): on a FAT32 drive (at most 4 GB a file; the store is about 5.5 GB) the precompile now stops
+  before it starts and says so, less than 12 GB free gets a warning, a store that antivirus or the indexer holds for a
+  moment is put in place again for up to 5 s, and a failed merge says why.
+- **Linux launcher** (#90): extra options given more than once (`--keymap`) are all passed on.
+- **Thanks** to @AudaxTenebra, @HybOj, @theunholy, @Zaza26262, @2mg, @Psychowarden, @theraineydaze, @javsp,
+  @ededaelita1-afk and @arhaaaaaaaa-ux for their reports and tests.
+
+## New in v20261027
+
 Your precompiled shaders stay valid: for as long as you keep them, the shaders are translated as in v20261023. Your
 next precompile (a new install, or after a graphics driver update) brings lighter shaders (first item).
 
@@ -47,61 +95,44 @@ next precompile (a new install, or after a graphics driver update) brings lighte
 - **Thanks** to @DevList1454 for PR #219, and to @crni20zd, @Psychowarden, @javsp, @ft1704, @thxnk420, @Myoko and @brokeneggg for
   their reports and tests.
 
-## New in v20261026
-
-Your precompiled shaders stay valid: the shaders are the same as in v20261023. The precompile only adds the pipelines of
-the new shader hints (#212).
-
-- **Crash on version 1.005** (#185, #204): on some PCs Demon's Souls 1.005 (European and US editions) crashed within
-  minutes of play, or already at start-up. The game's resource loader could take a load request that another thread
-  was withdrawing at that moment. The emulator now makes the loader wait until the withdrawal is finished; the log line
-  `Demon's Souls loader guard: ... waited out` shows each time it did.
-- **Blue screens on 16 GB PCs** (#91): since v20261024, the pages the game reads back from the graphics card were
-  protected in a way that could crash Windows (MEMORY_MANAGEMENT) once the PC ran low on RAM. Whenever less than 2 GB
-  of RAM is free they now get guard pages instead, which held up under heavy memory pressure in our tests.
-- **Shader preparation kept on disk** (#200): the background shader preparation and the start-up warmup now keep their
-  translations in `_PipelineCache\static\<title>_<version>.prefetch` (1-2 GB). The first start after this update
-  translates as before; later starts read them in about a second. On our desktop the start-up warmup went from 22 s to
-  1 s, and PCs with few cores no longer translate for minutes beside the game. `run.cmd -Set KYTY_PREFETCH_CACHE=0`
-  turns it off. After a patch by @Psychowarden.
-- **Lit ground and water flickering white** (#196): buffer copies made on a background thread could take data the game
-  had already replaced for its next frame. The copies now finish before the game can see that the graphics card is
-  done with them. Tracked down with @Psychowarden's tests.
-- **Frame generation at camera cuts** (#174): when a dialogue or a cutscene shot ended, the frame generated in between
-  blended the two camera views, both half-transparent. With an upscaler chosen (DLSS or FSR), frame generation now
-  starts over at the game's camera cuts.
-- **The 1440p output in the 4K layout** (#187, #202): at the 1440p output the interface is laid out as at 4K, at the
-  output's size, instead of the 1080p layout scaled up: sharp text, and the character in the character creator and the
-  equipment menu in place. `run.cmd -Set KYTY_OUTPUT_LAYOUT=hd` keeps the old way.
-- **Wide screens at 1440p** (#199, #198): a 21:9 or wider aspect with the 1440p output now makes the picture at that
-  height (3416x1440 at 21:9) instead of 16:9 (77 -> 90 fps on an RTX 5080 at 43:18), and movies are no longer squeezed
-  with a wide output. After @Psychowarden's patches.
-- **Audio output** (#207): the launcher's Game page has "Audio output": TV, headphones, AV amplifier or soundbar. The
-  game is told your choice and mixes its sound for it, as on a PS5 (`run.cmd -Set KYTY_AUDIO_OUTPUT=headphones`). Found
-  by @Psychowarden.
-- **Quitting with a controller** (#203): hold the PS button (an Xbox pad's Guide button) for two seconds to quit, as
-  Close Game does on a PS5. Where Steam or the Game Bar takes that button, `run.cmd -Set KYTY_PAD_QUIT=both` also quits
-  on Create and Options (an Xbox pad's View and Menu) held together. An Xbox pad's View button now presses the touchpad
-  (#197).
-- **More shader hints** (#212): a playthrough to both endings added 237 shaders and 268 pipelines the release's hints
-  lacked: fewer first-time stutters late in the game. Thanks to @Vorshim92.
-- **Precompile** (#213): a shard that stops working no longer holds up the whole precompile. After 20 minutes without
-  work it is started again, twice at most, and then left out; the game compiles its pipelines when it first needs them.
-- **Less memory on 16 GB PCs**: memory the game's engine has freed goes back to Windows four times faster: 0.8 GB less
-  in a long session.
-- **New images start cleared** (PR #193, @intellq): as on the PS5, a new image is zero before its first use. With FSR
-  at 1080p and the 43:18 squeeze, its first frame read undefined contents and kept a green or red picture for the whole
-  session, mostly on Linux with AMD cards.
-- **Linux**: AMD graphics cards (RADV) now get their transfer queue, so readbacks of finished GPU work no longer wait
-  behind the graphics queue: +19% to +27% while walking on an RX 9060 XT and RX 9070 XT. Found by @the2ndday, tested by
-  @dreamerk24m and @yazuc. `-Set KYTY_RADV_TRANSFER_QUEUE=0` turns it off; owners of older AMD cards, please report any
-  GPU hang. Also from @the2ndday: an experimental `KYTY_UFFD_WP=1` (the GPU trackers' write watch by userfaultfd,
-  Linux 6.4+; PR #206), and the bench helpers on Linux (PR #211).
-- **Thanks** to @Psychowarden, @the2ndday, @Vorshim92 and @intellq for their patches and pull requests, and to
-  @danielmazurek79, @Theoryedz, @ededaelita1-afk, @ft1704, @dreamerk24m, @Fantomas3228, @yazuc, @marcelofis,
-  @SanyaSan and @kvothe3323 for their reports and tests.
-
 ## 本版本的变化
+
+已有的预编译着色器继续有效：着色器与 v20261027 相同。
+
+- **内存不足的电脑在载入世界时崩溃**（#228）：一张 RX 9070 在传送时显存还剩 5.4 GB，但电脑内存几乎用尽，新的 108 MB
+  显卡缓冲区创建失败，模拟器随即退出。现在会在最多 10 秒内反复重试，日志也会写出是什么拒绝了分配：驱动在显存和系统内存中的
+  回应，以及剩余的内存和可提交内存。
+- **DLSS 锐化**（#224）：游戏自带的 TAA 会锐化画面；DLSS 取代 TAA 后不会，所以铠甲花纹之类的细节看起来偏软。启动器「画质」
+  页新增「DLSS 锐化」：默认关闭，可选低、中、高。它对 DLSS 的画面运行 RCAS（FSR 3 使用的锐化）
+  （`run.cmd -Set KYTY_DLSS_SHARPNESS=0.6`，0 到 1）。在 DLAA 下，「中」让铠甲上的细节从 TAA 的约 78% 提高到约 91%。
+- **低于输出分辨率时纹理更清晰**（#224）：DLSS 或 FSR 3 的渲染高度低于输出高度时，纹理现在按输出尺寸的精细度读取（纹理 LOD
+  偏移 log2(渲染高度 / 输出高度)，即 NVIDIA DLSS 指南推荐的值）：从 1080 到 4K，细节多约 13%。
+  `-Set KYTY_UPSCALE_LOD_BIAS=0` 可以关闭。
+- **16 GB 显卡保持完整纹理**（#215、#224）：v20261027 按扣除插帧和超分预留之后的显存预算决定是否缩减纹理，接近预算的
+  16 GB 显卡一开 DLSS 或插帧，纹理就可能只剩一半分辨率。现在按显卡本身的显存决定：12 GB 及以下缩减，更大的保持完整纹理。
+- **1.005 版本的 1080p 输出和 DLSS**（#226）：《恶魔之魂》1.005（欧版和美版）现在也能使用「游戏输出：1080p」、DLSS 的
+  1080p 输出和 DLSS 的渲染高度，与 1.07 相同。
+- **DLSS 越玩越慢**（#129）：使用 DLSS（不开 DLSS 插帧）时，现在每一帧渲染结果都会送到 NVIDIA Streamline 的呈现，这是它
+  的要求。以前等待显示的帧会被更新的帧替换，在一张 RTX 2080 Ti 上让每次呈现越来越慢，最后每秒只显示 4-10 帧。
+  `-Set KYTY_PRESENT_EVERY_FRAME=0` 可以恢复旧方式。
+- **Linux 上要石神殿的地面符文出现颗粒**（#222）：v20261027 的相邻缓冲区一并读回（PR #219）重新默认关闭：在 Linux 上它让
+  要石神殿里玩家周围的地面符文出现颗粒。`-Set KYTY_READBACK_SPAN=1` 可以重新打开。
+- **接近显存预算时卡顿帧更少**（#215）：64 MB 以上且持续增长的游戏缓冲区，现在会多留八分之一的空间，整体重建的次数约减半
+  （一局中曾有一个缓冲区分五步从 638 MB 长到 910 MB，每一步都有一帧 100-135 ms）。纹理回收在任何刷新率设置下也都按秒计时
+  （240 Hz 时原来要长四倍）。
+- **Linux 的 DLSS 插帧**（#215）：NGX 无法创建 DLSS 插帧（显存已满）时，稍后会再试，而不是整局关闭；渲染尺寸短暂变小
+  （菜单）时也不再重建插帧。我们没有装 NVIDIA 显卡的 Linux 电脑，这项未经测试。
+- **鼠标滚轮**（#91）：`Mouse:WheelUp` 和 `Mouse:WheelDown` 可以映射到按键（`"--keymap", "Up=Mouse:WheelUp"`），滚轮每格
+  相当于一次短按；一个按键可以同时对应一个键盘键和一个鼠标输入。
+- **回到 Big Picture**（#217）：启动时拥有焦点的窗口已经不存在时（Big Picture 会重建自己的窗口），焦点改为交给 Steam 最大的
+  窗口。
+- **预编译**（#225）：在 FAT32 磁盘上（单个文件最大 4 GB，而存储文件约 5.5 GB）预编译现在会在开始前停止并说明原因；可用空间
+  少于 12 GB 时给出提醒；存储文件被杀毒软件或索引服务短暂占用时，最多再试 5 秒；合并失败时会写出原因。
+- **Linux 启动器**（#90）：多次给出的额外参数（`--keymap`）现在全部传给模拟器。
+- **感谢** @AudaxTenebra、@HybOj、@theunholy、@Zaza26262、@2mg、@Psychowarden、@theraineydaze、@javsp、@ededaelita1-afk
+  和 @arhaaaaaaaa-ux 的反馈与测试。
+
+## v20261027 的变化
 
 已有的预编译着色器继续有效：只要保留它们，着色器就按 v20261023 的方式翻译。下次预编译（新安装，或更新显卡驱动之后）会得到
 更轻量的着色器（第一项）。
@@ -138,42 +169,3 @@ the new shader hints (#212).
   1600 MHz 时，1-1 从 20.6 提升到 22.1 fps）；模拟器用于内存跟踪的 GPU 工作在所有显卡上都更轻（Deck 上每帧 7.2 降到
   0.9 ms）。离 30 fps 还有距离。
 - **感谢** @DevList1454 的 PR #219，以及 @crni20zd、@Psychowarden、@javsp、@ft1704、@thxnk420、@Myoko 和 @brokeneggg 的反馈与测试。
-
-## v20261026 的变化
-
-已有的预编译着色器继续有效：着色器与 v20261023 相同。预编译只会补上新增着色器提示的管线（#212）。
-
-- **1.005 版本的崩溃**（#185、#204）：在部分电脑上，《恶魔之魂》1.005（欧版和美版）游玩几分钟后、甚至启动时就会崩溃。
-  游戏的资源加载器可能取到另一个线程正在撤回的加载请求。模拟器现在让加载器等撤回完成再继续；每次起作用时，日志里会出现
-  `Demon's Souls loader guard: ... waited out`。
-- **16 GB 电脑蓝屏**（#91）：从 v20261024 起，游戏从显卡读回的内存页所用的保护方式，在内存不足时可能让 Windows 蓝屏
-  （MEMORY_MANAGEMENT）。现在只要可用内存少于 2 GB，这些页就改用保护页（guard page），它在我们的高内存压力测试中没有出现问题。
-- **着色器准备保存到磁盘**（#200）：后台着色器准备和启动预热现在把翻译结果保存在 `_PipelineCache\static\<游戏>_<版本>.prefetch`
-  （1-2 GB）。更新后第一次启动照常翻译；之后的启动约一秒就能读完。我们台式机上的启动预热从 22 秒变为 1 秒，核心少的
-  电脑也不用在游戏旁边翻译好几分钟了。`run.cmd -Set KYTY_PREFETCH_CACHE=0` 可以关闭。基于 @Psychowarden 的补丁。
-- **受光照的地面和水面闪白**（#196）：后台线程复制缓冲区时，可能取到游戏已经为下一帧改写的数据。现在复制会在游戏得知显卡
-  用完这些数据之前完成。靠 @Psychowarden 的测试找到原因。
-- **镜头切换时的插帧**（#174）：对话或过场镜头结束时，中间插出的那一帧会把两个镜头的画面混在一起（都半透明）。选择了超分
-  （DLSS 或 FSR）时，插帧现在会在游戏的镜头切换处重新开始。
-- **1440p 输出使用 4K 界面布局**（#187、#202）：1440p 输出时，界面按 4K 布局、以输出尺寸排版，而不是把 1080p 布局放大：
-  文字清晰，角色创建和装备菜单里的角色也在正确位置。`run.cmd -Set KYTY_OUTPUT_LAYOUT=hd` 保留旧方式。
-- **1440p 下的宽屏**（#199、#198）：21:9 或更宽的比例配合 1440p 输出时，画面现在按这个高度生成（21:9 时为 3416x1440），
-  而不是 16:9（RTX 5080 在 43:18 下从 77 fps 提升到 90 fps）；宽屏输出时过场影片也不再被压扁。基于 @Psychowarden 的补丁。
-- **音频输出**（#207）：启动器「游戏」页新增「音频输出」：电视、耳机、AV 功放或条形音箱。游戏会得知你的选择并据此混音，与
-  PS5 相同（`run.cmd -Set KYTY_AUDIO_OUTPUT=headphones`）。由 @Psychowarden 发现。
-- **用手柄退出游戏**（#203）：按住 PS 键（Xbox 手柄的 Guide 键）两秒即可退出，与 PS5 的「关闭游戏」相同。如果 Steam 或
-  Game Bar 占用了这个键，`run.cmd -Set KYTY_PAD_QUIT=both` 让同时按住 Create 和 Options（Xbox 手柄的 View 和 Menu）也能
-  退出。Xbox 手柄的 View 键现在等同于按下触摸板（#197）。
-- **更多着色器提示**（#212）：一份打到两个结局的完整游玩记录补上了发布包提示中没有的 237 个着色器和 268 条管线：游戏后期
-  第一次出现的卡顿更少。感谢 @Vorshim92。
-- **预编译**（#213）：某个分片停止工作时不再拖住整个预编译。它 20 分钟没有进展就会重新启动（最多两次），之后跳过；游戏在
-  第一次需要时再编译这些管线。
-- **16 GB 电脑内存占用更少**：游戏引擎释放的内存归还给 Windows 的速度快了四倍：长时间游玩少占 0.8 GB。
-- **新建图像先清零**（PR #193，@intellq）：与 PS5 一样，新图像在第一次使用前为零。以前在 1080p 的 FSR 加 43:18 压缩下，
-  第一帧会读到未定义的内容，整局都保持绿色或红色的画面，主要出现在 Linux 的 AMD 显卡上。
-- **Linux**：AMD 显卡（RADV）现在会启用传输队列，读回显卡已完成的数据时不再排在整个图形队列后面：RX 9060 XT 和
-  RX 9070 XT 行走时帧率提升 19% 到 27%。由 @the2ndday 发现，@dreamerk24m 和 @yazuc 测试。`-Set KYTY_RADV_TRANSFER_QUEUE=0`
-  可以关闭；较旧 AMD 显卡的用户如果遇到显卡挂起请反馈。同样来自 @the2ndday：实验性的 `KYTY_UFFD_WP=1`（用 userfaultfd 监视
-  GPU 跟踪的写入，需要 Linux 6.4+；PR #206），以及 Linux 上的测试辅助命令（PR #211）。
-- **感谢** @Psychowarden、@the2ndday、@Vorshim92 和 @intellq 的补丁与 PR，以及 @danielmazurek79、@Theoryedz、
-  @ededaelita1-afk、@ft1704、@dreamerk24m、@Fantomas3228、@yazuc、@marcelofis、@SanyaSan 和 @kvothe3323 的反馈与测试。

@@ -178,6 +178,14 @@ const Table& English() {
 	                       "is the newer, sharper "
 	                       "model; CNN the older one, lighter on RTX 20 and 30 cards, where the "
 	                       "transformer model costs more."},
+	    {"dlsssharp", "DLSS sharpening"},
+	    {"dlsssharp.off", "Off"},
+	    {"dlsssharp.low", "Low"},
+	    {"dlsssharp.medium", "Medium"},
+	    {"dlsssharp.high", "High"},
+	    {"dlsssharp.desc", "With DLSS: sharpens its picture (RCAS, as FSR 3 does). The game's own TAA "
+	                       "sharpens its image; DLSS doesn't, so fine detail looks softer. Higher "
+	                       "levels can show halos on edges."},
 	    {"dlss.dlaa", "DLAA"},
 	    {"dlss.quality", "Quality"},
 	    {"dlss.balanced", "Balanced"},
@@ -507,6 +515,13 @@ const Table& Chinese() {
 	    {"dlssmodel.desc", "使用 DLSS 时生效。自动：由 DLSS "
 	                       "版本决定模型。Transformer：更新、更清晰的模型；CNN：旧模型，在 RTX 20 "
 	                       "和 30 系显卡上更轻（Transformer 模型在这些显卡上开销更大）。"},
+	    {"dlsssharp", "DLSS 锐化"},
+	    {"dlsssharp.off", "关闭"},
+	    {"dlsssharp.low", "低"},
+	    {"dlsssharp.medium", "中"},
+	    {"dlsssharp.high", "高"},
+	    {"dlsssharp.desc", "使用 DLSS 时生效：锐化 DLSS 的画面（RCAS，与 FSR 3 相同）。游戏自带的 "
+	                       "TAA 会锐化画面，DLSS 不会，所以细节看起来偏软。等级越高，边缘越可能出现光晕。"},
 	    {"dlss.dlaa", "DLAA"},
 	    {"dlss.quality", "质量"},
 	    {"dlss.balanced", "平衡"},
@@ -825,6 +840,15 @@ const Table& Portuguese() {
 	     "Com DLSS: Automático deixa o modelo para a versão do DLSS. Transformer é o modelo mais "
 	     "novo e "
 	     "nítido; CNN o antigo, mais leve nas RTX 20 e 30, onde o transformer custa mais."},
+	    {"dlsssharp", "Nitidez do DLSS"},
+	    {"dlsssharp.off", "Desligada"},
+	    {"dlsssharp.low", "Baixa"},
+	    {"dlsssharp.medium", "Média"},
+	    {"dlsssharp.high", "Alta"},
+	    {"dlsssharp.desc",
+	     "Com DLSS: aumenta a nitidez da imagem (RCAS, como o FSR 3 faz). O TAA do próprio jogo "
+	     "aumenta a nitidez da imagem; o DLSS não, então os detalhes finos parecem mais suaves. "
+	     "Níveis mais altos podem mostrar halos nas bordas."},
 	    {"dlss.dlaa", "DLAA"},
 	    {"dlss.quality", "Qualidade"},
 	    {"dlss.balanced", "Equilibrado"},

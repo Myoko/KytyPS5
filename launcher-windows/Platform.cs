@@ -269,17 +269,131 @@ static class Native {
 	[DllImport("user32.dll")]
 	static extern bool SetForegroundWindow(IntPtr window);
 
+	[DllImport("user32.dll")]
+	static extern bool IsWindowVisible(IntPtr window);
+
+	[DllImport("user32.dll")]
+	static extern bool BringWindowToTop(IntPtr window);
+
+	[DllImport("user32.dll")]
+	static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
+
+	[DllImport("user32.dll")]
+	static extern bool AttachThreadInput(uint attach, uint to, bool on);
+
+	[DllImport("kernel32.dll")]
+	static extern uint GetCurrentThreadId();
+
+	[DllImport("user32.dll")]
+	static extern IntPtr GetWindow(IntPtr window, uint command);
+
+	[DllImport("user32.dll")]
+	static extern bool GetWindowRect(IntPtr window, out Rect rect);
+
+	delegate bool EnumWindowsProc(IntPtr window, IntPtr parameter);
+
+	[DllImport("user32.dll")]
+	static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);
+
+	[StructLayout(LayoutKind.Sequential)]
+	struct Rect {
+		public int Left, Top, Right, Bottom;
+	}
+
+	[StructLayout(LayoutKind.Sequential)]
+	struct ProcessBasicInformation {
+		public IntPtr ExitStatus, PebBaseAddress, AffinityMask, BasePriority, UniqueProcessId, InheritedFromUniqueProcessId;
+	}
+
+	[DllImport("ntdll.dll")]
+	static extern int NtQueryInformationProcess(IntPtr process, int informationClass, ref ProcessBasicInformation information,
+		int length, out int returned);
+
+	[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+	struct ProcessEntry {
+		public uint Size, Usage, ProcessId;
+		public IntPtr DefaultHeapId;
+		public uint ModuleId, Threads, ParentProcessId;
+		public int PriorityClassBase;
+		public uint Flags;
+		[MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+		public string ExeFile;
+	}
+
+	[DllImport("kernel32.dll")]
+	static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint process);
+
+	[DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+	static extern bool Process32FirstW(IntPtr snapshot, ref ProcessEntry entry);
+
+	[DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+	static extern bool Process32NextW(IntPtr snapshot, ref ProcessEntry entry);
+
+	[DllImport("kernel32.dll")]
+	static extern bool CloseHandle(IntPtr handle);
+
 	// The window that has the focus now, as the emulator reads it from KYTY_RETURN_FOCUS (a number).
 	public static string ForegroundWindow() {
 		return GetForegroundWindow().ToInt64().ToString(System.Globalization.CultureInfo.InvariantCulture);
 	}
 
-	// The focus to a window ForegroundWindow named, if it is still there (Windows may refuse it to a process without it).
-	public static void Focus(string window) {
-		long handle;
-		if (long.TryParse(window, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out handle) &&
-		    handle != 0 && IsWindow(new IntPtr(handle)))
-			SetForegroundWindow(new IntPtr(handle));
+	// The process that started this one (Steam, when it starts the game), as the emulator reads it from
+	// KYTY_RETURN_FOCUS_PID: its largest window takes the focus back where the one in front at the start is gone.
+	public static string ParentProcess() {
+		var information = new ProcessBasicInformation();
+		int returned;
+		var parent = NtQueryInformationProcess(System.Diagnostics.Process.GetCurrentProcess().Handle, 0, ref information,
+			Marshal.SizeOf(information), out returned) == 0 ? information.InheritedFromUniqueProcessId.ToInt64() : 0;
+		return parent.ToString(System.Globalization.CultureInfo.InvariantCulture);
+	}
+
+	// The largest visible top-level window of a process or of one it started (Steam's windows, Big Picture's full screen
+	// one among them, belong to the steamwebhelper.exe it starts), or zero.
+	static IntPtr LargestWindowOf(uint process) {
+		var processes = new HashSet<uint> { process };
+		var snapshot = CreateToolhelp32Snapshot(2 /* TH32CS_SNAPPROCESS */, 0);
+		if (snapshot != new IntPtr(-1)) {
+			var entry = new ProcessEntry { Size = (uint)Marshal.SizeOf(typeof(ProcessEntry)) };
+			for (var more = Process32FirstW(snapshot, ref entry); more; more = Process32NextW(snapshot, ref entry))
+				if (entry.ParentProcessId == process) processes.Add(entry.ProcessId);
+			CloseHandle(snapshot);
+		}
+		var best = IntPtr.Zero;
+		long area = 0;
+		EnumWindows((window, parameter) => {
+			uint owner;
+			Rect rect;
+			if (GetWindowThreadProcessId(window, out owner) != 0 && processes.Contains(owner) && IsWindowVisible(window) &&
+			    GetWindow(window, 4 /* GW_OWNER */) == IntPtr.Zero && GetWindowRect(window, out rect)) {
+				long size = (long)(rect.Right - rect.Left) * (rect.Bottom - rect.Top);
+				if (size > area) {
+					area = size;
+					best = window;
+				}
+			}
+			return true;
+		}, IntPtr.Zero);
+		return best;
+	}
+
+	// The focus to the window ForegroundWindow named, else to the largest of the process ParentProcess named. Windows
+	// refuses it to a process without the focus: then with the input of the foreground window's thread attached.
+	public static void Focus(string window, string parent) {
+		long handle, process;
+		var target = long.TryParse(window, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out handle)
+			? new IntPtr(handle) : IntPtr.Zero;
+		if (target == IntPtr.Zero || !IsWindow(target) || !IsWindowVisible(target))
+			target = long.TryParse(parent, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out process) && process > 0
+				? LargestWindowOf((uint)process) : IntPtr.Zero;
+		if (target == IntPtr.Zero || GetForegroundWindow() == target) return;
+		if (SetForegroundWindow(target) && GetForegroundWindow() == target) return;
+		uint ignored;
+		var foreground = GetWindowThreadProcessId(GetForegroundWindow(), out ignored);
+		var self = GetCurrentThreadId();
+		if (foreground == 0 || foreground == self || !AttachThreadInput(self, foreground, true)) return;
+		BringWindowToTop(target);
+		SetForegroundWindow(target);
+		AttachThreadInput(self, foreground, false);
 	}
 
 	[DllImport("kernel32.dll", SetLastError = true)]

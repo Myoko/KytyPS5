@@ -648,6 +648,7 @@ struct Presenter::Impl {
 	};
 	std::mutex                  waiting_mutex;
 	std::condition_variable_any waiting_changed;
+	std::condition_variable     waiting_taken; // the thread took the waiting frame (Replace, FrameGen::PresentEveryFrame)
 	Waiting                     waiting;
 	bool                        presenting = false; // (waiting_mutex) the thread took one and has not presented it yet
 	std::jthread                thread;
@@ -655,7 +656,13 @@ struct Presenter::Impl {
 	void Replace(const Waiting& next) {
 		Waiting dropped;
 		{
-			std::lock_guard lock(waiting_mutex);
+			std::unique_lock lock(waiting_mutex);
+			// (Each frame Streamline's DLSS upscaled is presented, FrameGen::PresentEveryFrame: a new frame waits until the
+			// thread took the one waiting, 250 ms at most, rather than replace it.)
+			if (next.frame != nullptr && !next.reuse && FrameGen::PresentEveryFrame()) {
+				waiting_taken.wait_for(lock, std::chrono::milliseconds(250),
+				                       [&] { return waiting.frame == nullptr || waiting.reuse; });
+			}
 			dropped = std::exchange(waiting, next);
 		}
 		if (next.frame != nullptr && !next.reuse) present_stats.handed.fetch_add(1, std::memory_order_relaxed);
@@ -1591,6 +1598,7 @@ void Presenter::PresentLoop(std::stop_token token) {
 			next            = std::exchange(impl.waiting, {});
 			impl.presenting = true;
 		}
+		impl.waiting_taken.notify_all();
 		if (next.blank) {
 			// A free frame, else none: each frame held is a guest picture on its way here.
 			auto* frame = impl.frames.Acquire(false);

@@ -1126,6 +1126,26 @@ void LauncherWindow::GraphicsPage() {
 	    },
 	    T("dlssmodel.desc"));
 
+	// DLSS's sharpening (KYTY_DLSS_SHARPNESS): none by default; the game's own TAA sharpens, DLSS
+	// does not (issue #224).
+	const std::vector<std::string> sharpnesses {"", "0.3", "0.6", "0.9"};
+	Row(
+	    "dlsssharp",
+	    [&] {
+		    int index = static_cast<int>(
+		        std::find(sharpnesses.begin(), sharpnesses.end(), S().Str("dlss_sharpness")) -
+		        sharpnesses.begin());
+		    if (index >= 4) index = 0;
+		    if (Combo("##dlsssharp", &index,
+		              {T("dlsssharp.off"), T("dlsssharp.low"), T("dlsssharp.medium"),
+		               T("dlsssharp.high")},
+		              300, commands_.Dlss())) {
+			    S().Set("dlss_sharpness", sharpnesses[static_cast<size_t>(index)]);
+			    Changed();
+		    }
+	    },
+	    T("dlsssharp.desc"));
+
 	Section("graphics.detail");
 	const std::vector<std::string> qualities {"standard", "low", "lowest"};
 	Row(

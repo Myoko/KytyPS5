@@ -222,6 +222,10 @@ struct UpscaleInputs {
 };
 // Streamline offers DLSS super resolution on this device.
 [[nodiscard]] bool UpscalerReady();
+// Streamline's DLSS super resolution without frame generation (Windows): every frame the game rendered goes to the
+// present, where Streamline does its bookkeeping once per rendered frame. Frames the presenter replaced never got there,
+// and on an RTX 2080 Ti its present call grew to 140 ms over minutes (issue #129). KYTY_PRESENT_EVERY_FRAME=0/1 overrides.
+[[nodiscard]] bool PresentEveryFrame();
 // Records DLSS into `command` (outside a render pass; the images in their `layout`s, left so): false when it could not.
 // `dispatch` records the commands DLSS needs around it (the recording worker's when it replays).
 [[nodiscard]] bool Upscale(vk::CommandBuffer command, const UpscaleInputs& inputs,

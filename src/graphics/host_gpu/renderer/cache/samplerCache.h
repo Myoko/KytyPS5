@@ -16,6 +16,11 @@ namespace Libs::Graphics {
 
 struct GraphicContext;
 
+// The texture LOD bias of an upscaler's 3D below its output (Loader::DemonsSoulsRenderSize: the PS5 Pro path with DLSS or
+// FSR 3), log2(render height / output height), added to the materials' samplers made from then on (GetSampler). Set
+// before the game makes any.
+void SetUpscaleLodBias(float bias);
+
 class SamplerCache {
 public:
 	explicit SamplerCache(GraphicContext& graphics): m_graphics(graphics) {

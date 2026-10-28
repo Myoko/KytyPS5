@@ -1299,6 +1299,17 @@ static void RemoveStaleShards(const std::vector<std::filesystem::path>& stale, c
 	if (!stale.empty()) PipelineCacheLog("Static pipeline {}: removed {} shard file(s) of another driver or GPU", what, stale.size());
 }
 
+// `from` renamed to `to`, replacing it, tried again for 5 s: a file just written is often held for a moment by a
+// scanner (an antivirus, the search indexer), and a precompile's merge of a ~5.5 GB store failed at its end (issue
+// #225). `error` keeps the last try's.
+static void RenameReplacing(const std::filesystem::path& from, const std::filesystem::path& to, std::error_code& error) {
+	for (int attempt = 0;; ++attempt) {
+		std::filesystem::rename(from, to, error);
+		if (!error || attempt == 10) return;
+		std::this_thread::sleep_for(std::chrono::milliseconds(500));
+	}
+}
+
 // The store and its shards' files (or only the shards': prune), into a new store; the shard files are
 // removed once merged. Their data is copied from the files when the new one is written.
 bool PipelineCache::MergeBinaryShards(GraphicContext& graphics, bool prune, bool keep_shards) {
@@ -1334,13 +1345,29 @@ bool PipelineCache::MergeBinaryShards(GraphicContext& graphics, bool prune, bool
 	temporary += ".tmp";
 	const bool saved = writer.Save(temporary, signature);
 	sources.clear(); // closes the files: the store may be replaced
-	if (saved) std::filesystem::rename(temporary, path, error);
+	if (saved) RenameReplacing(temporary, path, error);
 	const bool merged = saved && !error;
 	if (merged && !keep_shards) {
 		for (const auto& file: files) std::filesystem::remove(file, error);
 	}
 	PipelineCacheLog("Static pipeline binaries: merged {} shards{}, {} pipelines{}", files.size(),
 	                 prune ? " (pruned)" : "", writer.Pipelines(), merged ? "" : ": FAILED");
+	if (!merged) {
+		// Why (issue #225: every shard done, then this): the new store not written (a drive without room for it, or a
+		// FAT32 one, which holds no file of 4 GiB: the store is ~5.5 GiB), or not put in place (the store open in a
+		// running game).
+		std::error_code space_error;
+		const auto      space  = std::filesystem::space(path.parent_path(), space_error);
+		const auto      system = LocalPlatform::FileSystemName(Common::PathToString(path.parent_path()));
+		const auto      what   = saved ? "the new store could not replace the old one: " + error.message()
+		                               : std::string("the new store could not be written");
+		const auto      fat    = system == "FAT32" || system == "FAT"
+		                             ? ", a " + system + " drive, which holds no file of 4 GiB or more: move the emulator's "
+		                                                 "folder to an NTFS or exFAT drive"
+		                             : std::string();
+		PipelineCacheLog("Static pipeline binaries: {}; {} GiB free on its drive{}", what,
+		                 space_error ? 0 : space.available >> 30u, fat);
+	}
 	return merged;
 }
 
@@ -1379,7 +1406,7 @@ static bool MergeBlobShards(GraphicContext& graphics, bool prune, bool keep_shar
 	temporary += ".tmp";
 	const bool saved = writer.Save(temporary, signature);
 	sources.clear(); // closes the files: the blobs may be replaced
-	if (saved) std::filesystem::rename(temporary, path, error);
+	if (saved) RenameReplacing(temporary, path, error);
 	const bool merged = saved && !error;
 	if (merged && !keep_shards) {
 		for (const auto& file: files) std::filesystem::remove(file, error);

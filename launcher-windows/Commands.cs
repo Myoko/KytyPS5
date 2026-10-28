@@ -156,6 +156,9 @@ sealed class Commands {
 		// The DLSS model chosen on the Graphics page (a preset letter; none: the DLSS version's own choice).
 		var preset = S.Str("dlss_preset");
 		if (dlss && preset.Length == 1 && preset[0] >= 'A' && preset[0] <= 'O') sets.Add("KYTY_DLSS_PRESET=" + preset);
+		// DLSS's sharpening chosen there (KYTY_DLSS_SHARPNESS, 0-1; none: not sharpened).
+		var sharpness = S.Str("dlss_sharpness");
+		if (dlss && (sharpness == "0.3" || sharpness == "0.6" || sharpness == "0.9")) sets.Add("KYTY_DLSS_SHARPNESS=" + sharpness);
 		// The Advanced page's extra options: their -Set pairs join (or replace) the launcher's own.
 		var extra = ExtraOptions();
 		foreach (var option in extra) {

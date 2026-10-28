@@ -81,7 +81,8 @@ void MakeCriticalThread();
 int DisplayRefreshHz(void* window);
 // KYTY_RETURN_FOCUS=<window handle> (the launcher's --play: the window that had the focus as it started, Steam's Big
 // Picture when Steam starts the game): the focus handed to that window and `window` (the game's, its HWND) hidden, as
-// the game quits (issue #217). Windows only.
+// the game quits (issue #217). That window gone or hidden: the largest of KYTY_RETURN_FOCUS_PID=<process> (the
+// launcher's parent) or of a process it started. Windows only.
 void ReturnFocus(void* window);
 // Vertical blanks of that display, counted by a thread of their own that waits for each (Windows:
 // D3DKMTWaitForVerticalBlankEvent on the window's display, again when the window moves to another one); a window
@@ -110,6 +111,9 @@ bool     ResizeScratchFile(uint64_t file, uint64_t size);
 bool     FlushScratchFile(uint64_t file);
 // This executable's path, UTF-8 (empty when unknown).
 std::string ExecutablePath();
+// The file system of the drive holding `path` (UTF-8): "NTFS", "exFAT", "FAT32"... ("FAT32" for a Linux vfat mount; empty
+// when unknown).
+std::string FileSystemName(const std::string& path);
 
 // The process's committed private memory and resident working set, and the machine's physical memory, in
 // bytes (0 where the host cannot tell; KYTY_SIMULATE_RAM_MB=<n> reports n MiB of physical memory, for tests).
@@ -121,6 +125,13 @@ MemoryUse ProcessMemory();
 uint64_t  PhysicalMemory();
 // The physical memory the system can still give without paging (free and standby; Linux: MemAvailable). 0: unknown.
 uint64_t AvailablePhysicalMemory();
+// The memory the process can still commit and the commit limit (RAM and page file: Task Manager's "Committed"; Linux:
+// CommitLimit less Committed_AS, and CommitLimit, which overcommit lets programs pass), in bytes. 0: unknown.
+struct CommitState {
+	uint64_t available = 0;
+	uint64_t limit     = 0;
+};
+CommitState SystemCommit();
 // KYTY_HEAP_TRIM=1 (off by default): the heap's free pages go back to the system on a thread of its
 // own, checked every 30 s, after 64 MiB of growth since the last trim; the first 10 are told.
 // Linux (glibc): malloc_trim (in Demon's Souls 130-150 MiB of its 1 GB of arenas were free chunks

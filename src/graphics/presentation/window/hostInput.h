@@ -12,6 +12,8 @@ void               HostInputKey(int key_code, bool down);
 // The keymap (--keymap) gives that key to a control of the pad.
 [[nodiscard]] bool HostInputMapsKey(int key_code);
 void               HostInputMouseButton(uint8_t mouse_button, bool down);
+// Wheel notches (up > 0, down < 0) on the controls mapped to Mouse:WheelUp / Mouse:WheelDown: a short press each.
+void               HostInputMouseWheel(int notches);
 void               HostInputToggleMouseToJoystick();
 [[nodiscard]] bool HostInputWaitEvent(SDL_Event* event);
 

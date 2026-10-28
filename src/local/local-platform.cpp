@@ -1,6 +1,7 @@
 #include "local-platform.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -56,6 +57,7 @@
 #if defined(__linux__)
 #include <linux/membarrier.h>
 #include <malloc.h>
+#include <sys/vfs.h>
 #endif
 #endif
 
@@ -1070,16 +1072,96 @@ int DisplayRefreshHz(void* window) {
 	return mode.dmDisplayFrequency > 1 ? static_cast<int>(mode.dmDisplayFrequency) : 0;
 }
 
+// The largest visible top-level window of process `pid` or of a process it started: Steam's windows, Big Picture's full
+// screen one among them, belong to the steamwebhelper.exe it starts.
+static HWND LargestWindowOf(DWORD pid) {
+	struct Search {
+		std::vector<DWORD> pids;
+		HWND               best = nullptr;
+		LONG               area = 0;
+	} search {{pid}};
+	if (HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0); snapshot != INVALID_HANDLE_VALUE) {
+		PROCESSENTRY32W entry {};
+		entry.dwSize = sizeof(entry);
+		for (BOOL more = Process32FirstW(snapshot, &entry); more != FALSE; more = Process32NextW(snapshot, &entry)) {
+			if (entry.th32ParentProcessID == pid) search.pids.push_back(entry.th32ProcessID);
+		}
+		CloseHandle(snapshot);
+	}
+	EnumWindows(
+	    [](HWND window, LPARAM parameter) -> BOOL {
+		    auto& s     = *reinterpret_cast<Search*>(parameter);
+		    DWORD owner = 0;
+		    RECT  rect {};
+		    if (GetWindowThreadProcessId(window, &owner) != 0 &&
+		        std::find(s.pids.begin(), s.pids.end(), owner) != s.pids.end() && IsWindowVisible(window) != FALSE &&
+		        GetWindow(window, GW_OWNER) == nullptr && GetWindowRect(window, &rect) != FALSE) {
+			    const LONG area = (rect.right - rect.left) * (rect.bottom - rect.top);
+			    if (area > s.area) {
+				    s.area = area;
+				    s.best = window;
+			    }
+		    }
+		    return TRUE;
+	    },
+	    reinterpret_cast<LPARAM>(&search));
+	return search.best;
+}
+
+// A window for the log: its class and its program ("'SDL_app' of steamwebhelper.exe").
+static std::string DescribeWindow(HWND window) {
+	char  name[64] = {};
+	DWORD pid      = 0;
+	GetClassNameA(window, name, sizeof(name));
+	GetWindowThreadProcessId(window, &pid);
+	char program[MAX_PATH] = "?";
+	if (HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid); process != nullptr) {
+		DWORD size = sizeof(program);
+		if (QueryFullProcessImageNameA(process, 0, program, &size) == FALSE) std::strcpy(program, "?");
+		CloseHandle(process);
+	}
+	const char* file = std::strrchr(program, '\\');
+	return std::string("'") + name + "' of " + (file != nullptr ? file + 1 : program);
+}
+
 void ReturnFocus(void* window) {
 	const char* value = std::getenv("KYTY_RETURN_FOCUS");
 	if (value == nullptr || *value == '\0') return;
-	const auto target = reinterpret_cast<HWND>(static_cast<uintptr_t>(std::strtoull(value, nullptr, 10)));
-	if (target == nullptr || target == static_cast<HWND>(window) || IsWindow(target) == FALSE) return;
+	const auto own     = static_cast<HWND>(window);
+	const auto started = reinterpret_cast<HWND>(static_cast<uintptr_t>(std::strtoull(value, nullptr, 10)));
+	auto       target  = started;
+	// The window that had the focus as the launcher started can be gone or hidden by now (issue #217: Big Picture still
+	// lost it): the largest visible window of the process that started the launcher (Steam) or of one Steam started.
+	if (target == nullptr || target == own || IsWindow(target) == FALSE || IsWindowVisible(target) == FALSE) {
+		std::printf("Focus: the window in front as the game started (%s) is gone or hidden\n", value);
+		const char* pid = std::getenv("KYTY_RETURN_FOCUS_PID");
+		target          = pid != nullptr ? LargestWindowOf(static_cast<DWORD>(std::strtoul(pid, nullptr, 10))) : nullptr;
+	}
+	if (target == nullptr || target == own) {
+		std::printf("Focus: no window to give it back to\n");
+		std::fflush(stdout);
+		return;
+	}
 	// Handed over while the game's window has the focus (Windows lets the process that has it give it away), then the
-	// game's window hidden: hidden first, Windows would give the focus to a window of its own choosing.
+	// game's window hidden: hidden first, Windows would give the focus to a window of its own choosing. Refused (the
+	// focus already elsewhere, say Steam's menu over the game), with the input of the foreground window's thread
+	// attached to this one's.
 	if (IsIconic(target) != FALSE) ShowWindow(target, SW_RESTORE);
-	SetForegroundWindow(target);
-	if (window != nullptr) ShowWindow(static_cast<HWND>(window), SW_HIDE);
+	bool given = SetForegroundWindow(target) != FALSE && GetForegroundWindow() == target;
+	if (!given) {
+		const DWORD foreground = GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
+		const DWORD self       = GetCurrentThreadId();
+		if (foreground != 0 && foreground != self && AttachThreadInput(self, foreground, TRUE) != FALSE) {
+			BringWindowToTop(target);
+			given = SetForegroundWindow(target) != FALSE && GetForegroundWindow() == target;
+			AttachThreadInput(self, foreground, FALSE);
+		}
+	}
+	std::printf("Focus: %s window %p, %s (%s)\n", given ? "given back to" : "not taken by", static_cast<void*>(target),
+	            DescribeWindow(target).c_str(),
+	            target == started ? "the one in front as the game started" : "the largest of the launcher's parent's");
+	std::fflush(stdout);
+	if (own != nullptr) ShowWindow(own, SW_HIDE);
 }
 
 bool StartDisplayVblanks(void* window) {
@@ -1204,6 +1286,24 @@ std::string ExecutablePath() {
 		if (path.size() >= 32768) return {};
 		path.resize(path.size() * 2);
 	}
+}
+
+std::string FileSystemName(const std::string& path) {
+	const int            length = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+	std::vector<wchar_t> wide(length > 0 ? static_cast<size_t>(length) : 1, L'\0');
+	if (length <= 0 || MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wide.data(), length) != length) return {};
+	std::array<wchar_t, MAX_PATH + 1> volume {};
+	std::array<wchar_t, MAX_PATH + 1> name {};
+	if (GetVolumePathNameW(wide.data(), volume.data(), static_cast<DWORD>(volume.size())) == FALSE ||
+	    GetVolumeInformationW(volume.data(), nullptr, 0, nullptr, nullptr, nullptr, name.data(),
+	                          static_cast<DWORD>(name.size())) == FALSE)
+		return {};
+	std::string result;
+	for (const wchar_t c: name) {
+		if (c == L'\0') break;
+		result += static_cast<char>(c < 0x80 ? c : '?');
+	}
+	return result;
 }
 
 bool WriteHeapHistogram(const char* path) {
@@ -1748,6 +1848,13 @@ uint64_t AvailablePhysicalMemory() {
 	return GlobalMemoryStatusEx(&status) != 0 ? status.ullAvailPhys : 0;
 }
 
+CommitState SystemCommit() {
+	MEMORYSTATUSEX status {};
+	status.dwLength = sizeof(status);
+	if (GlobalMemoryStatusEx(&status) == 0) return {};
+	return {status.ullAvailPageFile, status.ullTotalPageFile};
+}
+
 static IDXGIAdapter3* g_video_memory_adapter = nullptr;
 
 bool OpenVideoMemoryAdapter(const uint8_t* luid) {
@@ -2139,6 +2246,17 @@ std::string ExecutablePath() {
 	return error ? std::string() : path.string();
 }
 
+std::string FileSystemName(const std::string& path) {
+#if defined(__linux__)
+	struct statfs info {};
+	if (statfs(path.c_str(), &info) != 0) return {};
+	return info.f_type == 0x4d44 ? "FAT32" : ""; // (MSDOS_SUPER_MAGIC: a vfat mount)
+#else
+	(void)path;
+	return {};
+#endif
+}
+
 bool WriteHeapHistogram(const char* path) {
 #if defined(__GLIBC__)
 	// glibc's account of its heap: the totals of all arenas (mallinfo2), then malloc_info's XML
@@ -2205,6 +2323,20 @@ uint64_t AvailablePhysicalMemory() {
 		std::fclose(file);
 	}
 	return available;
+}
+
+CommitState SystemCommit() {
+	uint64_t limit = 0, committed = 0;
+	if (FILE* file = std::fopen("/proc/meminfo", "r")) {
+		char line[256];
+		while (std::fgets(line, sizeof(line), file) != nullptr) {
+			unsigned long long kib = 0;
+			if (std::sscanf(line, "CommitLimit: %llu kB", &kib) == 1) limit = static_cast<uint64_t>(kib) << 10u;
+			if (std::sscanf(line, "Committed_AS: %llu kB", &kib) == 1) committed = static_cast<uint64_t>(kib) << 10u;
+		}
+		std::fclose(file);
+	}
+	return {limit - std::min(limit, committed), limit};
 }
 
 // (StartHeapTrimmer: glibc's free pages inside its arenas given back, not only the tops'. 0, else

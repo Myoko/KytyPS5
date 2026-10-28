@@ -32,6 +32,8 @@ sealed class Settings {
 		// (Graphics page: the DLSS model, a preset letter or the DLSS version's own choice; the file has seen the game output's
 		// Automatic.)
 		new object[] {"dlss_preset", ""}, new object[] {"output_auto", true},
+		// (Graphics page: DLSS's sharpening, KYTY_DLSS_SHARPNESS's value, "" none.)
+		new object[] {"dlss_sharpness", ""},
 		// (Game page: the audio output the game is told, "" a TV.)
 		new object[] {"audio_output", ""},
 	};

@@ -87,8 +87,8 @@ folder (usually named `PPSA01341-app0`).
 **Double-click `KytyLauncher.exe`** (or `launcher.cmd`) for the settings window, in English or Chinese. Its
 pages: **Play** (the game folder or `.zar`; checks of the game, graphics card, RAM, precompiled shaders and
 DLSS/FSR; the Play button), **Display** (resolution, aspect ratio, fullscreen, HDR, up to 120 fps, VSync, low
-latency), **Graphics** (upscaler, render height with each height's DLSS mode, game output, DLSS model, graphics
-preset, frame generation), **Game** (console
+latency), **Graphics** (upscaler, render height with each height's DLSS mode, game output, DLSS model and
+sharpening, graphics preset, frame generation), **Game** (console
 language, cheats), **Shaders** (precompile, optionally on the efficiency cores only so the PC stays responsive;
 export shader hints), **Advanced** (performance overlay, red-zone protection, safe GPU mode, the graphics card on a
 PC with more than one, extra command-line options, the launcher's language, the logs folder) and **Experimental** (options still being tried out, each with
@@ -140,6 +140,12 @@ DLSS, on any graphics card, AMD and Intel included: it is built into the emulato
 (`run.cmd -Upscaler fsr`; on an RTX 5090 at Boletaria's start 75.8 fps from 1080 to 4K, a picture close to DLSS's).
 The render heights show their mode as with DLSS (FSR's "Native AA" at the output's own size). The in-game
 "Cinematic" mode stays native 4K without DLSS or FSR.
+The game's own TAA sharpens its picture; DLSS in its place does not, so fine detail (armour, cloth) looks softer
+with it. "DLSS sharpening" (Off by default; Low, Medium, High) sharpens DLSS's picture with RCAS, the sharpening
+FSR 3 uses (`-Set KYTY_DLSS_SHARPNESS=0.6` on a `run.cmd` line, 0 to 1); the higher levels can show halos on edges.
+With DLSS or FSR 3 below their output's size, the game's textures are read with the detail of the output's size
+rather than the render height's (a texture LOD bias of log2(render height / output height), as NVIDIA's DLSS guide
+recommends; `-Set KYTY_UPSCALE_LOD_BIAS=0` turns it off).
 With an "Aspect ratio" wider than 16:9, DLSS makes the picture at its full width: 5120x2160 at 21:9 (from
 2560x1080 at render height 1080), and the game finishes it at that size, with the HUD at the screen's edges,
 instead of a 3840x2160 picture widened on the screen. On an RTX 5090 at Boletaria's start that ran at 64.5 fps,
@@ -235,6 +241,7 @@ shortcut):
 | `-Hdr` | HDR10 output when Windows' "Use HDR" is on for the display |
 | `-Upscaler dlss` | DLSS super resolution through the game's PS5 Pro path (NVIDIA RTX, needs Streamline: see "Upscaler" above) |
 | `-Upscaler fsr` | The same with AMD FSR 3, built in: any graphics card |
+| `-Set KYTY_DLSS_SHARPNESS=0.6` | With `-Upscaler dlss`: DLSS's picture sharpened, 0 to 1 (the launcher's "DLSS sharpening": Low 0.3, Medium 0.6, High 0.9) |
 | `-FrameGen 1` | DLSS frame generation, the number of generated frames per rendered one (`1` = 2x, up to `5`; RTX 40 or newer, needs Streamline) |
 | `-Gpu 1` | The graphics card on a PC with more than one: its number in the log's `Vulkan GPU <n>:` lines, or a part of its name (`-Gpu 4090`); give `precompile.cmd` the same `-Gpu`, so the shaders are compiled for that card. Without it the first discrete GPU, in the order Windows' graphics settings give |
 | `-Set KEY=VALUE` | An emulator switch, e.g. `-Set KYTY_SHADER_PREFETCH=0` (several: `-Set A=1,B=2`); the issues name the ones worth trying |
@@ -381,7 +388,11 @@ With any of them, only your own keys work on the keyboard (none of the layout ab
 - Controls: `Cross Circle Square Triangle L1 R1 L2 R2 L3 R3 Options Up Down Left Right TouchPad TouchPadRight`,
   `LeftStickUp/Down/Left/Right`, `RightStickUp/Down/Left/Right`.
 - Keys: their names on the keyboard (`E`, `Tab`, `Space`, `Escape`, `Left Shift`, `Left Ctrl`, `Return`, ...; also
-  written without the space, as `LeftShift`), or `Mouse:Left`, `Mouse:Right`, `Mouse:Middle`, `Mouse:X1`, `Mouse:X2`.
+  written without the space, as `LeftShift`), or `Mouse:Left`, `Mouse:Right`, `Mouse:Middle`, `Mouse:X1`, `Mouse:X2`,
+  `Mouse:WheelUp`, `Mouse:WheelDown` (each notch of the wheel a short press: `"--keymap", "Up=Mouse:WheelUp"` and
+  `"--keymap", "Down=Mouse:WheelDown"` switch spells and items).
+- A control takes one key and one mouse input (`Up=Up` with `Up=Mouse:WheelUp`: both work); a second key, or a second
+  mouse input, for the same control replaces the first.
 - F7, F8, F9 and F11 stay the emulator's. A line it cannot use is skipped, and the run log says which and why
   (`Input mapping skipped: ...`).
 - An update's `launch.json` replaces yours: keep a copy of your lines.

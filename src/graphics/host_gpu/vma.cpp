@@ -2,9 +2,11 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #if defined(__clang__)
@@ -414,6 +416,63 @@ void GraphicContext::ReportMemoryFallback(const char* what, uint64_t bytes) cons
 	std::fflush(stdout);
 }
 
+// Issue #228: an RX 9070 with 5.4 GB of its 15.4 GB of video memory free refused a 108 MB buffer at a world load, the
+// PC's RAM nearly full (2 GB of 24 GB left), and the emulator exited: which memory refused it was not known.
+void GraphicContext::DescribeAllocationFailure(const char* what, uint64_t bytes) const {
+	static std::atomic<uint32_t> described {0};
+	if (described.fetch_add(1, std::memory_order_relaxed) >= 4) return;
+	VmaTotalStatistics statistics {};
+	vmaCalculateStatistics(allocator, &statistics);
+	const auto commit = LocalPlatform::SystemCommit();
+	std::printf("Vulkan: %s of %" PRIu64 " MiB not made: VMA holds %u memory objects (the GPU's limit %u); the PC has %" PRIu64
+	            " MiB of RAM left and %" PRIu64 " MiB to commit of %" PRIu64 " MiB\n",
+	            what, bytes >> 20u, statistics.total.statistics.blockCount, physical_device_properties.limits.maxMemoryAllocationCount,
+	            LocalPlatform::AvailablePhysicalMemory() >> 20u, commit.available >> 20u, commit.limit >> 20u);
+	// The driver asked directly for the same size (with a device address, as VMA asks), in the first memory type of each
+	// kind: video memory, and system memory the CPU sees.
+	const auto& memory = GetPhysicalDeviceMemoryProperties();
+	for (const bool video: {true, false}) {
+		for (uint32_t type = 0; type < memory.memoryTypeCount; type++) {
+			const auto flags = memory.memoryTypes[type].propertyFlags;
+			if (static_cast<bool>(flags & vk::MemoryPropertyFlagBits::eDeviceLocal) != video ||
+			    (!video && !(flags & vk::MemoryPropertyFlagBits::eHostVisible)))
+				continue;
+			vk::MemoryAllocateFlagsInfo address {};
+			address.flags = vk::MemoryAllocateFlagBits::eDeviceAddress;
+			vk::MemoryAllocateInfo info {};
+			info.pNext           = &address;
+			info.allocationSize  = std::max<uint64_t>(bytes, uint64_t {64} << 10u);
+			info.memoryTypeIndex = type;
+			vk::DeviceMemory probe  = nullptr;
+			const auto       result = device.allocateMemory(&info, nullptr, &probe);
+			if (result == vk::Result::eSuccess) device.freeMemory(probe, nullptr);
+			std::printf("  the driver for the same size in memory type %u (heap %u, %s): %s\n", type,
+			            memory.memoryTypes[type].heapIndex, video ? "video memory" : "system memory", vk::to_string(result).c_str());
+			break;
+		}
+	}
+	std::fflush(stdout);
+}
+
+bool GraphicContext::RetryAllocation(const char* what, uint64_t bytes, const std::function<bool()>& create) {
+	DescribeAllocationFailure(what, bytes);
+	const auto start = std::chrono::steady_clock::now();
+	for (int attempt = 0; attempt < 100; attempt++) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		TrimImagePool();
+		if (create()) {
+			const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
+			std::printf("Vulkan: %s of %" PRIu64 " MiB made after waiting %lld ms\n", what, bytes >> 20u,
+			            static_cast<long long>(waited.count()));
+			std::fflush(stdout);
+			return true;
+		}
+	}
+	std::printf("Vulkan: %s of %" PRIu64 " MiB still not made after 10 s\n", what, bytes >> 20u);
+	std::fflush(stdout);
+	return false;
+}
+
 bool GraphicContext::CreateImage(const vk::ImageCreateInfo& image_info, VulkanImage& image) {
 	KYTY_PROFILER_FUNCTION();
 	EXIT_IF(allocator == nullptr || image.image != nullptr || image.allocation != nullptr);
@@ -484,6 +543,14 @@ bool GraphicContext::CreateImage(const vk::ImageCreateInfo& image_info, VulkanIm
 				// (Which memory ran out: OUT_OF_HOST_MEMORY is the system's commit, OUT_OF_DEVICE_MEMORY the GPU's.)
 				const auto what = "an image could not be created (" + vk::to_string(result) + ")";
 				ReportMemoryFallback(what.c_str(), 0);
+				// (No retry here: an image that may fail, a texture pool's view, is drawn without it instead.)
+				vk::Image      probe = nullptr;
+				vk::DeviceSize size  = 0;
+				if (device.createImage(&image_info, nullptr, &probe) == vk::Result::eSuccess) {
+					size = device.getImageMemoryRequirements(probe).size;
+					device.destroyImage(probe, nullptr);
+				}
+				DescribeAllocationFailure("an image", size);
 				return false;
 			}
 		}

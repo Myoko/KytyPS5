@@ -391,6 +391,21 @@ add_custom_command(
 	VERBATIM
 )
 list(APPEND kyty_emulator_src "${sr_exposure_header}")
+# ... and with DLSS's sharpening (KYTY_DLSS_SHARPNESS, sr-sharpen.comp).
+set(sr_sharpen_source "${KYTY_SOURCE_DIR}/local/sr-sharpen.comp")
+set(sr_sharpen_spv "${gpu_tiler_generated_dir}/sr_sharpen.spv")
+set(sr_sharpen_header "${gpu_tiler_generated_dir}/sr_sharpen_spv.h")
+add_custom_command(
+	OUTPUT "${sr_sharpen_header}"
+	COMMAND ${CMAKE_COMMAND} -E make_directory "${gpu_tiler_generated_dir}"
+	COMMAND "${KYTY_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3 -Os
+	        -o "${sr_sharpen_spv}" "${sr_sharpen_source}"
+	COMMAND ${CMAKE_COMMAND} -DINPUT=${sr_sharpen_spv} -DOUTPUT=${sr_sharpen_header}
+	        -DSYMBOL=SR_SHARPEN_SPV -P "${KYTY_SOURCE_DIR}/embed_spirv.cmake"
+	DEPENDS "${sr_sharpen_source}" "${KYTY_SOURCE_DIR}/embed_spirv.cmake"
+	VERBATIM
+)
+list(APPEND kyty_emulator_src "${sr_sharpen_header}")
 
 set(gpu_blit_generated_dir "${PROJECT_BINARY_DIR}/gpu_blit_shaders")
 set(gpu_blit_shader_sources
