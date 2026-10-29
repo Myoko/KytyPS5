@@ -65,6 +65,13 @@ folder (usually named `PPSA01341-app0`).
   `_PipelineCache`, about 6 GB) on an SSD. Unpacked on a busy hard disk, every small read of the game
   waited 100-500 ms: long area loads and freezes while walking; packed, with the emulator on the SSD, it
   ran at full speed ([#91](https://github.com/chenxiao07/KytyPS5/issues/91)).
+- Microsoft Defender scans each game file the first time it is opened in a session (about 117,000 files
+  in 6 minutes of play), and while the game streams those scans take CPU from it: runs of slow frames. A
+  `.zar` is one file, scanned once. Or exclude the game folder: Windows Security > Virus & threat
+  protection > Manage settings > Add or remove exclusions > Add an exclusion > Folder (Defender then no
+  longer scans that folder: only for a game copy you trust). Measured with the folder excluded: the 99th
+  percentile frame time 31.5 -> 26 ms, the 1% lows 30 -> 36 fps
+  ([#240](https://github.com/chenxiao07/KytyPS5/issues/240), @DevList1454).
 
 ### Add-on content (DLC)
 

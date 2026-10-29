@@ -729,6 +729,8 @@ struct Program: ResourcePlan {
 	bool                          native_float_min_max = false;
 	// Address loads from one base share a page walk (Frontend::TranslatorFeatureBdaGroupWalks).
 	bool                          bda_group_walks = false;
+	// Pixel shaders' DPP quad_perm moves read by quad operations (Frontend::TranslatorFeaturePixelQuadReads).
+	bool                          pixel_quad_reads = false;
 
 	std::optional<SpirvRequirements> spirv_requirements;
 };

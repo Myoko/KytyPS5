@@ -85,8 +85,10 @@ extern "C" {
 // desktop in 5.5) and ran 22 min with them (10-23). (The texture offload's backing view takes guards too:
 // texture-offload.h Protect.) A live change applies to the protections made after it (guards made before are still
 // served).
-// On by default with 16 GiB or less for the emulator only (LocalPlatform::EmulatorMemory: the PC's RAM less what other
-// programs hold; KYTY_READ_GUARD=1|0 sets it): a guard is gone from its page the moment
+// On by default with 20 GiB of RAM or less only (the PC's, not LocalPlatform::EmulatorMemory as the other savings: with
+// that, v20261029 gave guards to a 24 GB PC whose other programs held the rest, its RAM then ran full, the hot reads
+// below stood aside, and textures were there one frame and gone the next, issue #242; KYTY_READ_GUARD=1|0 sets it): a
+// guard is gone from its page the moment
 // it raises the fault, and other threads read the page meanwhile without one. The game reads GPU-written pages from
 // several threads at once: with guards, whole areas lost their light, screen tiles turned black or the picture showed at
 // twice its size (issues #157, #158, #159; reproduced at the Tower of Latria with a 1080p render and DLSS: black and
@@ -96,9 +98,10 @@ extern "C" {
 // the same tour with guards read a page before its guard was back ~0.9 times a frame, with them 0.001, every frame right.
 [[gnu::used]] volatile std::atomic_uint32_t kyty_local_read_guard {[] {
 	// (The emulator's RAM measured here, before main: what other programs hold, not yet what the emulator took.)
-	const auto ram = LocalPlatform::EmulatorMemory();
+	(void)LocalPlatform::EmulatorMemory();
 	if (const char* value = std::getenv("KYTY_READ_GUARD"); value != nullptr && *value != '\0') return value[0] == '0' ? 0u : 1u;
-	return ram != 0 && ram <= (uint64_t {16} << 30u) ? 1u : 0u;
+	const auto ram = LocalPlatform::PhysicalMemory();
+	return ram != 0 && ram <= (uint64_t {20} << 30u) ? 1u : 0u;
 }()};
 // KYTY_HOT_READS (live kyty_local_hot_reads, on by default): with guard pages, the pages the game read back lately keep
 // no access instead, their page of the backing view locked in RAM (GuestAddressSpace::NoteRead), while the PC has 1.5 GiB

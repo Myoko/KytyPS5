@@ -116,6 +116,17 @@ uint64_t g_guest_frame = 0;     // Kyty.Gpu
 std::atomic<bool> g_scene {false}; // the current guest frame ran the TAA pass
 std::atomic<bool> g_last_scene {false}; // ... the last one the guest flipped
 std::atomic<uint64_t> g_flips_taken {0}; // TakeScene calls (guest flips)
+// Why the last frame had no inputs (PrepareInputs; the on/off lines' reason): 0 it had them, 1 no TAA pass, 2 no camera,
+// 3 the TAA's images replaced since.
+std::atomic<uint32_t> g_inputs_missing {0};
+
+[[maybe_unused]] const char* MissingInputs() {
+	switch (g_inputs_missing.load(std::memory_order_relaxed)) {
+		case 1: return "no TAA pass: menus, movies, loading";
+		case 2: return "no camera";
+		default: return "the images replaced";
+	}
+}
 
 float AsFloat(uint32_t word) {
 	float value = 0.0f;
@@ -1640,7 +1651,9 @@ void BeforePresent(const FrameInputs* inputs, vk::Extent2D backbuffer, vk::Rect2
 		g_options_backbuffer = backbuffer;
 		g_options_format     = format;
 		if (mode_on != g_mode_on) {
-			LOGF("frame generation: DLSS-G %s\n", mode_on ? "on" : "off (no inputs)");
+			if (mode_on) std::printf("Frame generation: DLSS-G on\n");
+			else std::printf("Frame generation: DLSS-G off: %u frames without inputs (%s)\n", TurnOffAfter, MissingInputs());
+			std::fflush(stdout);
 			g_mode_on = mode_on;
 		}
 	}
@@ -1920,10 +1933,11 @@ static uint64_t IndexedDrawPackets() {
 bool TakeScene() {
 	// The game's 3D view: its TAA pass ran over a world drawn since the last flip (1-1: ~5,400 indexed draw packets a
 	// frame). The start-up logos run the TAA and the lighting over 36 draws without indices (the PlayStation Studios one is
-	// the game's own render): at -Fps120 they flipped 120 times a second, at twice their speed (issue #231).
+	// the game's own render): at -Fps120 they flipped 120 times a second, at twice their speed (issue #231). One indexed
+	// draw is enough: a view filled by a floor or a wall close up draws few (issue #241).
 	static std::atomic<uint64_t> drawn_before {0};
 	const uint64_t drawn = IndexedDrawPackets();
-	const bool     world = drawn - drawn_before.exchange(drawn, std::memory_order_relaxed) >= 64;
+	const bool     world = drawn != drawn_before.exchange(drawn, std::memory_order_relaxed);
 	const bool     scene = g_scene.exchange(false, std::memory_order_relaxed) && world;
 	g_last_scene.store(scene, std::memory_order_relaxed);
 	g_flips_taken.fetch_add(1, std::memory_order_relaxed);
@@ -1954,15 +1968,42 @@ void PrepareInputs(GraphicContext& graphics, TextureCache& cache, CommandBuffer&
                    FrameInputs& inputs) {
 	inputs.valid       = false;
 	inputs.cut         = std::exchange(g_cut, false);
-	const bool ready   = g_sources.valid && g_camera.valid;
 	const auto sources = g_sources;
-	const auto camera  = g_camera;
+	auto       camera  = g_camera;
 	g_sources.valid    = false;
 	g_camera.valid     = false;
 	++g_guest_frame;
-	if (!ready) {
+	// The camera comes from the G-buffer's vertex shaders (OnDraw). A view without them (the Nexus floor looked down at,
+	// a wall close up: issue #241) takes the last one seen since the last cut, held still (its previous matrix the same:
+	// the game's motion vectors carry the motion; only its projection is used then) and without jitter. Only a frame of
+	// the game's 3D view (TakeScene, just before: the loading screens run the TAA too, over no world).
+	// KYTY_FG_HOLD_CAMERA=0: no inputs for such a frame, as before.
+	static const bool hold = [] {
+		const char* value = std::getenv("KYTY_FG_HOLD_CAMERA");
+		return value == nullptr || value[0] != '0';
+	}();
+	// KYTY_TEST_DROP_CAMERA=1 (a test of the held camera): after 600 frames with a camera, none has its own.
+	static const bool drop = [] {
+		const char* value = std::getenv("KYTY_TEST_DROP_CAMERA");
+		return value != nullptr && value[0] == '1';
+	}();
+	static uint32_t cameras = 0;
+	if (drop && camera.valid && ++cameras > 600) camera.valid = false;
+	static Camera held;
+	if (camera.valid) {
+		held = camera;
+	} else if (inputs.cut) {
+		held.valid = false;
+	} else if (hold && held.valid && sources.valid && g_last_scene.load(std::memory_order_relaxed)) {
+		camera                = held;
+		camera.prev_view_proj = camera.view_proj;
+		camera.jitter_ndc     = {0.0f, 0.0f};
+	}
+	if (!sources.valid || !camera.valid) {
+		g_inputs_missing.store(sources.valid ? 2u : 1u, std::memory_order_relaxed);
 		return;
 	}
+	g_inputs_missing.store(3u, std::memory_order_relaxed); // (until the images below are found as the TAA left them)
 	auto& depth  = cache.GetImage(sources.depth);
 	auto& motion = cache.GetImage(sources.motion);
 	if (depth.info.data.address != sources.depth_address ||
@@ -1984,6 +2025,7 @@ void PrepareInputs(GraphicContext& graphics, TextureCache& cache, CommandBuffer&
 	inputs.camera        = camera;
 	inputs.guest_frame   = g_guest_frame;
 	inputs.valid         = true;
+	g_inputs_missing.store(0u, std::memory_order_relaxed);
 #ifdef KYTY_FRAMEGEN_FSR_HUD
 	// FSR: the interface canvas as it is at the flip (RecordHudless reads its alpha).
 	inputs.ui_valid = false;
@@ -2671,7 +2713,9 @@ void RecordPrepare(GraphicContext& graphics, vk::CommandBuffer command, const Fr
 	if (mode_on && usable && !FsrEnsureFrameGeneration(inputs->render_extent)) mode_on = false;
 	if (s.fg_context == nullptr) return; // (no frame with inputs yet: the swapchain presents as it is)
 	if (mode_on != s.mode_on) {
-		LOGF("frame generation: FSR %s\n", mode_on ? "on" : "off (no inputs)");
+		if (mode_on) std::printf("Frame generation: FSR on\n");
+		else std::printf("Frame generation: FSR off: frames without inputs (%s)\n", MissingInputs());
+		std::fflush(stdout);
 		s.mode_on = mode_on;
 		s.reset   = true;
 	}

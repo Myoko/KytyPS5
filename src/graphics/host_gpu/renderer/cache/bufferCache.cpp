@@ -1086,6 +1086,7 @@ bool BufferCache::IsGpuMapped(uint64_t vaddr, uint64_t size) const noexcept {
 void BufferCache::TouchBuffer(const Buffer& buffer) {
 	if (!buffer.is_deleted) {
 		m_lru_cache.Touch(buffer.lru_id, m_gc_tick);
+		buffer.used_tick = m_gc_tick;
 	}
 }
 
@@ -1495,7 +1496,8 @@ void BufferCache::WriteBufferReport(const char* path) {
 	m_scheduler.Context().GetGpu().SendCommandSync([this, path] {
 		FILE* file = std::fopen(path, "wb");
 		if (file == nullptr) return;
-		std::fputs("id\taddress\tsize\tlru_tick\tgc_tick\tmapped\tgpu_modified\tcpu_modified\tbda_read\tmapped_bytes\tmapped_parts\n",
+		std::fputs("id\taddress\tsize\tlru_tick\tgc_tick\tmapped\tgpu_modified\tcpu_modified\tbda_read\tmapped_bytes\tmapped_parts\t"
+		           "used_tick\n",
 		           file);
 		std::vector<std::pair<uint64_t, uint64_t>> parts;
 		m_slot_buffers.ForEach([&](BufferId id, const Buffer& buffer) {
@@ -1505,12 +1507,12 @@ void BufferCache::WriteBufferReport(const char* path) {
 			LibKernel::Memory::MappedParts(address, size, &parts);
 			uint64_t mapped_bytes = 0;
 			for (const auto& part: parts) mapped_bytes += part.second;
-			std::fprintf(file, "%u\t0x%" PRIx64 "\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%d\t%d\t%d\t%d\t%" PRIu64 "\t%zu\n",
+			std::fprintf(file, "%u\t0x%" PRIx64 "\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%d\t%d\t%d\t%d\t%" PRIu64 "\t%zu\t%" PRIu64 "\n",
 			             id.index, address, size, m_lru_cache.TickOf(buffer.lru_id), m_gc_tick,
 			             LibKernel::Memory::IsFullyMapped(address, size) ? 1 : 0,
 			             m_memory_tracker.IsRegionGpuModified(address, size) ? 1 : 0,
 			             m_memory_tracker.IsRegionCpuModified(address, size) ? 1 : 0, buffer.bda_read ? 1 : 0, mapped_bytes,
-			             parts.size());
+			             parts.size(), buffer.used_tick);
 		});
 		std::fclose(file);
 	});
@@ -1950,15 +1952,32 @@ BufferCache::OverlapResult BufferCache::ResolveOverlaps(uint64_t vaddr, uint64_t
 	// a GPU near its budget each time in system memory first, then moved back: frames of 100-135 ms, issue #215): room
 	// for an eighth more where it grows, over mapped memory only, and the buffers there joined too. The 16 GB tour (1-1,
 	// worlds 2-1 to 5-1, Nexus, 1-1): 18 buffers of 64 MiB and up made again instead of 35, video memory the same.
+	// KYTY_BUFFER_ROOM: 1 (the default) the room joins the buffers in it, and each joined one's far end widens it on (a
+	// cascade: "a buffer of 119 MiB grows to 120 MiB, 480 MiB more as room"); 2 the room only up to the next buffer, none
+	// joined for it (a 12 GB card's 28-minute world tour: buffers +379 MiB at the same place instead of +460; most of
+	// the growth is BDA-read buffers in use, not the room); 0 no room.
+	static const int room_mode = [] {
+		const char* value = std::getenv("KYTY_BUFFER_ROOM");
+		return value != nullptr && (value[0] == '0' || value[0] == '2') ? value[0] - '0' : 1;
+	}();
 	static constexpr uint64_t BigBuffer = uint64_t {64} << 20u;
-	if (!has_stream_leap && largest >= BigBuffer && end - begin > largest) {
+	if (room_mode != 0 && !has_stream_leap && largest >= BigBuffer && end - begin > largest) {
 		const auto room   = (end - begin) / 8;
 		const auto before = end - begin;
+		// Mode 2: up to the next buffer on that side (its edge, not past it).
+		uint64_t right_cap = PageTable::kAddressSpaceSize, left_cap = 0;
+		if (room_mode == 2) {
+			if (const auto next = m_buffers.lower_bound(end); next != m_buffers.end()) right_cap = next->first;
+			if (const auto at = m_buffers.lower_bound(begin); at != m_buffers.begin()) {
+				const auto& previous = m_slot_buffers[std::prev(at)->second];
+				left_cap             = previous.CpuAddress() + previous.Size();
+			}
+		}
 		// (Never an empty range: MappedRanges refuses one.)
-		if (grows_right && room != 0 && end < PageTable::kAddressSpaceSize)
-			end = std::max(end, leap_right(end, end + std::min(room, PageTable::kAddressSpaceSize - end)));
-		if (grows_left && room != 0 && begin > room) {
-			begin = std::min(begin, leap_left(begin - room, begin));
+		if (grows_right && room != 0 && end < right_cap)
+			end = std::max(end, leap_right(end, end + std::min(room, right_cap - end)));
+		if (grows_left && room != 0 && begin > room && begin > left_cap) {
+			begin = std::min(begin, leap_left(std::max(begin - room, left_cap), begin));
 			first = find_first(begin);
 			begin = std::min(begin, first->first);
 		}
@@ -2882,8 +2901,9 @@ void BufferCache::RetireStaleBuffers(uint64_t tick) {
 			stale.push_back(id);
 		return stale.size() == limit;
 	});
-	// (The ones passed over go to the back of the list: the next flips' walks do not cross them again.)
-	for (const auto id: kept) TouchBuffer(m_slot_buffers[id]);
+	// (The ones passed over go to the back of the list: the next flips' walks do not cross them again. Not a use: their
+	// used_tick stays.)
+	for (const auto id: kept) m_lru_cache.Touch(m_slot_buffers[id].lru_id, m_gc_tick);
 	if (stale.empty()) return;
 	for (const auto id: stale) {
 		auto& buffer = m_slot_buffers[id];
