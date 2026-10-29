@@ -10,6 +10,7 @@
 #include "kernel/pthread.h"
 #include "kernel/semaphore.h"
 #include "libs/audio_internal.h"
+#include "libs/controller.h"
 #include "libs/dualSenseHaptics.h"
 #include "libs/errno.h"
 #include "libs/libs.h"
@@ -669,6 +670,13 @@ bool Audio::QueueSdlAudio(PortOut* port, const void* data, const float* gains, b
 			return Controller::DualSenseHaptics::Write(prepared_data, port->samples_num, port->freq,
 			                                           PreparedChannels(*port),
 			                                           FormatIsFloat(port->format), false, gains);
+		}
+		// No DualSense haptics endpoint: the pad's rumble motors instead (an Xbox controller, a Steam Deck's; issue #236).
+		if (port->type == AUDIO_OUT_PORT_TYPE_VIBRATION) {
+			std::vector<uint8_t> prepared_buffer;
+			const void*          prepared_data = PrepareOutputBuffer(*port, data, &prepared_buffer);
+			Controller::RumbleFromVibrationAudio(prepared_data, port->samples_num, PreparedChannels(*port),
+			                                     FormatIsFloat(port->format), gains);
 		}
 		return false;
 	}

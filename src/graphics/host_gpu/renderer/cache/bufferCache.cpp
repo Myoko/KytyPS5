@@ -36,9 +36,10 @@ volatile std::atomic<uint32_t> kyty_local_copy_feedback_mode {1};
 // KYTY_READBACK_SPAN: 1: a guest readback window also takes the host buffers next to the
 // request's. 2: 1 while read guards are off (KYTY_READ_GUARD, LibKernel::Memory::ReadGuardsOn),
 // else 0. 0 (default): off. Issue #222: on Linux (no read guards) the Nexus floor's runes turned
-// to grainy noise around the player in 2 runs of 3 with it on, clean with it off: the neighbours'
-// bytes copied on the transfer queue came out stale (clean with KYTY_READBACK_QUEUE=0); a widened
-// window now takes the graphics queue (BeginGuestReadback). Not seen on Windows.
+// to grainy noise around the player in 2 runs of 3 with it on, clean with it off. Clean in 3 runs
+// of 3 with KYTY_READBACK_QUEUE=0, still broken in 1 of 2 with only the widened windows on the
+// graphics queue: with the span on, every readback takes the graphics queue (BeginGuestReadback).
+// Not seen on Windows.
 [[gnu::used]] volatile std::atomic<uint32_t> kyty_local_readback_span_mode {0};
 // 1: pack the LOD report on the GPU instead of a CPU wait and copy.
 volatile std::atomic<uint32_t> kyty_local_async_lod_stats_mode {1};
@@ -219,7 +220,8 @@ std::shared_ptr<BufferCache::GuestReadback> BufferCache::BeginGuestReadback(
 	};
 	bool       spans     = false;
 	const auto span_mode = kyty_local_readback_span_mode.load(std::memory_order_relaxed);
-	if (span_mode == 1 || (span_mode == 2 && !LibKernel::Memory::ReadGuardsOn())) {
+	const bool span_on   = span_mode == 1 || (span_mode == 2 && !LibKernel::Memory::ReadGuardsOn());
+	if (span_on) {
 		const auto window_begin = address & ~(WindowSize - 1);
 		const auto window_end   = window_begin + WindowSize;
 		auto       wide_begin   = begin;
@@ -314,9 +316,9 @@ std::shared_ptr<BufferCache::GuestReadback> BufferCache::BeginGuestReadback(
 	auto&                                                   runs = *runs_scratch;
 	runs.clear();
 	available_pages.ForEach([&](uint64_t a, uint64_t e) { runs.emplace_back(a, e); });
-	// (A window the span widened takes the graphics queue: below.)
+	// (With the span on, every readback takes the graphics queue: below.)
 	if (const auto queue_mode = kyty_local_readback_queue_mode.load(std::memory_order_relaxed);
-	    !spans && queue_mode == 1 && m_graphics.readback_queue != nullptr && m_gpu_writes_on &&
+	    !span_on && queue_mode == 1 && m_graphics.readback_queue != nullptr && m_gpu_writes_on &&
 	    m_gpu_writes_from != UINT64_MAX && !runs.empty()) {
 		auto& master = m_scheduler.GetMasterSemaphore();
 		master.Refresh();
@@ -444,11 +446,12 @@ std::shared_ptr<BufferCache::GuestReadback> BufferCache::BeginGuestReadback(
 	request->download = download.get();
 	request->packed_size = packed_size;
 	// KYTY_READBACK_QUEUE: bytes whose writers the GPU finished
-	// need not wait behind the rest of the graphics queue. Not a window KYTY_READBACK_SPAN widened: the transfer queue
-	// copies once the GPU work the write log dates is done, and its neighbour buffers' bytes came out stale there, the
-	// game then reading them back as such (issue #222: the Nexus floor's runes grainy on Linux; with the span, clean in
-	// 3 runs of 3 on the graphics queue, broken in 1 of 2 on the transfer queue). The graphics queue copies after all of it.
-	if (!spans && ReadbackQueueReady(runs, true, request->producer_tick)) {
+	// need not wait behind the rest of the graphics queue. Not while KYTY_READBACK_SPAN is on: its widened windows and
+	// the single-buffer ones over the same pages copied on both queues, which may finish in either order, and stale
+	// bytes went back to the game (issue #222: the Nexus floor's runes grainy on Linux; with the span, clean in 3 runs of
+	// 3 with every readback on the graphics queue, broken in 1 of 2 with only the widened windows there). The graphics
+	// queue copies after all earlier work, in order.
+	if (!span_on && ReadbackQueueReady(runs, true, request->producer_tick)) {
 		// Also after the slot's last graphics-queue copy (it is submitted: that path flushes).
 		request->producer_tick = std::max(request->producer_tick, m_download_ticks[slot]);
 		thread_local std::vector<ReadbackQueue::Queue::Region> regions_home;

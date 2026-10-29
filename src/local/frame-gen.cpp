@@ -3,6 +3,8 @@
 #include "fsr-native.h"
 
 #include "common/logging/log.h"
+#include "graphics/guest_gpu/pm4.h"
+#include "live-counters.h"
 #include "local-platform.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/render.h"
@@ -1906,8 +1908,23 @@ void NoteCut() {
 	g_cut = true;
 }
 
+// The guest's indexed draw packets so far (LiveCounters::AddPm4 counts every PM4 packet the render thread runs).
+static uint64_t IndexedDrawPackets() {
+	using namespace Libs::Graphics::Pm4;
+	uint64_t draws = 0;
+	for (const uint32_t opcode: {IT_DRAW_INDEX_2, IT_DRAW_INDEX_OFFSET_2, IT_DRAW_INDEX_INDIRECT, IT_DRAW_INDEX_INDIRECT_MULTI})
+		draws += LiveCounters::g_pm4[opcode].load(std::memory_order_relaxed);
+	return draws;
+}
+
 bool TakeScene() {
-	const bool scene = g_scene.exchange(false, std::memory_order_relaxed);
+	// The game's 3D view: its TAA pass ran over a world drawn since the last flip (1-1: ~5,400 indexed draw packets a
+	// frame). The start-up logos run the TAA and the lighting over 36 draws without indices (the PlayStation Studios one is
+	// the game's own render): at -Fps120 they flipped 120 times a second, at twice their speed (issue #231).
+	static std::atomic<uint64_t> drawn_before {0};
+	const uint64_t drawn = IndexedDrawPackets();
+	const bool     world = drawn - drawn_before.exchange(drawn, std::memory_order_relaxed) >= 64;
+	const bool     scene = g_scene.exchange(false, std::memory_order_relaxed) && world;
 	g_last_scene.store(scene, std::memory_order_relaxed);
 	g_flips_taken.fetch_add(1, std::memory_order_relaxed);
 	return scene;

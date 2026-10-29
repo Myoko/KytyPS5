@@ -20,7 +20,7 @@
 | 连结之地 Nexus | 40-41 |
 
 决定帧数的是 Deck 的 15 W 功耗：CPU 和 GPU 共用，而模拟器两者都要用。GPU 1300 MHz 时留给 CPU 的功耗足够；
-GPU 1600 MHz（最高）时整体反而更慢。第一次到一个地方会编译新的着色器，表现为短暂卡顿（Deck 上最长约 1.5 秒）；
+GPU 1600 MHz（最高）时整体反而更慢；频率保持自动（Steam 的默认）时，之后一次巡游各世界慢 1-3 帧（连结之地相同）。第一次到一个地方会编译新的着色器，表现为短暂卡顿（Deck 上最长约 1.5 秒）；
 编译结果保存在 `_PipelineCache`，再到那里就流畅了。
 
 `run-deck.sh` 用的设置：启动器的**最低**画质预设（阴影距离更短，无环境光遮蔽和火把阴影，远处细节简化，贴图为四分之一），
@@ -104,6 +104,8 @@ GPU 1600 MHz（最高）时整体反而更慢。第一次到一个地方会编�
 ## Steam Deck 版的包与 Linux 版的包
 
 Steam Deck 版的包里是 Steam Deck 版：针对 Deck 的 Zen 2 CPU 优化，内置 Deck 的默认设置，并忽略 Steam 桌面布局发送的键盘按键。
-Linux 版的包加上其中的 `run-deck.sh` 运行方式相同，只是没有这两点。（两者还没有并排测过帧数。）想自己构建 Steam Deck 版：
-在 Linux 上，或在不比 SteamOS 新的发行版的 WSL 里（glibc 2.43；Ubuntu 26.04 与之相符）运行 `tools/local/deck/build-deck.sh`，
-它还会使用在 Deck 上训练的 PGO；步骤和在 Deck 上测量用的工具见 `tools/local/deck/README.md`。
+Linux 版的包加上其中的 `run-deck.sh` 运行方式相同，只是没有这两点。在 Deck 上并排测过（波雷塔利亚关卡起点，`run-deck.sh` 的设置，
+GPU 频率自动，交替启动六次）：两者帧数相同，站立 36.0-36.7 帧，转动视角 34.2-34.7 帧，差别在每次运行的波动之内。用 Deck 上训练的
+PGO 构建的 Steam Deck 版（`build-deck.sh` 构建的）也一样。所以 Linux 版的包一样快，Steam Deck 版的包的区别在按键。想自己构建
+Steam Deck 版：在 Linux 上，或在不比 SteamOS 新的发行版的 WSL 里（glibc 2.43；Ubuntu 26.04 与之相符）运行
+`tools/local/deck/build-deck.sh`；步骤和在 Deck 上测量用的工具见 `tools/local/deck/README.md`。

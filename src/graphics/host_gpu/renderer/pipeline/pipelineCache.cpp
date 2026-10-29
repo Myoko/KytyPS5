@@ -3327,14 +3327,17 @@ PipelineCache::PipelineCache(GraphicContext& graphics)
 				PipelineCacheLog("Scene warmup: ignoring invalid {}", Common::PathToString(scenes));
 		}
 		// KYTY_PIPELINE_WARMUP: 1 makes them all whatever the memory, 0 none; KYTY_PIPELINE_WARMUP_VIDEO_MIB: the compute
-		// pipelines' video memory cap instead of 1/16 of a small one's.
+		// pipelines' video memory cap instead of a small card's: 1/16 of a budget under 8 GiB, 1/4 of one of 8-12 GiB (an
+		// RTX 2080 Ti's 589 MiB left 1,288 of a map's pipelines to be made when first used, ~5 ms each in the frames
+		// after a load; at 2048 MiB none was left, issue #129).
 		const char*            forced = std::getenv("KYTY_PIPELINE_WARMUP");
 		const std::string_view force  = forced != nullptr ? forced : "";
 		const bool             warm_pipelines = force == "1" || (force != "0" && !low_ram);
 		const char*            cap            = std::getenv("KYTY_PIPELINE_WARMUP_VIDEO_MIB");
+		const uint64_t         budget         = m_graphics.GetTotalMemoryBudget();
 		const uint64_t         compute_video  = cap != nullptr && *cap != 0 ? std::strtoull(cap, nullptr, 10) << 20u
 		                                        : force != "1" && m_graphics.small_video_memory
-		                                            ? m_graphics.GetTotalMemoryBudget() / 16u
+		                                            ? budget / (budget < (uint64_t {8} << 30u) ? 16u : 4u)
 		                                            : UINT64_MAX;
 		if (!warm_pipelines && std::string_view(warmup) == "1")
 			PipelineCacheLog("Pipeline warmup: skipped (video memory budget {} MiB, RAM {} MiB)",
