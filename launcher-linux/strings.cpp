@@ -91,6 +91,7 @@ const Table& English() {
 	    {"summary.options", "Options"},
 	    {"summary.presentDirect", "direct presentation"},
 	    {"summary.vrrFlips", "VRR flips"},
+	    {"summary.wideBars", "16:9 movies and menus"},
 	    {"summary.antilag", "Anti-Lag"},
 	    {"summary.fps30", "30 fps lock"},
 	    {"summary.extra", "extra options"},
@@ -102,9 +103,12 @@ const Table& English() {
 	    {"resolution", "Resolution"},
 	    {"resolution.desc", "The window's size; in fullscreen the screen mode."},
 	    {"ratio", "Aspect ratio"},
-	    {"ratio.desc", "21:9 and 32:9 show more to the sides; the HUD keeps its shape, menus and "
-	                   "movies are stretched."},
+	    {"ratio.desc", "21:9 and 32:9 show more to the sides; the HUD keeps its shape."},
 	    {"ratio.169", "16:9 (PS5)"},
+	    {"widebars", "Movies and menus at 16:9 (black bars)"},
+	    {"widebars.desc", "With 21:9 or 32:9: the intro, the movies, the title screen, the loading screens and "
+	                      "the menus at 16:9 with black bars at the sides, not stretched (off: stretched to the "
+	                      "width)."},
 	    {"fullscreen", "Fullscreen"},
 	    {"aspect", "Keep the aspect ratio (black bars)"},
 	    {"aspect.desc", "In fullscreen on a screen of another shape."},
@@ -193,6 +197,7 @@ const Table& English() {
 	                     "looks softer. FSR 3 is Medium by default, its own sharpening. Each upscaler "
 	                     "keeps its own setting. Higher levels can show halos on edges."},
 	    {"dlss.dlaa", "DLAA"},
+	    {"dlss.ultraquality", "Ultra Quality"},
 	    {"dlss.quality", "Quality"},
 	    {"dlss.balanced", "Balanced"},
 	    {"dlss.performance", "Performance"},
@@ -455,6 +460,7 @@ const Table& Chinese() {
 	    {"summary.options", "选项"},
 	    {"summary.presentDirect", "直接呈现"},
 	    {"summary.vrrFlips", "VRR 即时翻转"},
+	    {"summary.wideBars", "过场与菜单 16:9"},
 	    {"summary.antilag", "Anti-Lag"},
 	    {"summary.fps30", "锁定 30 帧"},
 	    {"summary.extra", "附加参数"},
@@ -466,8 +472,11 @@ const Table& Chinese() {
 	    {"resolution", "分辨率"},
 	    {"resolution.desc", "窗口大小；全屏时为屏幕分辨率。"},
 	    {"ratio", "画面比例"},
-	    {"ratio.desc", "21:9 与 32:9 能看到两侧更多画面；HUD 保持比例，菜单与过场动画会被拉伸。"},
+	    {"ratio.desc", "21:9 与 32:9 能看到两侧更多画面；HUD 保持比例。"},
 	    {"ratio.169", "16:9（PS5）"},
+	    {"widebars", "过场动画与菜单保持 16:9（黑边）"},
+	    {"widebars.desc", "选 21:9 或 32:9 时：片头、过场动画、标题画面、加载画面与菜单保持 16:9，两侧为黑边，"
+	                      "不拉伸（关闭时拉伸到整个宽度）。"},
 	    {"fullscreen", "全屏"},
 	    {"aspect", "保持画面比例（黑边）"},
 	    {"aspect.desc", "全屏且屏幕比例不同时生效。"},
@@ -539,6 +548,7 @@ const Table& Chinese() {
 	                     "会锐化画面，DLSS 不会，所以细节看起来偏软。FSR 3 默认为「中」，即它自带的锐化。"
 	                     "两种超分各自保存设置。等级越高，边缘越可能出现光晕。"},
 	    {"dlss.dlaa", "DLAA"},
+	    {"dlss.ultraquality", "超级质量"},
 	    {"dlss.quality", "质量"},
 	    {"dlss.balanced", "平衡"},
 	    {"dlss.performance", "性能"},
@@ -772,6 +782,7 @@ const Table& Portuguese() {
 	    {"summary.options", "Opções"},
 	    {"summary.presentDirect", "apresentação direta"},
 	    {"summary.vrrFlips", "trocas VRR"},
+	    {"summary.wideBars", "vídeos e menus em 16:9"},
 	    {"summary.antilag", "Anti-Lag"},
 	    {"summary.fps30", "trava em 30 fps"},
 	    {"summary.extra", "opções extras"},
@@ -783,9 +794,12 @@ const Table& Portuguese() {
 	    {"resolution", "Resolução"},
 	    {"resolution.desc", "O tamanho da janela; em tela cheia, o modo da tela."},
 	    {"ratio", "Proporção"},
-	    {"ratio.desc",
-	     "21:9 e 32:9 mostram mais dos lados; o HUD mantém a forma, menus e vídeos são esticados."},
+	    {"ratio.desc", "21:9 e 32:9 mostram mais dos lados; o HUD mantém a forma."},
 	    {"ratio.169", "16:9 (PS5)"},
+	    {"widebars", "Vídeos e menus em 16:9 (barras pretas)"},
+	    {"widebars.desc", "Com 21:9 ou 32:9: a abertura, os vídeos, a tela de título, as telas de carregamento "
+	                      "e os menus em 16:9 com barras pretas nos lados, sem esticar (desligado: esticados na "
+	                      "largura)."},
 	    {"fullscreen", "Tela cheia"},
 	    {"aspect", "Manter a proporção (barras pretas)"},
 	    {"aspect.desc", "Em tela cheia numa tela de outro formato."},
@@ -875,6 +889,7 @@ const Table& Portuguese() {
 	     "mais suaves. No FSR 3 vem em Média, a nitidez dele mesmo. Cada upscaler guarda a sua. Níveis "
 	     "mais altos podem mostrar halos nas bordas."},
 	    {"dlss.dlaa", "DLAA"},
+	    {"dlss.ultraquality", "Ultraqualidade"},
 	    {"dlss.quality", "Qualidade"},
 	    {"dlss.balanced", "Equilibrado"},
 	    {"dlss.performance", "Desempenho"},
