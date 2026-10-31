@@ -225,6 +225,8 @@ struct EventController {
 	bool   pressed;
 	bool   released;
 	double timestamp_seconds;
+	// A press: how long its event waited in SDL's queue for this thread, ms (Controller::SetButton's input timing).
+	uint32_t queued_ms;
 };
 
 enum class DisplayOrientation {
@@ -501,7 +503,7 @@ static void GameEventController([[maybe_unused]] const EventController& f) {
 			if (type != SDL_CONTROLLER_TYPE_PS4 && type != SDL_CONTROLLER_TYPE_PS5) button = Controller::PAD_BUTTON_TOUCH_PAD;
 		}
 		if (button != 0) {
-			Controller::SetButton(f.id, button, f.down);
+			Controller::SetButton(f.id, button, f.down, f.queued_ms);
 		}
 	}
 
@@ -840,6 +842,7 @@ void WindowContext::ProcessEvent(double time_s) {
 			c.pressed           = (event->cbutton.state == SDL_PRESSED);
 			c.released          = (event->cbutton.state == SDL_RELEASED);
 			c.timestamp_seconds = time_s;
+			c.queued_ms         = c.down ? SDL_GetTicks() - event->cbutton.timestamp : 0;
 
 			GameEventController(c);
 
