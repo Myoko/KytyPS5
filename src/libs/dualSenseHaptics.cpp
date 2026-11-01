@@ -33,6 +33,11 @@ float    g_vibration_motor_decay = 0.6f;
 // playing stays on the actuators, as on a PS5. An enchanted weapon's hum (0.005-0.01, the whole buff long) rumbled
 // until the buff ran out (issue #239); hits reach 0.25. KYTY_DUALSENSE_VIBRATION_MOTOR_ONSET. (Upstream 5aa407e.)
 float    g_vibration_motor_onset = 0.025f;
+// A block's level less its average over this time (0: off), as KYTY_PAD_RUMBLE_SUSTAIN_MS for other pads: a hit drives
+// the motors, an effect that goes on fades from them (onto the actuators alone, as on a PS5). Issue #239, again: in
+// v20261031 an enchanted weapon's hum came at 0.13-0.39 after the gain 4 (the earlier log's 0.02-0.04 was a quieter
+// spell), a minute long, over the onset all along; hits reach 0.8-1.0. KYTY_DUALSENSE_VIBRATION_MOTOR_SUSTAIN_MS.
+float    g_vibration_motor_sustain_ms = 500.0f;
 
 void ReadMotorSettings() {
 	// KYTY_DUALSENSE_VIBRATION_MOTOR_GAIN=<float> scales the rumble motors' drive (0 leaves them off
@@ -66,6 +71,13 @@ void ReadMotorSettings() {
 			g_vibration_motor_onset = onset;
 		}
 	}
+	// KYTY_DUALSENSE_VIBRATION_MOTOR_SUSTAIN_MS=<0..5000>: how long a steady effect keeps driving the motors (0: off).
+	if (const char* value = std::getenv("KYTY_DUALSENSE_VIBRATION_MOTOR_SUSTAIN_MS"); value != nullptr) {
+		const auto ms = std::strtof(value, nullptr);
+		if (ms >= 0.0f && ms <= 5000.0f) {
+			g_vibration_motor_sustain_ms = ms;
+		}
+	}
 }
 
 extern float g_gain; // the route's vibration gain (the Windows and Linux sections below each define it)
@@ -73,7 +85,7 @@ extern float g_gain; // the route's vibration gain (the Windows and Linux sectio
 // Drives the pad's rumble motors from a block of haptic audio: the mainline's fallback for pads with no
 // haptic-audio path (its Queue(): peak -> SDL_RumbleGamepad), used here for a DualSense on Bluetooth,
 // where the actuators are heard far more than they are felt.
-void RumbleFromHaptics(float left, float right) {
+void RumbleFromHaptics(float left, float right, float block_ms) {
 	// Hold with a decay instead of dropping to the block's own peak: consecutive hits arrive in separate
 	// blocks, and the motors should not fall silent in the gaps between them.
 	//
@@ -84,6 +96,16 @@ void RumbleFromHaptics(float left, float right) {
 	// three blocks.
 	constexpr float FLOOR = 0.01f;
 	static float    held[2] = {0.0f, 0.0f};
+	// (The average by the block's own length: the routes' writes can come in bursts. #239's stream, simulated: the
+	// motors on 50.1 of 60 s without, 3.4 s with 500 ms, each hit's first block still 0.66-0.75, full at the gain 2.)
+	static float average[2] = {0.0f, 0.0f};
+	if (g_vibration_motor_sustain_ms > 0.0f) {
+		const float weight = 1.0f - std::exp(-std::max(block_ms, 0.0f) / g_vibration_motor_sustain_ms);
+		average[0] += (left - average[0]) * weight;
+		average[1] += (right - average[1]) * weight;
+		left  = std::max(0.0f, left - average[0]);
+		right = std::max(0.0f, right - average[1]);
+	}
 	// (Under the onset a block only lets the hold fall: the peaks here carry the vibration gain. Upstream 5aa407e.)
 	const float onset = g_vibration_motor_onset * g_gain;
 	left              = left >= onset ? left : 0.0f;
@@ -376,11 +398,12 @@ void ReadSettings() {
 
 	// The settings actually in use, once: the values the routes and the motors run with.
 	std::printf("DualSense: settings: %s, vibration gain %.2f on channels %u-%u, motors %.2f (%u ms, "
-	            "decay %.2f, onset %.3f), speaker gain %.2f on channels %u-%u, preamp %s, volume %u, limiter %s%s\n",
+	            "decay %.2f, onset %.3f, sustain %.0f ms), speaker gain %.2f on channels %u-%u, preamp %s, volume %u, "
+	            "limiter %s%s\n",
 	            g_enabled ? "on" : "off", static_cast<double>(g_gain), g_first_channel,
 	            g_first_channel + g_channel_count - 1u, static_cast<double>(g_vibration_motor_gain),
 	            g_vibration_motor_ms, static_cast<double>(g_vibration_motor_decay),
-	            static_cast<double>(g_vibration_motor_onset),
+	            static_cast<double>(g_vibration_motor_onset), static_cast<double>(g_vibration_motor_sustain_ms),
 	            static_cast<double>(g_speaker_gain),
 	            g_speaker_first_channel, g_speaker_first_channel + g_speaker_channel_count - 1u,
 	            g_speaker_preamp ? "on (+6 dB)" : "off", g_speaker_volume,
@@ -754,7 +777,7 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 		}
 		(void)DualSenseBluetooth::Queue(bt, mixed.data(), out_frames);
 		if (!speaker) {
-			RumbleFromHaptics(motor_peak[0], motor_peak[1]);
+			RumbleFromHaptics(motor_peak[0], motor_peak[1], static_cast<float>(frames) * 1000.0f / static_cast<float>(source_rate));
 		}
 		if (speaker) {
 			g_speaker_writes++;
@@ -889,7 +912,7 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 	if (!speaker) {
 		// The same motor drive the Bluetooth route uses, from the same block: the endpoint's actuator
 		// pair alone is faint too, and a wired pad should feel like a wireless one.
-		RumbleFromHaptics(peak, peak);
+		RumbleFromHaptics(peak, peak, static_cast<float>(frames) * 1000.0f / static_cast<float>(source_rate));
 	}
 
 	// What actually reaches the pad, so a log says whether the game fills this route at all, how loud
@@ -1259,7 +1282,7 @@ bool Write(const void* data, uint32_t frames, uint32_t source_rate, uint32_t sou
 		g_dropped_writes++;
 		return false;
 	}
-	RumbleFromHaptics(peak, peak);
+	RumbleFromHaptics(peak, peak, static_cast<float>(frames) * 1000.0f / static_cast<float>(source_rate));
 
 	g_vibration_writes++;
 	g_vibration_peak_max = std::max(g_vibration_peak_max, peak);
