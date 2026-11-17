@@ -755,7 +755,8 @@ TranslateResult TranslateProgram(std::span<const uint32_t> code, const CompileOp
 		LOGF("%s native IR before resource tracking:\n%s", GetDumpLabel(options),
 		     IR::ProgramToString(ir).c_str());
 	}
-	IR::TrackResources(ir);
+	IR::TrackResources(ir, options.stage == ShaderType::Pixel &&
+	                           (Frontend::TranslatorFeatureSet() & Frontend::TranslatorFeaturePixelInterlock) != 0);
 	IR::EliminateDeadCode(ir.blocks);
 	TranslateResult result;
 	result.program = std::move(ir);
@@ -809,7 +810,8 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 	ir.pixel_quad_reads = (Frontend::TranslatorFeatureSet() & Frontend::TranslatorFeaturePixelQuadReads) != 0;
 	ir.unfused_mad = (Frontend::TranslatorFeatureSet() & Frontend::TranslatorFeatureUnfusedMad) != 0;
 	ir.amd_barycentrics = (Frontend::TranslatorFeatureSet() & Frontend::TranslatorFeatureAmdBarycentrics) != 0;
-	IR::AllocateBindings(ir, push_data_start_dword, options.enable_lod_stats);
+	IR::AllocateBindings(ir, push_data_start_dword, options.enable_lod_stats,
+	                     options.table_mode && options.table_dead_user_data);
 	DumpShaderIr(options, ir);
 	Spirv::AnalyzeProgramRequirements(ir);
 	std::string ir_dump;
