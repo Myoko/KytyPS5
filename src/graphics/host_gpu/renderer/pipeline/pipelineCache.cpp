@@ -816,8 +816,10 @@ struct PipelineCache::ProgramCache {
 			uint32_t                                          first_record = UINT32_MAX; // (by_record's index of it)
 			std::vector<uint32_t>                             records;
 			std::atomic<uint8_t>                              state {Pending};
-			std::optional<ShaderRecompiler::IR::ResourcePlan> plan;
-			std::vector<PrefetchedModule>                     modules;
+			// (Held apart: most groups' plans are in the scratch file, and an empty optional took a ResourcePlan's 520
+			// bytes in each group, ~10 MiB of the ~20,000 groups' 14 MiB.)
+			std::unique_ptr<ShaderRecompiler::IR::ResourcePlan> plan;
+			std::vector<PrefetchedModule>                       modules;
 			// The plan in the scratch file instead (zstd-compressed ResourcePlanSerial bytes): `plan` stays empty until
 			// the game takes the group over (LoadSpilledPlan). Its linear SRT plan stays here where PrefetchKeepsLinear:
 			// rebuilding it (its code generated) took up to ~1 ms of the render thread's per plan; the plan's values ~0.2.
@@ -944,11 +946,12 @@ struct PipelineCache::ProgramCache {
 		std::array<uint64_t, PrefetchMemoryParts> n {};
 		n[MemGroup] = sizeof(group) + Capacity(group.records) + Capacity(group.modules);
 		if (group.plan) {
+			n[MemGroup] += sizeof(*group.plan);
 			const auto& plan = *group.plan;
 			for (const auto& inst: plan.value_storage)
-				n[MemPlanValues] += sizeof(inst) + 2 * sizeof(void*) + inst.NumArgs() * sizeof(ShaderRecompiler::IR::Value) +
+				n[MemPlanValues] += sizeof(inst) + inst.NumArgs() * sizeof(ShaderRecompiler::IR::Value) +
 				                    inst.NumPhiBlocks() * sizeof(void*) + inst.Uses().capacity() * sizeof(ShaderRecompiler::IR::Use);
-			n[MemPlanMemoryInfo] = Capacity(plan.memory_info);
+			n[MemPlanMemoryInfo] = Capacity(plan.memory_info) + Capacity(plan.plan_memory);
 			n[MemPlanOther]      = Capacity(plan.descriptor_sources) + Capacity(plan.control_flow) +
 			                       Capacity(plan.materialization_sources) + Capacity(plan.srt_reads) + Capacity(plan.clean_flat_slots);
 			for (const auto& block: plan.control_flow) n[MemPlanOther] += Capacity(block.successors) + Capacity(block.sources);
@@ -1470,6 +1473,7 @@ struct PipelineCache::ProgramCache {
 				}
 				p.inputs.records.clear();
 			}
+			p.inputs.KeepRecordsOnly(); // (the records alone are read: the recipes go)
 			const std::unordered_set<ProgramKey, ProgramKeyHash> skip(warm.begin(), warm.end());
 			for (uint32_t i = 0; i < p.inputs.records.size() && !p.stop.load(std::memory_order_relaxed); ++i) {
 				LocalShaderWarmup::Record record;
@@ -1774,7 +1778,7 @@ struct PipelineCache::ProgramCache {
 	}
 	// The plan SpillPlan wrote, back in the group (render thread, the group taken over); false when it cannot be read.
 	bool LoadSpilledPlan(Prefetch::Group& group) {
-		if (group.plan || group.plan_bytes == 0) return group.plan.has_value();
+		if (group.plan || group.plan_bytes == 0) return group.plan != nullptr;
 		const auto begin = std::chrono::steady_clock::now();
 		std::vector<char>    packed(group.plan_bytes);
 		std::vector<uint8_t> bytes(group.plan_raw);
@@ -1798,7 +1802,7 @@ struct PipelineCache::ProgramCache {
 			if (linear != (group.plan_linear != nullptr)) return false;
 			plan.linear_srt = std::move(group.plan_linear);
 		}
-		group.plan.emplace(std::move(plan));
+		group.plan = std::make_unique<ShaderRecompiler::IR::ResourcePlan>(std::move(plan));
 		const auto end = std::chrono::steady_clock::now();
 		prefetch->plan_read_ms += std::chrono::duration<double, std::milli>(read - begin).count();
 		prefetch->plan_values_ms += std::chrono::duration<double, std::milli>(values - read).count();
@@ -1829,7 +1833,8 @@ struct PipelineCache::ProgramCache {
 				Common::RecoverableExitScope recoverable;
 				auto translated = ShaderRecompiler::TranslateProgram(record.code, options);
 				if (!group.plan)
-					group.plan.emplace(ShaderRecompiler::IR::ExtractResourcePlan(translated.program, PrefetchBuildsLinear()));
+					group.plan = std::make_unique<ShaderRecompiler::IR::ResourcePlan>(
+					    ShaderRecompiler::IR::ExtractResourcePlan(translated.program, PrefetchBuildsLinear()));
 				ShaderRecompiler::IR::CanonicalizeSpecialization(translated.program.info, record.specialization);
 				auto result = ShaderRecompiler::CompileProgram(std::move(translated), options, record.specialization,
 				                                               record.push_cursor);
@@ -2914,17 +2919,31 @@ public:
 
 private:
 	void Run() {
+		// A thread idle for IdleRelease after a job gives the translator's per-thread scratch back (ShaderRecompiler::
+		// ReleaseThreadScratch): kept between a burst's programs, a buffer of it is up to ~8 MiB, and every thread of these
+		// pools that once translated a big program held them for the rest of the session (at 1-1: decode vectors of 4-7
+		// MiB and SPIR-V sections of 1-3 MiB, ~35 MiB).
+		constexpr auto IdleRelease = std::chrono::seconds(5);
+		bool           worked      = false;
 		for (;;) {
 			std::function<void()> job;
 			{
 				std::unique_lock lock(m_mutex);
-				m_wake.wait(lock, [this] { return m_stop || !m_jobs.empty(); });
+				const auto       ready = [this] { return m_stop || !m_jobs.empty(); };
+				if (worked && !m_wake.wait_for(lock, IdleRelease, ready)) {
+					lock.unlock();
+					ShaderRecompiler::ReleaseThreadScratch();
+					worked = false;
+					lock.lock();
+				}
+				m_wake.wait(lock, ready);
 				// Queued jobs still run at shutdown: their pipelines are destroyed with the rest.
 				if (m_jobs.empty() || (m_stop && m_background)) return;
 				job = std::move(m_jobs.front());
 				m_jobs.pop_front();
 			}
 			job();
+			worked = true;
 		}
 	}
 
@@ -3068,27 +3087,42 @@ bool KeepsRemake(GraphicContext& graphics, PipelineCache::Pipeline& pipeline, bo
 }
 } // namespace
 
-// What a graphics pipeline is made of, as its remake keeps it (~11 KB: the vertex input info's 32 resource slots), without
-// the draw's resource values (ShaderStageRuntime::resources: no part of the pipeline). Cold memory once made.
+// What a graphics pipeline is made of, as its remake keeps it, without the draw's resource values
+// (ShaderStageRuntime::resources: no part of the pipeline). Cold memory once made.
 struct PipelineCache::GraphicsMakeInputs {
 	PipelineRenderingState   rendering;
 	PipelineVertexInputState vertex_input;
 	PipelineStaticParameters static_params;
-	ShaderVertexInputInfo    vs_input_info;
 	ShaderPixelInputInfo     ps_input_info;
 	ShaderProgram            vertex_program;
 	ShaderProgram            pixel_program;
 	bool                     ps_active       = false;
 	bool                     native_bindings = false;
 	bool                     table           = false; // the table pipelines' driver cache
+	// The vertex input info as a warmup record holds it (LocalShaderWarmup::VisitVertexInput: what pipeline creation
+	// reads of it), and its program. Whole, its three 32-slot arrays made ~10 KB of a remake's ~11 (16 GB policy at 1-1:
+	// 1,337 remakes held 14.6 MiB, growing with the pipelines of every world played).
+	std::vector<uint32_t>                           vs_input_words;
+	const ShaderRecompiler::IR::CompiledShaderInfo* vs_program = nullptr;
+
+	void SetVertexInput(const ShaderVertexInputInfo& info) {
+		LocalShaderWarmup::Writer writer; // (only reads it)
+		EXIT_IF(!LocalShaderWarmup::VisitVertexInput(writer, const_cast<ShaderVertexInputInfo&>(info)));
+		vs_input_words = std::move(writer.words);
+		vs_input_words.shrink_to_fit();
+		vs_program = info.stage.program;
+	}
 };
 
 std::shared_ptr<const std::function<void(PipelineCache::Pipeline&)>>
 PipelineCache::GraphicsRemake(GraphicsMakeInputs inputs) {
-	inputs.vs_input_info.stage.resources = {};
 	inputs.ps_input_info.stage.resources = {};
 	return std::make_shared<const std::function<void(Pipeline&)>>([this, in = std::move(inputs)](Pipeline& target) {
-		CreatePipelineInternal(m_graphics, target, in.rendering, in.vertex_input, in.vs_input_info, in.vertex_program,
+		const auto                vs_input_info = std::make_unique<ShaderVertexInputInfo>();
+		LocalShaderWarmup::Reader reader {in.vs_input_words};
+		EXIT_IF(!LocalShaderWarmup::VisitVertexInput(reader, *vs_input_info) || reader.cursor != in.vs_input_words.size());
+		vs_input_info->stage.program = in.vs_program;
+		CreatePipelineInternal(m_graphics, target, in.rendering, in.vertex_input, *vs_input_info, in.vertex_program,
 		                       in.ps_active ? &in.ps_input_info : nullptr, in.pixel_program, in.static_params,
 		                       in.table ? TablePipelineCache() : m_driver_cache, in.native_bindings, PipelineBuild::Full);
 	});
@@ -3564,6 +3598,7 @@ void PipelineCache::RunWarmup(WarmupSettings settings) {
 		programs.warming = false;
 		programs.ReleaseRetired();
 		programs.warm_phase.store(0, std::memory_order_release);
+		programs.warmup.ReleaseLoaded(); // (the recording's words: read from its file from now on)
 		PipelineCacheLog("Shader warmup: done beside the game in {} ms; meanwhile the game translated {} programs itself "
 		                 "({:.0f} ms) and made {} pipelines ({:.0f} ms)",
 		                 std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin).count(),
@@ -3580,6 +3615,10 @@ void PipelineCache::RunWarmup(WarmupSettings settings) {
 		    mib(memory_after.working_set, memory_shaders.working_set),
 		    mib(m_graphics.GetDeviceMemoryUsage(), video_before));
 		m_graphics.LogVideoMemory("warmup");
+		{
+			Common::LockGuard lock(m_mutex);
+			programs.warmup.ReleaseLoaded(); // (the recording's words: read from its file from now on)
+		}
 		programs.warmup.StartWriter();
 		if (const char* only = std::getenv("KYTY_SHADER_WARMUP_ONLY"); only && std::string_view(only) == "1") {
 			if (!Save()) {
@@ -4980,7 +5019,7 @@ PipelineCache::Pipeline* PipelineCache::CreateGraphicsPipelineImpl(
 				inputs.rendering       = job->rendering;
 				inputs.vertex_input    = job->vertex_input;
 				inputs.static_params   = job->static_params;
-				inputs.vs_input_info   = job->vs_input_info;
+				inputs.SetVertexInput(job->vs_input_info);
 				inputs.ps_input_info   = job->ps_input_info;
 				inputs.ps_active       = job->ps_active;
 				inputs.vertex_program  = job->vertex_program;
@@ -5054,7 +5093,7 @@ PipelineCache::Pipeline* PipelineCache::CreateGraphicsPipelineImpl(
 		inputs.rendering       = rendering;
 		inputs.vertex_input    = iter->first.vertex_input;
 		inputs.static_params   = static_params;
-		inputs.vs_input_info   = vs_input_info;
+		inputs.SetVertexInput(vs_input_info);
 		inputs.ps_active       = ps_active;
 		inputs.vertex_program  = vertex_program;
 		inputs.pixel_program   = pixel_program;
