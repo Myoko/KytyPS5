@@ -330,7 +330,10 @@ To switch:
 4. Start the game: "LANGUAGE SELECT" lists the languages of that release. Choose one and confirm with ×
    (J on the keyboard); the brightness and the speech and subtitle settings follow in that language.
 
-中文说明：游戏文件里其实包含全部语言，只是游戏按 `sce_sys\param.json` 里的 `userDefinedParam1`（发行区域）决定
+中文说明：模拟器默认让游戏在每个发行区域都提供全部语言（23 种文字，含简繁中文、日文、韩文；9 种语音），直接在游戏的
+「设置 > 语言」里选简体中文即可，语音语言在标题画面的设置里选。亚洲版（PPSA01340）也能直接运行。只有用
+`-Set KYTY_ALL_LANGUAGES=0` 关掉这个功能，或日志里的 `Demon's Souls languages: ...` 说没找到语言表时，才需要下面的修改。
+游戏文件里其实包含全部语言，只是游戏按 `sce_sys\param.json` 里的 `userDefinedParam1`（发行区域）决定
 语言选择列表。本 dump 是欧版（值为 `2`，列表里没有中文、日文、韩文）。用记事本把它改成 `0`（全部语言，含简繁中文和日文）
 或 `4`（亚洲版：简繁中文、英文、韩文、泰文）并保存（先备份原文件）；启动器的 "Console language" 选中文（简体）。
 没有存档时首次启动就会出现语言选择；已有存档时，先备份 `_SaveData`，再把 `_SaveData\PPSA01341\SAVEDATA0OptionsProfile0`
@@ -393,6 +396,10 @@ The launchers (Windows and Linux) also offer **Game → Keyboard and mouse promp
 For an extracted PPSA01341 v1.07 game folder, it applies 22 English key/mouse icons and matching
 keyboard/mouse bindings on Play. **Game → Keyboard controls → Edit controls…** lets you change
 keys, mouse buttons, wheel directions and sensitivity; the prompts follow the saved layout.
+In the Windows launcher's editor, hold one input and press another to bind the two together (the
+second pressed while the first is held), shown as `Left Alt+Mouse:Left`.
+The editor refuses an input held for a combo that is also bound on its own (a hand-written
+`--keymap` line may do that; see below), and two actions with the same two inputs, in either order.
 Press **F7** to capture/release the mouse for camera control. Disabling the option restores
 backed-up original icons on the next Play and stops applying these bindings; `launch.json`
 is not rewritten. The keyboard labels remain visible when using a controller.
@@ -445,8 +452,16 @@ With any of them, only your own keys work on the keyboard (none of the layout ab
   written without the space, as `LeftShift`), or `Mouse:Left`, `Mouse:Right`, `Mouse:Middle`, `Mouse:X1`, `Mouse:X2`,
   `Mouse:WheelUp`, `Mouse:WheelDown` (each notch of the wheel a short press: `"--keymap", "Up=Mouse:WheelUp"` and
   `"--keymap", "Down=Mouse:WheelDown"` switch spells and items).
-- A control takes one key and one mouse input (`Up=Up` with `Up=Mouse:WheelUp`: both work); a second key, or a second
-  mouse input, for the same control replaces the first.
+- Two at once: `<control>=<first>+<second>`, such as `"--keymap", "R2=Left Alt+Mouse:Left"`. The second pressed
+  while the first is held presses that control in place of the second's own, until the second is released: with
+  `R1=Mouse:Left` too, a left click is R1, and with Left Alt held R2. The first keeps its own control, if it has
+  one. A key whose name has a `+` (`Keypad +`) can be either. The wheel cannot be the first: a notch is not held.
+  As the second, the control is chosen once per scroll, by whether the first is held then: that scroll's notches,
+  pressed one after another, go to it. Alt+Enter (`Left Alt+Return`, `Left Alt+Keypad Enter`) stays the
+  emulator's full screen, and Alt+F4 (`Left Alt+F4`) closes the window.
+- A control takes one key and one mouse input (`Up=Up` with `Up=Mouse:WheelUp`: both work), and a combo counts as a
+  key or a mouse input by its second (`R2=F` with `R2=Left Alt+Mouse:Left`: both work). A later line replaces an
+  earlier one for the same control and kind, or for exactly the same input or combo.
 - F7, F8 and F11 stay the emulator's. A line it cannot use is skipped, and the run log says which and why
   (`Input mapping skipped: ...`).
 - An update's `launch.json` replaces yours: keep a copy of your lines.
@@ -499,7 +514,9 @@ hurts.
   before stay as they are until your next precompile, which brings it (Precompile on the launcher's Shaders page:
   only what is new is compiled); until then `-Set KYTY_PIXEL_INTERLOCK=1` uses it at once (those pipelines are then
   compiled the first time the game draws them), and `-Set KYTY_PIXEL_INTERLOCK=0` turns it off. AMD's Windows driver
-  has no interlock: there `run.cmd -Set KYTY_DRAW_READ_AFTER_WRITE=1` (or `-Set KYTY_DRAW_READ_AFTER_WRITE=1` in the
+  has the interlock too, but with it the player character's face showed the game's green missing-texture checker
+  (issue #355), so the emulator leaves it off there (`-Set KYTY_PIXEL_INTERLOCK=1` still turns it on). There
+  `run.cmd -Set KYTY_DRAW_READ_AFTER_WRITE=1` (or `-Set KYTY_DRAW_READ_AFTER_WRITE=1` in the
   launcher's Advanced > "Command-line options") orders the decals with barriers instead, but where there are hundreds
   of decals the frame rate can drop by up to ~15% (Boletaria's start without the 60 fps cap: 73 -> 61 fps on an RTX
   5090; at 60 fps it still held 60 there). With the interlock that switch is not needed.
